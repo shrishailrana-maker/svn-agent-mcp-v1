@@ -1,0 +1,9 @@
+{
+  "neverCommit": {
+    "allow": [
+      "bin/**",
+      "releases/v*/bin/**",
+      "releases/v*/dist/**"
+    ]
+  }
+}

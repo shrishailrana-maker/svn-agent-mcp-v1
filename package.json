@@ -1,0 +1,51 @@
+{
+  "name": "svn-agent-mcp",
+  "version": "1.0.0",
+  "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shrishailrana-maker/svn-agent-mcp-v1/issues"
+  },
+  "homepage": "https://github.com/shrishailrana-maker/svn-agent-mcp-v1#readme",
+  "bin": {
+    "svn-agent-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --passWithNoTests",
+    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
+    "prepare:local": "npm run build && npm run release:prepare",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "clean": "node scripts/clean.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "svn",
+    "subversion",
+    "model-context-protocol"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "fast-xml-parser": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
+  }
+}
