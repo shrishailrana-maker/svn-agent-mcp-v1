@@ -22,43 +22,49 @@ npm test
 Tell an agent:
 
 ```text
-Get the SVN MCP from https://github.com/shrishailrana-maker/svn-agent-mcp-v1, clone it to the target machine, run npm install, run npm run prepare:local, then configure the MCP command as node <clone-path>\current\dist\index.js.
+Get the SVN MCP from https://github.com/shrishailrana-maker/svn-agent-mcp-v1, clone it to C:\MCP\svn-agent-mcp-v1, run npm install, run npm run prepare:local, then configure the MCP command as node C:\MCP\svn-agent-mcp-v1\current\dist\index.js.
 ```
 
 The setup commands are:
 
 ```powershell
-git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git <clone-path>
-cd <clone-path>
+git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git C:\MCP\svn-agent-mcp-v1
+cd C:\MCP\svn-agent-mcp-v1
 npm install
 npm run prepare:local
 ```
 
-Then register the MCP with your client using the generated `current` runtime:
+Then configure the MCP client to run:
+
+```text
+node C:\MCP\svn-agent-mcp-v1\current\dist\index.js
+```
+
+### Claude Desktop Config Example
+
+Add this under `mcpServers`:
 
 ```json
 {
   "mcpServers": {
     "svn": {
       "command": "node",
-      "args": ["<clone-path>\\current\\dist\\index.js"]
+      "args": ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
     }
   }
 }
 ```
 
-For a read-only client:
+### Codex Config Example
 
-```json
-{
-  "mcpServers": {
-    "svn-readonly": {
-      "command": "node",
-      "args": ["<clone-path>\\current\\dist\\index.js", "--readonly"]
-    }
-  }
-}
+```toml
+[mcp_servers.svn]
+command = "node"
+args = ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
+startup_timeout_sec = 120
 ```
+
+Restart the MCP client after changing the config.
 
 ## Start The MCP
 
@@ -77,27 +83,14 @@ The source tree includes `bin/` with the full SlikSVN `bin` payload plus the ful
 
 Register the MCP once globally. Do not set `cwd` and do not set environment variables:
 
-Write-capable client example:
+Generic client example:
 
 ```json
 {
   "mcpServers": {
     "svn": {
       "command": "node",
-      "args": ["<clone-path>\\current\\dist\\index.js"]
-    }
-  }
-}
-```
-
-Read-only client example:
-
-```json
-{
-  "mcpServers": {
-    "svn-readonly": {
-      "command": "node",
-      "args": ["<clone-path>\\current\\dist\\index.js", "--readonly"]
+      "args": ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
     }
   }
 }
@@ -107,7 +100,7 @@ The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths 
 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
 
-Environment variables are not required for normal use. They are development/test escape hatches only: `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`, `SVN_AGENT_TIMEOUT_MS`, `SVN_AGENT_MAX_DIFF_LINES`, and legacy `SVN_AGENT_READONLY`.
+Environment variables are not required for normal use. They are development/test escape hatches only: `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`, `SVN_AGENT_TIMEOUT_MS`, and `SVN_AGENT_MAX_DIFF_LINES`.
 
 ## Commands
 
@@ -145,11 +138,6 @@ Release history is maintained in `CHANGELOG.md`.
 | `docs/` | Spec, local rules, and decisions |
 | `releases/` | Generated versioned runtime release payloads, ignored by Git |
 
-## Role Model
+## Usage Model
 
-Run one MCP instance per client role:
-
-- Write-capable clients run normally and may use guarded mutating tools.
-- Read-only clients run with `--readonly`; every mutating tool refuses.
-
-The server does not assume a product name for either role.
+Register one global MCP server and use explicit paths or per-call `cwd` values when working across SVN checkouts. The server does not assume a product name, project name, or fixed working copy.
