@@ -784,12 +784,12 @@ Write-capable client:
 }
 ```
 
-Read-only client:
+Read-only launch using the same generic server name:
 
 ```json
 {
   "mcpServers": {
-    "svn-readonly": {
+    "svn": {
       "command": "node",
       "args": ["<MCP_HOME>\\svn-agent\\current\\dist\\index.js", "--readonly"]
     }
