@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ChangedPath, WcInfo } from "./types.js";
 
-export const neverCommitGlobs = [
+const overridableNeverCommitGlobs = [
   "**/bin/**",
   "**/dist/**",
   "**/node_modules/**",
@@ -16,14 +16,20 @@ export const neverCommitGlobs = [
   "packages/**",
   "tags/**",
   ".graphify/**",
-  "graphify-out/**",
+  "graphify-out/**"
+];
+
+export const sensitiveNeverCommitGlobs = [
   "**/*.pfx",
   "**/*.key",
   "**/*.pem",
   "**/*.p12",
   "**/*.snk",
-  "**/.env*"
+  "**/.env*",
+  "**/.npmrc"
 ];
+
+export const neverCommitGlobs = [...overridableNeverCommitGlobs, ...sensitiveNeverCommitGlobs];
 
 type NeverCommitPolicy = {
   neverCommit?: {
@@ -157,13 +163,19 @@ export function neverCommitHit(absPath: string, wcRoot: string): string | null {
     }
   }
 
+  for (const glob of sensitiveNeverCommitGlobs) {
+    if (matchesGlob(relative, glob)) {
+      return glob;
+    }
+  }
+
   for (const glob of policy.allow) {
     if (matchesGlob(relative, glob)) {
       return null;
     }
   }
 
-  for (const glob of neverCommitGlobs) {
+  for (const glob of overridableNeverCommitGlobs) {
     if (matchesGlob(relative, glob)) {
       return glob;
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import fs from "node:fs";
@@ -81,7 +81,17 @@ function runNpm(args, cwd) {
   const npmExecPath = process.env.npm_execpath;
   const command = npmExecPath ? process.execPath : platformNpmCommand();
   const commandArgs = npmExecPath ? [npmExecPath, ...args] : args;
-  return execFileSync(command, commandArgs, { cwd, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync(command, commandArgs, { cwd, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`npm ${args[0]} failed (${result.status}): ${result.stderr.trim()}`);
+  }
+  if (/\bEBADENGINE\b/.test(result.stderr)) {
+    throw new Error(`npm ${args[0]} reported an engine mismatch: ${result.stderr.trim()}`);
+  }
+  return result.stdout;
 }
 
 function platformNpmCommand() {

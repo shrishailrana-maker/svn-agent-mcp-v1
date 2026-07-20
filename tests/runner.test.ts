@@ -121,6 +121,22 @@ describe("runner executable resolution", () => {
     expect(run.truncated).toBe(true);
   });
 
+  it("caps a streaming stdout line and marks the truncation", async () => {
+    const lines: string[] = [];
+    const run = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "process.stdout.write('+' + 'x'.repeat(1000))"],
+      { cwd: process.cwd(), stdoutMaxLineBytes: 16 },
+      (line) => lines.push(line)
+    );
+
+    expect(run.exitCode).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe("+xxxxxxxxxxxxxxx [line truncated]");
+    expect(run.stdout).toBe(lines[0]);
+    expect(run.truncated).toBe(true);
+  });
+
   it("falls back to latin1 for streamed stdout lines that are not valid UTF-8", async () => {
     const lines: string[] = [];
     const run = await runExecutableStreamingLines(

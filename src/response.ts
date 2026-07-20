@@ -312,6 +312,7 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
 function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const mode = request.diffMode === "summary" || request.diffMode === "full" ? request.diffMode : "compact";
   const sourceFiles = recordArray(payload.per_file);
+  const fileSummaryTruncated = payload.per_file_truncated === true;
   const fileOffset = cursorOffset(request.fileCursor);
   const maxFiles = boundedInteger(request.maxFiles, 100, 1, 500);
   const files = sourceFiles.slice(fileOffset, fileOffset + maxFiles).map((file) => ({
@@ -329,6 +330,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   const base = {
     ok: true,
     files,
+    ...(fileSummaryTruncated ? { fileSummaryTruncated: true } : {}),
     ...(pagedFiles
       ? {
           totalFiles: sourceFiles.length,
@@ -342,7 +344,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   if (mode === "summary") {
     return {
       ...base,
-      truncated: false
+      truncated: fileSummaryTruncated
     };
   }
 
@@ -350,7 +352,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
     return {
       ...base,
       excerpt,
-      truncated: Boolean(payload.truncated),
+      truncated: Boolean(payload.truncated) || fileSummaryTruncated,
       ...(payload.truncated ? { nextCursor: String(offset + lineCount(excerpt)) } : {})
     };
   }
@@ -362,7 +364,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
     boundedInteger(request.maxHunksPerFile, 3, 1, 20)
   );
   const hasContinuation = page.nextOffset < lineCount(excerpt) || Boolean(payload.truncated);
-  const truncated = hasContinuation || page.lineTruncated;
+  const truncated = hasContinuation || page.lineTruncated || fileSummaryTruncated;
 
   return {
     ...base,

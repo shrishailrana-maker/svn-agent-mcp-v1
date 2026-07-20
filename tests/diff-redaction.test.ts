@@ -31,6 +31,7 @@ describe("diff parsing and command redaction", () => {
 
     expect(diff.summary()).toEqual({
       per_file: [{ path: "streamed.txt", added: 3, removed: 1, binary: false }],
+      per_file_truncated: false,
       diff_excerpt: "Index: streamed.txt\n+one",
       truncated: true
     });
@@ -44,9 +45,20 @@ describe("diff parsing and command redaction", () => {
 
     expect(diff.summary()).toEqual({
       per_file: [{ path: "streamed.txt", added: 3, removed: 1, binary: false }],
+      per_file_truncated: false,
       diff_excerpt: "+two\n-old",
       truncated: true
     });
+  });
+
+  it("bounds per-file summaries and reports when more files were omitted", () => {
+    const diff = createDiffAccumulator(100, 0, 2);
+    for (const line of ["Index: a.txt", "+a", "Index: b.txt", "+b", "Index: c.txt", "+c"]) {
+      diff.pushLine(line);
+    }
+
+    expect(diff.summary().per_file).toHaveLength(2);
+    expect(diff.summary().per_file_truncated).toBe(true);
   });
 
   it("marks property changes without counting property values as source lines", () => {
@@ -157,12 +169,22 @@ describe("diff parsing and command redaction", () => {
     expect(noteFromRun(fakeRun("svn: E200030: sqlite[S5]: database is locked"))).toContain("database problem");
   });
 
+  it("includes the configured duration in timeout diagnostics", () => {
+    expect(noteFromRun({ ...fakeRun(""), timedOut: true, timeoutMs: 60000 })).toBe("svn timed out after 60000 ms");
+  });
+
   it("points agents at the CLI failsafe when the svn executable cannot launch", () => {
     const note = noteFromRun({ ...fakeRun(""), errorCode: "ENOENT" });
     expect(note).toContain("MCP svn runtime unavailable");
     expect(note).toContain("failsafe");
     expect(note).toContain("must never be bypassed");
     expect(noteFromRun(fakeRun("svn: E170001: authorization failed"))).not.toContain("failsafe");
+  });
+
+  it("explains non-streaming output overflow without returning a raw runtime error", () => {
+    const note = noteFromRun({ ...fakeRun(""), errorCode: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    expect(note).toContain("output exceeded");
+    expect(note).toContain("scope paths");
   });
 
   it("uses a token-conscious default diff excerpt cap", () => {

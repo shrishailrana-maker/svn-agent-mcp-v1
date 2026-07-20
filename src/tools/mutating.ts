@@ -12,6 +12,7 @@ import {
   readonlyMode,
   repoRelativePath,
   requireExplicitPaths,
+  realPathOfNearestExisting,
   resolveCwd,
   resolveTargetsInsideWc,
   riskySignals,
@@ -64,7 +65,7 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   }
 
   const hasDirectory = [...targetStats.values()].some((stat) => stat.isDirectory());
-  const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", ...guard.paths];
+  const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths];
   const run = await runSvn(args, guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
@@ -113,7 +114,7 @@ export async function svnCommit(input: {
   if (messageWarning) {
     warnings.push(messageWarning);
   }
-  const version = await runSvnVersion(guard.cwd, guard.cwd);
+  const version = await runSvnVersion(guard.wcRoot, guard.cwd);
   if (version.exitCode === 0 && version.stdout.includes(":")) {
     warnings.push("mixed revision working copy");
   }
@@ -121,7 +122,7 @@ export async function svnCommit(input: {
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
 
   try {
-    const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", ...commitPaths], guard.cwd);
+    const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths], guard.cwd);
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
     const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
     const postStatusClean = postStatus ? postStatus.changed_paths.length === 0 : false;
@@ -184,7 +185,7 @@ export async function svnUpdate(input: { cwd?: string; paths?: string[]; updateA
     targets = resolved.paths;
   }
 
-  const run = await runSvn(["update", "--accept", "postpone", ...targets], context.cwd);
+  const run = await runSvn(["update", "--accept", "postpone", ...(targets.length > 0 ? ["--", ...targets] : [])], context.cwd);
   const parsed = parseUpdateText(`${run.stdout}\n${run.stderr}`);
   return envelopeFromRun({
     run,
@@ -253,10 +254,10 @@ export async function svnRevert(input: {
   const fileTargets = guard.paths.filter((target) => !directoryTargets.includes(target));
   const runs = [];
   if (fileTargets.length > 0) {
-    runs.push(await runSvn(["revert", ...fileTargets], guard.cwd));
+    runs.push(await runSvn(["revert", "--", ...fileTargets], guard.cwd));
   }
   if (directoryTargets.length > 0) {
-    runs.push(await runSvn(["revert", "--depth", "infinity", ...directoryTargets], guard.cwd));
+    runs.push(await runSvn(["revert", "--depth", "infinity", "--", ...directoryTargets], guard.cwd));
   }
 
   const failed = runs.find((run) => run.exitCode !== 0);
@@ -278,7 +279,7 @@ export async function svnResolved(input: {
     return guard.envelope;
   }
 
-  const run = await runSvn(["resolve", "--accept", input.accept, guard.paths[0]!], guard.cwd);
+  const run = await runSvn(["resolve", "--accept", input.accept, "--", guard.paths[0]!], guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -299,7 +300,7 @@ export async function svnCleanup(input: { cwd?: string; path?: string }): Promis
     return failEnvelope("svn cleanup", context.cwd, resolved.note);
   }
 
-  const run = await runSvn(["cleanup", ...resolved.paths], context.cwd);
+  const run = await runSvn(["cleanup", ...(resolved.paths.length > 0 ? ["--", ...resolved.paths] : [])], context.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -315,13 +316,17 @@ export async function svnPropsetEolStyle(input: {
 
   const style = input.style ?? "native";
   for (const target of guard.paths) {
-    const prop = await runSvn(["propget", "svn:eol-style", target], guard.cwd);
+    const hit = neverCommitHit(target, guard.wcRoot);
+    if (hit) {
+      return failEnvelope("svn propset", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
+    }
+    const prop = await runSvn(["propget", "--", "svn:eol-style", target], guard.cwd);
     if (prop.exitCode === 0 && prop.stdout.trim() === style) {
       return failEnvelope("svn propset", guard.cwd, `svn:eol-style already ${style}: ${repoRelativePath(target, guard.wcRoot)}`);
     }
   }
 
-  const run = await runSvn(["propset", "svn:eol-style", style, ...guard.paths], guard.cwd);
+  const run = await runSvn(["propset", "--", "svn:eol-style", style, ...guard.paths], guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -377,7 +382,13 @@ export async function svnPropset(input: {
   };
 }
 
-export async function svnExport(input: { cwd?: string; src: string; dest: string; revision?: string }): Promise<ToolEnvelope> {
+export async function svnExport(input: {
+  cwd?: string;
+  src: string;
+  dest: string;
+  revision?: string;
+  externalDestAck?: boolean;
+}): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
     return failEnvelope("svn export", cwd, "READONLY instance");
@@ -390,7 +401,23 @@ export async function svnExport(input: { cwd?: string; src: string; dest: string
     }
     args.push("-r", input.revision);
   }
-  args.push("--", input.src, input.dest);
+
+  const destination = realPathOfNearestExisting(path.resolve(cwd, input.dest));
+  const destinationContext = await getWcContext(undefined, [destination]);
+  if (destinationContext.ok) {
+    const resolved = resolveTargetsInsideWc(destinationContext.cwd, destinationContext.wcRoot, [destination]);
+    if (!resolved.ok) {
+      return failEnvelope("svn export", cwd, resolved.note);
+    }
+    const hit = neverCommitHit(resolved.paths[0]!, destinationContext.wcRoot);
+    if (hit) {
+      return failEnvelope("svn export", cwd, neverCommitNote(hit, resolved.paths[0]!, destinationContext.wcRoot));
+    }
+  } else if (!input.externalDestAck) {
+    return failEnvelope("svn export", cwd, "export destination outside a working copy requires externalDestAck:true");
+  }
+
+  args.push("--", input.src, destination);
   const run = await runSvn(args, cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
@@ -552,6 +579,9 @@ async function firstNeverCommitDescendant(directory: string, wcRoot: string): Pr
 
     const entries = await fs.promises.readdir(current.directory, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.toLowerCase() === ".svn") {
+        continue;
+      }
       scanned += 1;
       if (scanned > DESCENDANT_SCAN_LIMIT) {
         return { error: `recursive scan entry limit exceeded (${DESCENDANT_SCAN_LIMIT})` };
@@ -616,7 +646,7 @@ async function svnMoveOrCopy(
     }
   }
 
-  const run = await runSvn([svnVerb, "--parents", src, dest], context.cwd);
+  const run = await runSvn([svnVerb, "--parents", "--", src, dest], context.cwd);
   const status = run.exitCode === 0 ? await svnStatus({ cwd: context.cwd, paths: [src, dest] }) : null;
   return {
     ...envelopeFromRun({

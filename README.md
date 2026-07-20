@@ -2,9 +2,9 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current release is `1.1.1`; each source clone can prepare a local runtime under `releases/v1.1.1`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.1.2`; each source clone can prepare a local runtime under `releases/v1.1.2`, while npm installations run directly from package-root `dist/`.
 
-Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer within the npm 11 line, Git, and access to the public npm registry. Windows uses the
+Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled SlikSVN and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
 `dos2unix`, and `unix2dos` must be available on `PATH`.
 
@@ -29,7 +29,7 @@ Resolve the executable with the platform command lookup: where.exe svn-agent-mcp
 On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
 Ensure the MCP client entry is named "svn" and uses command "svn-agent-mcp", never a source checkout, junction, current pointer, or dist path. Do not add --readonly.
 Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
-After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. Expected latest for this release is 1.1.1; if npm reports a newer version, report the installed version instead of forcing a downgrade.
+After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. The latest published npm version is 1.1.1; the GitHub source release is 1.1.2. Report the installed version instead of forcing a downgrade.
 ```
 
 ## Agent Setup From GitHub
@@ -129,6 +129,10 @@ hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
 High-volume reads are bounded by default. Log messages and changed paths are capped and opt-in
 where appropriate. Diff collection defaults to 200 lines, compact excerpts are capped at 3,000
 characters, and large file/property/status/EOL collections expose explicit continuation cursors.
+Buffered SVN commands fail with a scoped diagnostic above 20 MB. Streamed diff lines are capped at
+1 MiB each, and per-file diff summaries are capped at 20,000 entries; either truncation is reported.
+Public path arrays accept at most 500 entries, and individual filesystem paths are capped at 4,096
+characters.
 Compact mode changes response size only; path containment, mutation guards, EOL checks,
 mixed-revision checks, and commit verification run unchanged.
 
@@ -137,7 +141,7 @@ mixed-revision checks, and commit verification run unchanged.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Run the TypeScript entry point during development |
-| `npm run check:runtime` | Verify the supported Node 24 LTS and npm 11 toolchain |
+| `npm run check:runtime` | Verify the supported Node 24 LTS and minimum npm version |
 | `npm run typecheck` | Check TypeScript without emitting build output |
 | `npm run build` | Compile `src/` into `dist/` |
 | `npm test` | Run the Jest test suite |

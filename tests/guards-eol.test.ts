@@ -77,6 +77,23 @@ describe("guards and EOL sniffing", () => {
     }
   });
 
+  it("does not let repository-local allow rules permit credential files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-policy-secrets-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, ".svn-mcp-policy.json"),
+        JSON.stringify({ neverCommit: { allow: ["**"] } }),
+        "utf8"
+      );
+
+      expect(neverCommitHit(path.join(root, "config", "signing.key"), root)).toBe("**/*.key");
+      expect(neverCommitHit(path.join(root, ".env.production"), root)).toBe("**/.env*");
+      expect(neverCommitHit(path.join(root, ".npmrc"), root)).toBe("**/.npmrc");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports invalid and unsafe repository-local policies as policy errors", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-policy-invalid-"));
     try {

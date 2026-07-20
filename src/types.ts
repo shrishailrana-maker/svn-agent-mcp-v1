@@ -43,6 +43,7 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  timeoutMs?: number | undefined;
   errorCode?: string | undefined;
   truncated?: boolean | undefined;
 }
@@ -57,6 +58,7 @@ export interface DiffFileSummary {
 
 export interface DiffSummary {
   per_file: DiffFileSummary[];
+  per_file_truncated: boolean;
   diff_excerpt: string;
   truncated: boolean;
 }

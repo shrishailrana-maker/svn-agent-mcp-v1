@@ -134,11 +134,15 @@ export function failEnvelope(command: string, cwd: string, note: string, extra?:
 
 export function noteFromRun(run: RunResult): string {
   if (run.timedOut) {
-    return "svn timed out";
+    return run.timeoutMs ? `svn timed out after ${run.timeoutMs} ms` : "svn timed out";
   }
 
   if (run.errorCode === "ENOENT" || run.errorCode === "EACCES" || run.errorCode === "EPERM") {
     return "MCP svn runtime unavailable (executable failed to launch) - failsafe: use scoped raw svn CLI for this session per svnrules; guard refusals are not failures and must never be bypassed via CLI";
+  }
+
+  if (run.errorCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return "svn output exceeded the 20 MB safety limit - scope paths more narrowly";
   }
 
   const text = `${run.stderr}\n${run.stdout}`;

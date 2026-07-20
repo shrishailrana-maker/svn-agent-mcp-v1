@@ -32,6 +32,10 @@ try {
     assert(tools.tools.length === 23, `expected 23 tools, received ${tools.tools.length}`);
     passed.push("handshake");
 
+    const statusTool = tools.tools.find((tool) => tool.name === "svn_status");
+    assert(statusTool?.inputSchema?.properties?.paths?.maxItems === 500, "status paths are not publicly bounded");
+    passed.push("input-bounds");
+
     const selfCheck = await call(client, "svn_self_check", { cwd: workingCopy, responseMode: "compact" });
     assert(selfCheck.ok === true && selfCheck.available === true, "self-check was not healthy");
     passed.push("self-check");

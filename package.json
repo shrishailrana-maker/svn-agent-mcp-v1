@@ -1,6 +1,6 @@
 {
   "name": "svn-agent-mcp",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
   "type": "module",
   "main": "dist/index.js",
@@ -48,7 +48,7 @@
   "license": "Apache-2.0",
   "engines": {
     "node": ">=24.18.0 <25",
-    "npm": ">=11.16.0 <12"
+    "npm": ">=11.16.0"
   },
   "packageManager": "npm@11.16.0",
   "dependencies": {

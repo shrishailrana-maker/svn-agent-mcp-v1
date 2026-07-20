@@ -30,7 +30,7 @@ import {
 import type { ToolEnvelope } from "./types.js";
 
 export const serverName = "svn";
-export const serverVersion = "1.1.1";
+export const serverVersion = "1.1.2";
 export const readonlyMode = isReadonlyMode();
 
 export function createServer(): McpServer {
@@ -39,14 +39,17 @@ export function createServer(): McpServer {
     version: serverVersion
   });
 
-  const cwd = z.string().optional().describe("Absolute WC directory; required for relative paths.");
-  const paths = z.array(z.string()).describe("Explicit paths inside one WC.");
-  const optionalPaths = z.array(z.string()).optional().describe("Optional paths inside one WC.");
-  const revision = z.string().regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n]+\})$/i).optional();
+  const filesystemPath = z.string().min(1).max(4096);
+  const repositoryLocation = z.string().min(1).max(8192);
+  const commitMessage = z.string().min(1).max(16000);
+  const cwd = filesystemPath.optional().describe("Absolute WC directory; required for relative paths.");
+  const paths = z.array(filesystemPath).min(1).max(500).describe("Explicit paths inside one WC.");
+  const optionalPaths = z.array(filesystemPath).max(500).optional().describe("Optional paths inside one WC.");
+  const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n]+\})$/i).optional();
   const propertyName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   const responseMode = z.enum(["compact", "standard", "full"]).optional();
   const response = { responseMode };
-  const cursor = z.string().regex(/^\d+$/).optional();
+  const cursor = z.string().max(32).regex(/^\d+$/).optional();
   const infoField = z.enum([
     "root", "revision", "url", "repositoryRoot", "mixedRevision", "revisionRange",
     "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
@@ -80,7 +83,7 @@ export function createServer(): McpServer {
         paths: optionalPaths,
         includeIgnored: z.boolean().optional(),
         hideNoise: z.boolean().optional(),
-        statuses: z.array(z.string()).max(16).optional(),
+        statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
         maxItems: z.number().int().min(1).max(500).optional(),
@@ -204,7 +207,7 @@ export function createServer(): McpServer {
       description: "Normalize and verify one file's EOL.",
       inputSchema: {
         cwd,
-        path: z.string(),
+        path: filesystemPath,
         target: z.enum(["crlf", "lf"]).optional(),
         removeBom: z.boolean().optional(),
         dryRun: z.boolean().optional(),
@@ -231,7 +234,7 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths,
-        message: z.string(),
+        message: commitMessage,
         riskAck: z.boolean().optional(),
         ...response
       }
@@ -243,7 +246,7 @@ export function createServer(): McpServer {
     "svn_move",
     {
       description: "Guarded working-copy move.",
-      inputSchema: { cwd, src: z.string(), dest: z.string(), ...response }
+      inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
     async (args) => publicToolResult("svn_move", await svnMove(compactArgs(args)), args)
   );
@@ -252,7 +255,7 @@ export function createServer(): McpServer {
     "svn_rename",
     {
       description: "Alias for guarded working-copy move.",
-      inputSchema: { cwd, src: z.string(), dest: z.string(), ...response }
+      inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
     async (args) => publicToolResult("svn_rename", await svnRename(compactArgs(args)), args)
   );
@@ -261,7 +264,7 @@ export function createServer(): McpServer {
     "svn_copy",
     {
       description: "Guarded working-copy copy.",
-      inputSchema: { cwd, src: z.string(), dest: z.string(), ...response }
+      inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
     async (args) => publicToolResult("svn_copy", await svnCopy(compactArgs(args)), args)
   );
@@ -296,7 +299,7 @@ export function createServer(): McpServer {
       description: "Resolve one conflict with an explicit mode.",
       inputSchema: {
         cwd,
-        path: z.string(),
+        path: filesystemPath,
         accept: z.enum(["working", "mine-full", "theirs-full", "base"]),
         ...response
       }
@@ -308,7 +311,7 @@ export function createServer(): McpServer {
     "svn_cleanup",
     {
       description: "Run non-destructive WC cleanup.",
-      inputSchema: { cwd, path: z.string().optional(), ...response }
+      inputSchema: { cwd, path: filesystemPath.optional(), ...response }
     },
     async (args) => publicToolResult("svn_cleanup", await svnCleanup(compactArgs(args)), args)
   );
@@ -349,9 +352,10 @@ export function createServer(): McpServer {
       description: "Export an explicit SVN source.",
       inputSchema: {
         cwd,
-        src: z.string(),
-        dest: z.string(),
+        src: repositoryLocation,
+        dest: filesystemPath,
         revision,
+        externalDestAck: z.boolean().optional(),
         ...response
       }
     },
@@ -364,9 +368,9 @@ export function createServer(): McpServer {
       description: "Import with an explicit source, URL, and message.",
       inputSchema: {
         cwd,
-        src: z.string(),
-        url: z.string(),
-        message: z.string(),
+        src: filesystemPath,
+        url: repositoryLocation,
+        message: commitMessage,
         ...response
       }
     },

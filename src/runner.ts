@@ -9,6 +9,7 @@ import type { RunResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_MAX_BUFFER = 20 * 1024 * 1024;
+const DEFAULT_MAX_STDOUT_LINE_BYTES = 1024 * 1024;
 
 export function timeoutMs(): number {
   const parsed = Number.parseInt(process.env.SVN_AGENT_TIMEOUT_MS ?? "", 10);
@@ -90,6 +91,7 @@ export async function runExecutable(
 ): Promise<RunResult> {
   const cwd = path.resolve(options.cwd);
   const command = redactArgv(executable, args);
+  const effectiveTimeoutMs = options.timeout ?? timeoutMs();
 
   return new Promise((resolve) => {
     execFile(
@@ -98,7 +100,7 @@ export async function runExecutable(
       {
         cwd,
         env: stableToolEnv(),
-        timeout: options.timeout ?? timeoutMs(),
+        timeout: effectiveTimeoutMs,
         maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         windowsHide: true,
         encoding: "buffer"
@@ -119,7 +121,8 @@ export async function runExecutable(
           signal: (execError?.signal as NodeJS.Signals | null | undefined) ?? null,
           stdout,
           stderr,
-          timedOut: killedByTimeout
+          timedOut: killedByTimeout,
+          timeoutMs: effectiveTimeoutMs
         };
         if (typeof execError?.code === "string") {
           result.errorCode = execError.code;
@@ -138,7 +141,7 @@ export async function runSvnStreamingLines(
   args: string[],
   cwd: string,
   onStdoutLine: (line: string) => void,
-  options: { stdoutLineLimit?: number; timeout?: number } = {}
+  options: { stdoutLineLimit?: number; stdoutMaxLineBytes?: number; timeout?: number } = {}
 ): Promise<RunResult> {
   return runExecutableStreamingLines(svnExecutable(), nonInteractiveSvnArgs(args), { cwd, ...options }, onStdoutLine);
 }
@@ -146,12 +149,13 @@ export async function runSvnStreamingLines(
 export async function runExecutableStreamingLines(
   executable: string,
   args: string[],
-  options: { cwd: string; stdoutLineLimit?: number; timeout?: number; stderrMaxBuffer?: number },
+  options: { cwd: string; stdoutLineLimit?: number; stdoutMaxLineBytes?: number; timeout?: number; stderrMaxBuffer?: number },
   onStdoutLine: (line: string) => void
 ): Promise<RunResult> {
   const cwd = path.resolve(options.cwd);
   const command = redactArgv(executable, args);
   const stdoutLineLimit = options.stdoutLineLimit ?? 200;
+  const effectiveTimeoutMs = options.timeout ?? timeoutMs();
 
   return new Promise((resolve) => {
     const child = spawn(executable, args, {
@@ -163,7 +167,11 @@ export async function runExecutableStreamingLines(
     const stdoutLines: string[] = [];
     const stderrBuffers: Buffer[] = [];
     const stderrMaxBuffer = options.stderrMaxBuffer ?? DEFAULT_MAX_BUFFER;
-    let stdoutCarry: Buffer = Buffer.alloc(0);
+    const stdoutMaxLineBytes = Math.max(1, options.stdoutMaxLineBytes ?? DEFAULT_MAX_STDOUT_LINE_BYTES);
+    let stdoutFragments: Buffer[] = [];
+    let stdoutLineBytes = 0;
+    let stdoutLineTruncated = false;
+    let stdoutTruncated = false;
     let timedOut = false;
     let settled = false;
     let stderrBytes = 0;
@@ -177,7 +185,7 @@ export async function runExecutableStreamingLines(
         signal: "SIGTERM",
         timedOut: true
       });
-    }, options.timeout ?? timeoutMs());
+    }, effectiveTimeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (settled) {
@@ -231,8 +239,9 @@ export async function runExecutableStreamingLines(
         stdout: stdoutLines.join("\n"),
         stderr: input.stderrOverride ?? stderrText,
         timedOut: input.timedOut,
+        timeoutMs: effectiveTimeoutMs,
         errorCode: input.errorCode,
-        truncated: stderrTruncated
+        truncated: stderrTruncated || stdoutTruncated
       });
     }
 
@@ -266,27 +275,53 @@ export async function runExecutableStreamingLines(
         return;
       }
 
-      stdoutCarry = stdoutCarry.length === 0 ? chunk : Buffer.concat([stdoutCarry, chunk]);
-      let newlineIndex: number;
-      while ((newlineIndex = stdoutCarry.indexOf(0x0a)) !== -1) {
-        emitStdoutLine(stdoutCarry.subarray(0, newlineIndex));
-        stdoutCarry = stdoutCarry.subarray(newlineIndex + 1);
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newlineIndex = chunk.indexOf(0x0a, offset);
+        const end = newlineIndex === -1 ? chunk.length : newlineIndex;
+        appendStdoutFragment(chunk.subarray(offset, end));
+        if (newlineIndex === -1) {
+          break;
+        }
+        emitStdoutLine();
+        offset = newlineIndex + 1;
       }
-      if (flush && stdoutCarry.length > 0) {
-        emitStdoutLine(stdoutCarry);
-        stdoutCarry = Buffer.alloc(0);
+      if (flush && (stdoutLineBytes > 0 || stdoutLineTruncated)) {
+        emitStdoutLine();
       }
     }
 
-    function emitStdoutLine(lineBytes: Buffer): void {
+    function appendStdoutFragment(fragment: Buffer): void {
+      const remaining = stdoutMaxLineBytes - stdoutLineBytes;
+      if (fragment.length > remaining) {
+        if (remaining > 0) {
+          stdoutFragments.push(fragment.subarray(0, remaining));
+          stdoutLineBytes += remaining;
+        }
+        stdoutLineTruncated = true;
+        stdoutTruncated = true;
+        return;
+      }
+
+      if (fragment.length > 0) {
+        stdoutFragments.push(fragment);
+        stdoutLineBytes += fragment.length;
+      }
+    }
+
+    function emitStdoutLine(): void {
+      const lineBytes = Buffer.concat(stdoutFragments, stdoutLineBytes);
       const trimmed = lineBytes.length > 0 && lineBytes[lineBytes.length - 1] === 0x0d
         ? lineBytes.subarray(0, lineBytes.length - 1)
         : lineBytes;
-      const line = decodeOutput(trimmed);
+      const line = decodeOutput(trimmed) + (stdoutLineTruncated ? " [line truncated]" : "");
       onStdoutLine(line);
       if (stdoutLines.length < stdoutLineLimit) {
         stdoutLines.push(line);
       }
+      stdoutFragments = [];
+      stdoutLineBytes = 0;
+      stdoutLineTruncated = false;
     }
   });
 }

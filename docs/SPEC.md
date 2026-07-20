@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.19 — public implementation contract. Single source of truth.**
+**Spec version 1.20 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-07-20.
 
@@ -83,7 +83,7 @@ workflow).
   remediation target is CRLF + `svn:eol-style=native`, no BOM, but this must not hard-code one
   repository's language or folder names.
 - MCP installation home is chosen by the deployer, for example `<MCP_HOME>\svn-agent`.
-- Node 24.18.0 or newer within the Node 24 LTS line and npm 11.16.0 or newer within the npm 11 line are required.
+- Node 24.18.0 or newer within the Node 24 LTS line and npm 11.16.0 or newer are required.
 
 ## 4. Locked decisions (no open questions)
 
@@ -126,7 +126,8 @@ These are restated here so the implementer does not need deployment-specific rul
    These guards are segment-aware so nested build output such as `src/App/bin/Debug/**` is also
    blocked. A repository may version an optional `.svn-mcp-policy.json` to allow intentional
    payloads; the MCP repository uses that to allow its root `bin/` runtime toolchain and
-   versioned release payloads without weakening normal project defaults.
+   versioned release payloads without weakening normal project defaults. Policy exceptions cannot
+   override credential-file guards for private keys, `.env*`, or `.npmrc`.
 8. Commit message format:
    ```
    <short summary>
@@ -266,17 +267,17 @@ missing).
 
 ## 7. Guard framework (applies across tools)
 
-- **G1 explicit targets:** mutating path-list tools require non-empty `paths[]`; source/destination tools require explicit `src` and `dest` (exceptions: `svn_update` with `updateAll:true`; `svn_cleanup` takes one `path`). No implicit `.`, no recursive default anywhere.
+- **G1 explicit targets:** mutating path-list tools require non-empty `paths[]`; source/destination tools require explicit `src` and `dest` (exceptions: `svn_update` with `updateAll:true`; `svn_cleanup` takes one `path`). No implicit `.`, no recursive default anywhere. Public path arrays are capped at 500 entries, filesystem paths at 4,096 characters, and repository locations at 8,192 characters.
 - **G2 READONLY:** `--readonly` (or legacy/dev `SVN_AGENT_READONLY=1`) → all §8.4 tools + `eol_fix_verified` refuse.
 - **G3 WC containment:** resolved paths must be inside the working copy (§6.3).
-- **G4 never-commit globs** (block in `svn_add`, `svn_move`, `svn_rename`, `svn_copy`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions, for example to version a toolchain payload in the MCP repository itself. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
+- **G4 never-commit globs** (block in `svn_add`, `svn_move`, `svn_rename`, `svn_copy`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`, `**/.npmrc`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions for generated payloads, for example to version a toolchain payload in the MCP repository itself. Credential-file guards cannot be overridden. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
   Policy shape:
   ```json
   { "neverCommit": { "allow": ["bin/**"], "deny": ["custom-generated/**"] } }
   ```
   Defaults stay strict when no policy file is present; policy is read from the working-copy root and never from an environment variable. Policy files are cached by working-copy root and mtime/size, and malformed or pathological policy globs fail with a `policy-error:` guard note.
   Repository-local `deny` rules are evaluated before repository-local `allow` rules, so a broad
-  allow exception cannot bypass a stricter project-specific deny.
+  allow exception cannot bypass a stricter project-specific deny or the immutable credential-file guards.
 - **G5 must-be-changed:** `svn_commit` verifies every listed path is actually modified/added/deleted per scoped status; unknown/clean path → refusal naming the path.
 - **G6 risky-slice ack:** `svn_commit` requires `riskAck:true` when any mechanical signal is present: a delete-scheduled path (status `D`), **more than 8 paths**, `version.ver` among the paths, or a build-system file among the paths (`*.sln`, `*.csproj`, `Directory.Build.props`, `Directory.Build.targets`, `*.props`, `*.targets`, `packages.config`). Refusal lists the triggered signals. Schema-changing / security-sensitive / scope-unclear risk is **not detectable** — the calling client's responsibility (§5.4).
 - **G7 no dangerous flags:** `--force` is never emitted. `svn_update` always gets `--accept postpone`. `svn_cleanup` never gets `--remove-unversioned`/`--remove-ignored`/`--vacuum-pristines`. `svn_resolved` requires an explicit `accept` value from the caller.
@@ -311,15 +312,16 @@ mixed-revision working copy from dirty local edits. Compact callers may project 
 camel-case fields instead of receiving every metadata field.
 
 **`svn_diff`** — `{ cwd?, paths: string[], ignoreEol?: boolean = true, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
-argv (default): `svn diff --internal-diff -x --ignore-eol-style <paths…>` — the generic
-commit-prep standard. `ignoreEol:false` → `svn diff --internal-diff <paths…>` (raw, for EOL
+argv (default): `svn diff --internal-diff -x --ignore-eol-style -- <paths…>` — the generic
+commit-prep standard. `ignoreEol:false` → `svn diff --internal-diff -- <paths…>` (raw, for EOL
 diagnosis). Extra fields: `per_file: [{path, added, removed, binary}]` (parsed from unified
 diff; `binary:true` when svn prints "Cannot display"), `diff_excerpt` (first `lineLimit`
 lines), `truncated`, `ignore_eol:boolean`. Property-only changes set `property_changed:true` and
 do not inflate source line counts. `lineLimit` is capped at 2,000. Compact response mode supports
 summary-only output or bounded hunks, with a 3,000-character default. `cursor` pages the streamed
 excerpt; `fileCursor` pages file summaries independently. Complete per-file counts are computed
-before public response shaping.
+before public response shaping, up to 20,000 file summaries. `per_file_truncated:true` reports
+when that internal cap is reached. A single streamed line is capped at 1 MiB and visibly marked.
 
 **`svn_log`** — `{ cwd?, paths?: string[], limit?: number = 10, verbose?: boolean = false, fullMessage?, changedPaths?, maxMessageChars?, maxChangedPaths?, cursor? }`
 argv: `svn log --xml -l <limit+1> [-v] [targets…]`; the extra entry determines whether a
@@ -344,7 +346,7 @@ returns counts and failing paths only unless `includePassing:true` is requested.
 default to 100 items and expose `nextCursor` when more remain.
 
 **`svn_propget`** — `{ cwd?, paths: string[], name: string, fields?: ("path"|"name"|"value")[], maxValueChars?, countOnly?, maxItems?, cursor? }`
-Pure read: `svn propget <name> --xml <paths…>`. Property names are bounded to ordinary SVN
+Pure read: `svn propget --xml -- <name> <paths…>`. Property names are bounded to ordinary SVN
 property-name characters (`A-Za-z0-9_.:-`, starting with a letter/underscore). Extra:
 `properties:[{path,name,value}]` and `missing_paths:string[]`; absent properties are
 successful reads with missing targets listed in `missing_paths`, not fatal SVN failures.
@@ -426,7 +428,7 @@ quoting are involved.
 ### 8.4 Mutating tools (all refused under READONLY)
 
 **`svn_add`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false }`
-argv: `svn add --parents --depth empty <paths…>` (files); intermediate parent directories are
+argv: `svn add --parents --depth empty -- <paths…>` (files); intermediate parent directories are
 scheduled as needed without recursively adding siblings. A directory path requires
 `allowRecursive:true` (then `--parents --depth infinity`). G4 enforced — can't add what may never be committed
 (`scratch/**` is reserved for local scratch files; never add).
@@ -435,8 +437,8 @@ scheduled as needed without recursively adding siblings. A directory path requir
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → warning appended to `note`, not refusal) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
-`svn commit -F <tmpfile> --depth empty <paths…>` → delete tmpfile (always, incl. on failure) →
-parse `Committed revision N.` → run scoped `svn status --xml <paths…>`.
+`svn commit -F <tmpfile> --depth empty -- <paths…>` → delete tmpfile (always, incl. on failure) →
+parse `Committed revision N.` → run scoped `svn status --xml -- <paths…>`.
 If an explicit file path is under newly-added parent directories, the commit argv includes only
 those scheduled-added ancestors plus the explicit path, so the caller does not need to name parent
 directories manually.
@@ -484,22 +486,26 @@ argv: `svn cleanup [path]` — releases stale WC locks (the `E155004` remedy). *
 (refused under READONLY) because it rewrites WC metadata.
 
 **`svn_propset_eol_style`** — `{ cwd?, paths: string[], style?: "native"|"LF"|"CRLF" = "native" }`
-argv: `svn propset svn:eol-style <style> <paths…>`. Guard: each target must currently be
+argv: `svn propset -- svn:eol-style <style> <paths…>`. Guard: each target must currently be
 **missing or mismatched** on the prop (checked via propget first) — mass re-propset of
-already-correct files is refused (preserve-existing rule, §5.6). Rarely needed once §10.2 lands.
+already-correct files is refused (preserve-existing rule, §5.6). Never-commit guards apply to every
+target. Rarely needed once §10.2 lands.
 
 **`svn_propset`** — `{ cwd?, paths: string[], name: string, value: string, riskAck?: boolean = false }`
-argv: `svn propset <name> <value> <paths…>`. Guard: explicit existing paths inside one working
+argv: `svn propset -- <name> <value> <paths…>`. Guard: explicit existing paths inside one working
 copy, READONLY refusal, never-commit target checks, bounded property names/values. `riskAck:true`
 is required for high-risk properties that can hide or redirect repository behavior:
 `svn:ignore`, `svn:global-ignores`, `svn:externals`, and `svn:auto-props`.
 
-**`svn_export`** — `{ cwd?, src: string, dest: string, revision?: string }` /
+**`svn_export`** — `{ cwd?, src: string, dest: string, revision?: string, externalDestAck?: boolean }` /
 **`svn_import`** — `{ cwd?, src: string, url: string, message: string }`
 argv: `svn export [-r rev] <src> <dest>` / `svn import -F <tmpfile> <src> <url>`. Explicit
 src+dest/url; `svn_export` validates revision strings before invoking SVN, and `svn_import`
 scans the source tree for never-commit descendants before invoking SVN. `svn_import` uses the
-same secure `-F` tempfile mechanics as commit. Purpose: MCP release packaging.
+  same secure `-F` tempfile mechanics as commit. Purpose: MCP release packaging. These tools are
+  intentionally support external filesystem paths: export may write to an explicit destination
+  outside a working copy only with `externalDestAck:true`, and import may read an explicit external
+  source after its bounded guard scan skips SVN administrative directories. READONLY mode refuses both.
 
 ## 9. Edge cases (defined so no doubts remain)
 
@@ -637,6 +643,16 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.20 / v1.1.2 — 2026-07-20
+
+- Makes credential-file guards immutable even when repository policy has broad allow exceptions.
+- Bounds streamed diff lines and per-file summaries, reports truncation, and maps buffered-output
+  overflow to a scoped diagnostic.
+- Adds finite public input limits and consistent SVN operand separators.
+- Accepts npm 12 and newer while retaining npm 11.16.0 as the minimum supported npm version.
+- Requires explicit acknowledgment for external export destinations, checks mixed revisions at the
+  working-copy root, and aligns EOL repair/property guards with the rest of the safety model.
 
 ### Spec 1.19 / v1.1.1 — 2026-07-20
 
@@ -966,8 +982,8 @@ stays read-only in failsafe mode.
 **Failsafe behavior:** the same policy in §5 applies, hand-executed:
 
 - Scoped commands only; explicit paths; no whole-tree status/diff.
-- Diff: `svn diff --internal-diff -x --ignore-eol-style <paths…>`.
-- Commit: message file + explicit file list (`svn commit -F <msgfile> <path1> …`), never inline
+- Diff: `svn diff --internal-diff -x --ignore-eol-style -- <paths…>`.
+- Commit: message file + explicit file list (`svn commit -F <msgfile> -- <path1> …`), never inline
   `-m`; message file created outside the working copy.
 - Never `--force`; updates only on operator request and with `--accept postpone`.
 - The never-commit list (§7 G4) and risky-slice stops (§5.4) remain in force as caller judgment.

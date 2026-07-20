@@ -45,7 +45,7 @@ export async function getWcContext(cwdInput?: string, pathHints: string[] = []):
   let lastRun: Awaited<ReturnType<typeof runSvn>> | null = null;
 
   for (const probe of wcProbeCandidates(cwdInput, pathHints)) {
-    const run = await runSvn(["info", "--xml", probe.target], probe.execCwd);
+    const run = await runSvn(["info", "--xml", "--", probe.target], probe.execCwd);
     if (run.exitCode !== 0) {
       lastRun = run;
       continue;
@@ -99,7 +99,12 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
     return failEnvelope("svn status --xml", context.cwd, resolved.note);
   }
 
-  const args = ["status", "--xml", ...(input.includeIgnored ? ["--no-ignore"] : []), ...(targets.length > 0 ? resolved.paths : [])];
+  const args = [
+    "status",
+    "--xml",
+    ...(input.includeIgnored ? ["--no-ignore"] : []),
+    ...(targets.length > 0 ? ["--", ...resolved.paths] : [])
+  ];
   const run = await runSvn(args, context.cwd);
   const parsed = run.exitCode === 0 ? parseStatusXml(run.stdout) : { changed_paths: [], conflicts: [] };
   const filtered = input.hideNoise ? filterNoisePaths(parsed.changed_paths, context.cwd, context.wcRoot) : {
@@ -130,7 +135,7 @@ export async function svnInfo(input: { cwd?: string; paths?: string[] }): Promis
     return failEnvelope("svn info --xml", context.cwd, resolved.note);
   }
 
-  const run = await runSvn(["info", "--xml", ...resolved.paths], context.cwd);
+  const run = await runSvn(["info", "--xml", "--", ...resolved.paths], context.cwd);
   const entries = run.exitCode === 0 ? parseInfoXml(run.stdout) : [];
   const versionNotes: string[] = [];
   let mixedRevision = false;
@@ -205,6 +210,7 @@ export async function svnDiff(input: {
     return {
       ...failEnvelope("svn diff", cwd, explicitError),
       per_file: [],
+      per_file_truncated: false,
       diff_excerpt: "",
       truncated: false
     };
@@ -215,6 +221,7 @@ export async function svnDiff(input: {
     return {
       ...context.envelope,
       per_file: [],
+      per_file_truncated: false,
       diff_excerpt: "",
       truncated: context.envelope.truncated
     };
@@ -225,6 +232,7 @@ export async function svnDiff(input: {
     return {
       ...failEnvelope("svn diff", context.cwd, resolved.note),
       per_file: [],
+      per_file_truncated: false,
       diff_excerpt: "",
       truncated: false
     };
@@ -234,12 +242,18 @@ export async function svnDiff(input: {
   const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
   const ignoreEol = input.ignoreEol ?? true;
   const args = ignoreEol
-    ? ["diff", "--internal-diff", "-x", "--ignore-eol-style", ...resolved.paths]
-    : ["diff", "--internal-diff", ...resolved.paths];
+    ? ["diff", "--internal-diff", "-x", "--ignore-eol-style", "--", ...resolved.paths]
+    : ["diff", "--internal-diff", "--", ...resolved.paths];
   const diffAccumulator = createDiffAccumulator(lineLimit, lineOffset);
   const run = await runSvnStreamingLines(args, context.cwd, diffAccumulator.pushLine, { stdoutLineLimit: lineLimit });
-  const rawDiff = run.exitCode === 0 ? diffAccumulator.summary() : { per_file: [], diff_excerpt: "", truncated: false };
-  const diff = { ...rawDiff, diff_excerpt: redactText(rawDiff.diff_excerpt) };
+  const rawDiff = run.exitCode === 0
+    ? diffAccumulator.summary()
+    : { per_file: [], per_file_truncated: false, diff_excerpt: "", truncated: false };
+  const diff = {
+    ...rawDiff,
+    diff_excerpt: redactText(rawDiff.diff_excerpt),
+    truncated: rawDiff.truncated || Boolean(run.truncated)
+  };
   const eolDiagnostic = run.exitCode !== 0 && isInconsistentEolRun(run)
     ? await eolCheck({ cwd: context.cwd, paths: resolved.paths })
     : null;
@@ -291,7 +305,7 @@ export async function svnLog(input: {
   if (input.cursor) {
     args.push("-r", `${input.cursor}:0`);
   }
-  args.push(...logTargets.targets);
+  args.push("--", ...logTargets.targets);
 
   const run = await runSvn(args, context.cwd);
   const parsedEntries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
@@ -407,7 +421,7 @@ export async function svnPropget(input: { cwd?: string; paths: string[]; name: s
     };
   }
 
-  const run = await runSvn(["propget", input.name, "--xml", ...resolved.paths], context.cwd);
+  const run = await runSvn(["propget", "--xml", "--", input.name, ...resolved.paths], context.cwd);
   const properties = parsePropgetProperties(run.stdout, context.cwd, context.wcRoot);
   const missingPaths = propertyMissingPaths(properties, resolved.paths, context.wcRoot);
   if (run.exitCode !== 0 && isMissingPropertyRun(run)) {
@@ -530,7 +544,7 @@ function mergeRevisionRange(
 
 async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<number | null> {
   let head: number | null = null;
-  const run = await runSvn(["info", "--xml", "-r", "HEAD", ...targets], cwd);
+  const run = await runSvn(["info", "--xml", "-r", "HEAD", "--", ...targets], cwd);
   if (run.exitCode !== 0) {
     return null;
   }
@@ -544,14 +558,14 @@ async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<num
 }
 
 async function eolStylesForTargets(cwd: string, targets: string[]): Promise<Map<string, string>> {
-  const batched = await runSvn(["propget", "svn:eol-style", "--xml", ...targets], cwd);
+  const batched = await runSvn(["propget", "--xml", "--", "svn:eol-style", ...targets], cwd);
   if (batched.exitCode === 0) {
     return parsePropgetEolStyles(batched.stdout, cwd);
   }
 
   const styles = new Map<string, string>();
   for (const target of targets) {
-    const prop = await runSvn(["propget", "svn:eol-style", target], cwd);
+    const prop = await runSvn(["propget", "--", "svn:eol-style", target], cwd);
     if (prop.exitCode === 0 && prop.stdout.trim()) {
       styles.set(pathIdentityKey(target), prop.stdout.trim());
     }
@@ -659,7 +673,7 @@ async function repositoryLogTargets(cwd: string, paths: string[]): Promise<{
   mode: "repository-url" | "working-copy-path";
   note: string;
 }> {
-  const info = await runSvn(["info", "--xml", ...paths], cwd);
+  const info = await runSvn(["info", "--xml", "--", ...paths], cwd);
   if (info.exitCode !== 0) {
     return { targets: paths, mode: "working-copy-path", note: "" };
   }

@@ -260,6 +260,14 @@ describe("public MCP response shaping", () => {
     expect(summary.truncated).toBe(false);
     expect(summary).not.toHaveProperty("nextCursor");
 
+    const cappedSummary = toToolResult("svn_diff", { ...payload, per_file_truncated: true }, {
+      responseMode: "compact",
+      request: { diffMode: "summary" }
+    }).structuredContent;
+    expect(cappedSummary.fileSummaryTruncated).toBe(true);
+    expect(cappedSummary.truncated).toBe(true);
+    expect(cappedSummary).not.toHaveProperty("nextFileCursor");
+
     const compact = toToolResult("svn_diff", payload, {
       responseMode: "compact",
       request: { diffMode: "compact", maxChars: 400, maxHunksPerFile: 1 }

@@ -13,7 +13,6 @@ import {
   resolveCwd,
   resolveTargetsInsideWc
 } from "../guards.js";
-import { parseDiffText } from "../parse/diffText.js";
 import { runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 import {
@@ -139,7 +138,7 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
     });
   }
 
-  const version = await runSvnVersion(context.cwd, context.cwd);
+  const version = await runSvnVersion(context.wcRoot, context.cwd);
   const mixedRevision = version.exitCode === 0 && version.stdout.includes(":");
   const verdict = guardNotes.length > 0
     ? "GUARD_BLOCKED"
@@ -223,7 +222,7 @@ export async function eolFixVerified(input: {
     };
   }
 
-  const prop = await runSvn(["propget", "svn:eol-style", filePath], context.cwd);
+  const prop = await runSvn(["propget", "--", "svn:eol-style", filePath], context.cwd);
   const eolStyle = prop.exitCode === 0 ? prop.stdout.trim() || null : null;
   const target = normalizeEolTarget(input.target, eolStyle);
   const converter = converterForEolTarget(target);
@@ -266,7 +265,9 @@ export async function eolFixVerified(input: {
 
   const after = await sniffEol(filePath);
   const diff = await svnDiff({ cwd: context.cwd, paths: [filePath], ignoreEol: true, lineLimit: defaultDiffLineLimit() });
-  const pureEolChurn = diff.ok && diff.diff_excerpt.trim() === "";
+  const pureEolChurn = diff.ok && !diff.per_file_truncated && diff.per_file.every((file) =>
+    file.added === 0 && file.removed === 0 && !file.binary && !file.property_changed
+  );
 
   return {
     ...envelopeFromRun({

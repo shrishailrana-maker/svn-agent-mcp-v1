@@ -12,7 +12,7 @@ export function parseDiffText(text: string, lineLimit: number): DiffSummary {
   return accumulator.summary();
 }
 
-export function createDiffAccumulator(lineLimit: number, lineOffset = 0): {
+export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLimit = 20000): {
   pushLine: (line: string) => void;
   summary: () => DiffSummary;
 } {
@@ -21,6 +21,22 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0): {
   const excerptLines: string[] = [];
   let totalLines = 0;
   let inPropertyChanges = false;
+  let perFileTruncated = false;
+
+  function getOrCreateFile(filePath: string): DiffFileSummary | null {
+    const existing = perFile.get(filePath);
+    if (existing) {
+      return existing;
+    }
+    if (perFile.size >= fileLimit) {
+      perFileTruncated = true;
+      return null;
+    }
+
+    const created = { path: filePath, added: 0, removed: 0, binary: false };
+    perFile.set(filePath, created);
+    return created;
+  }
 
   return {
     pushLine(line: string): void {
@@ -32,27 +48,17 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0): {
       const indexMatch = /^Index: (.+)$/.exec(line);
       if (indexMatch) {
         inPropertyChanges = false;
-        current = {
-          path: indexMatch[1] ?? "",
-          added: 0,
-          removed: 0,
-          binary: false
-        };
-        perFile.set(current.path, current);
+        current = getOrCreateFile(indexMatch[1] ?? "");
         return;
       }
 
       const propertyMatch = /^Property changes on: (.+)$/.exec(line);
       if (propertyMatch) {
         const propertyPath = propertyMatch[1] ?? "";
-        current = perFile.get(propertyPath) ?? {
-          path: propertyPath,
-          added: 0,
-          removed: 0,
-          binary: false
-        };
-        current.property_changed = true;
-        perFile.set(propertyPath, current);
+        current = getOrCreateFile(propertyPath);
+        if (current) {
+          current.property_changed = true;
+        }
         inPropertyChanges = true;
         return;
       }
@@ -75,6 +81,7 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0): {
     summary(): DiffSummary {
       return {
         per_file: [...perFile.values()],
+        per_file_truncated: perFileTruncated,
         diff_excerpt: excerptLines.join("\n"),
         truncated: totalLines > lineOffset + lineLimit
       };

@@ -33,7 +33,7 @@ error at the protocol level, or envelopes/`svn_diagnose` report "MCP svn runtime
 switch to scoped raw `svn` CLI for the rest of the session instead of stalling:
 
 - Follow the same rules in this file by hand: scoped explicit paths, ignored-EOL diff
-  (`svn diff --internal-diff -x --ignore-eol-style <paths…>`), commit via `-F` message file plus
+  (`svn diff --internal-diff -x --ignore-eol-style -- <paths…>`), commit via `-F` message file plus
   explicit file list, never `--force`, update only on user request with `--accept postpone`,
   never-commit list still applies, EOL repair via `unix2dos`/`dos2unix` binaries only.
 - A guard refusal is not a failure. Never use the CLI to redo something the MCP refused

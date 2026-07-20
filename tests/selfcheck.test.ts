@@ -41,7 +41,7 @@ describe("svn self-check", () => {
       await fs.mkdir(path.join(packageRoot, "bin"), { recursive: true });
       await writeRuntimeFiles(packageRoot, "win32");
 
-      const layout = await inspectRuntimeLayout(packageRoot, "1.1.1");
+      const layout = await inspectRuntimeLayout(packageRoot, "1.1.2");
 
       expect(layout).toEqual({
         runtimeLayout: "npm-package",
@@ -51,7 +51,7 @@ describe("svn self-check", () => {
         currentTarget: null,
         currentRelease: null,
         currentMatchesPackage: false,
-        releaseRoot: path.join(packageRoot, "releases", "v1.1.1"),
+        releaseRoot: path.join(packageRoot, "releases", "v1.1.2"),
         binFileCount: 35,
         distFileCount: 60
       });
@@ -69,7 +69,7 @@ describe("svn self-check", () => {
       await fs.writeFile(path.join(packageRoot, "bin", "svn.exe"), "runtime");
       await fs.writeFile(path.join(packageRoot, "dist", "index.js"), "runtime");
 
-      const layout = await inspectRuntimeLayout(packageRoot, "1.1.1");
+      const layout = await inspectRuntimeLayout(packageRoot, "1.1.2");
 
       expect(layout.runtimeLayout).toBe("source-tree");
       expect(layout.layoutOk).toBe(false);
@@ -84,7 +84,7 @@ describe("svn self-check", () => {
     try {
       await writeRuntimeFiles(packageRoot, "linux");
 
-      const layout = await inspectRuntimeLayout(packageRoot, "1.1.1", "linux");
+      const layout = await inspectRuntimeLayout(packageRoot, "1.1.2", "linux");
 
       expect(layout.runtimeLayout).toBe("npm-package");
       expect(layout.layoutOk).toBe(true);
@@ -103,7 +103,7 @@ describe("svn self-check", () => {
       await fs.writeFile(path.join(packageRoot, "bin", "svn.exe"), "runtime");
       await fs.writeFile(path.join(packageRoot, "dist", "index.js"), "runtime");
 
-      const layout = await inspectRuntimeLayout(packageRoot, "1.1.1");
+      const layout = await inspectRuntimeLayout(packageRoot, "1.1.2");
 
       expect(layout.runtimeLayout).toBe("source-tree");
       expect(layout.layoutOk).toBe(false);

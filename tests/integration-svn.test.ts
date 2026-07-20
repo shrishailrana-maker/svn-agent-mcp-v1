@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnPrecommit } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { svnAdd, svnCommit, svnCopy, svnExport, svnImport, svnMove, svnPropset, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { svnAdd, svnCommit, svnCopy, svnExport, svnImport, svnMove, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
@@ -29,14 +29,14 @@ describe("SVN tool integration against a temp repository", () => {
       expect(damaged.verdict).toBe("EOL_FIX_NEEDED");
 
       const diff = await svnDiff({ cwd: fixture.wc, paths: ["app.txt"] });
-      expectSvnArgs(diff.command, "diff --internal-diff -x --ignore-eol-style");
+      expectSvnArgs(diff.command, "diff --internal-diff -x --ignore-eol-style --");
 
       const fixed = await eolFixVerified({ cwd: fixture.wc, path: "app.txt" });
       expect(fixed.ok).toBe(true);
       expect(fixed.command.toLowerCase()).toContain("unix2dos");
       expect(fixed.command.toLowerCase()).not.toContain("powershell");
       expect(fixed.converter).toBe("unix2dos");
-      expectSvnArgs(String(fixed.verification_command), "diff --internal-diff -x --ignore-eol-style");
+      expectSvnArgs(String(fixed.verification_command), "diff --internal-diff -x --ignore-eol-style --");
       expect(fixed.pure_eol_churn).toBe(false);
 
       const ready = await svnPrecommit({ cwd: fixture.wc, paths: ["app.txt"] });
@@ -76,6 +76,36 @@ describe("SVN tool integration against a temp repository", () => {
       expect(info.remote_head_revision).toBe(committed.revision);
       expect(info.note).toContain("mixed revision working copy");
       expect(info.note).not.toContain("local modifications present");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("detects mixed working-copy roots from subdirectory commit flows", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const directory = path.join(fixture.wc, "subdir");
+      const file = path.join(directory, "nested.txt");
+      fs.mkdirSync(directory);
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["subdir/nested.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["subdir/nested.txt"],
+        message: commitMessage("Add nested fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, "two\r\n", "utf8");
+      const precommit = await svnPrecommit({ cwd: directory, paths: ["nested.txt"] });
+      expect(precommit.note).toContain("mixed revision working copy");
+
+      const committed = await svnCommit({
+        cwd: directory,
+        paths: ["nested.txt"],
+        message: commitMessage("Update nested fixture")
+      });
+      expect(committed.ok).toBe(true);
+      expect(committed.note).toContain("mixed revision working copy");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -225,6 +255,28 @@ describe("SVN tool integration against a temp repository", () => {
       expect(imported.ok).toBe(false);
       expect(imported.note).toContain("never-commit path");
       expect(imported.note).toContain("node_modules");
+    } finally {
+      fs.rmSync(srcRoot, { recursive: true, force: true });
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips SVN administrative metadata while scanning an import source", async () => {
+    const fixture = createTempWorkingCopy();
+    const srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-import-admin-"));
+    try {
+      fs.mkdirSync(path.join(srcRoot, ".svn"), { recursive: true });
+      fs.writeFileSync(path.join(srcRoot, ".svn", "private.key"), "not imported", "utf8");
+      fs.writeFileSync(path.join(srcRoot, "safe.txt"), "safe\r\n", "utf8");
+
+      const imported = await svnImport({
+        cwd: fixture.wc,
+        src: srcRoot,
+        url: `${pathToFileURL(fixture.repo).href}/admin-skip`,
+        message: commitMessage("Import tree without admin metadata")
+      });
+
+      expect(imported.ok).toBe(true);
     } finally {
       fs.rmSync(srcRoot, { recursive: true, force: true });
       fs.rmSync(fixture.root, { recursive: true, force: true });
@@ -444,6 +496,31 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("requires an explicit acknowledgment for export destinations outside a working copy", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const destination = path.join(fixture.root, "external-export");
+      const refused = await svnExport({
+        cwd: fixture.wc,
+        src: pathToFileURL(fixture.repo).href,
+        dest: destination
+      });
+      expect(refused.ok).toBe(false);
+      expect(refused.note).toContain("externalDestAck:true");
+
+      const exported = await svnExport({
+        cwd: fixture.wc,
+        src: pathToFileURL(fixture.repo).href,
+        dest: destination,
+        externalDestAck: true
+      });
+      expect(exported.ok).toBe(true);
+      expect(fs.existsSync(destination)).toBe(true);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("treats dash-prefixed export destinations and property values as operands", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -532,6 +609,34 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("does not call an EOL repair pure when a property-only diff remains", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "property-eol.txt");
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["property-eol.txt"] })).ok).toBe(true);
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: ["property-eol.txt"], style: "LF" })).ok).toBe(true);
+
+      const fixed = await eolFixVerified({ cwd: fixture.wc, path: "property-eol.txt" });
+      expect(fixed.ok).toBe(true);
+      expect(fixed.pure_eol_churn).toBe(false);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies never-commit guards to EOL property writes", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "private.key"), "secret\r\n", "utf8");
+      const result = await svnPropsetEolStyle({ cwd: fixture.wc, paths: ["private.key"] });
+      expect(result.ok).toBe(false);
+      expect(result.note).toContain("never-commit path");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("returns a structured EOL repair refusal for missing files", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -556,7 +661,7 @@ describe("SVN tool integration against a temp repository", () => {
 
       const moved = await svnMove({ cwd: fixture.wc, src: "source.txt", dest: "moved/source.txt" });
       expect(moved.ok).toBe(true);
-      expectSvnArgs(moved.command, "move --parents");
+      expectSvnArgs(moved.command, "move --parents --");
       expect(statusByPath(moved.changed_paths, fixture.wc).get("source.txt")).toBe("D");
       expect(statusByPath(moved.changed_paths, fixture.wc).get("moved/source.txt")).toBe("A");
       expect((await svnCommit({
@@ -568,7 +673,7 @@ describe("SVN tool integration against a temp repository", () => {
 
       const copied = await svnCopy({ cwd: fixture.wc, src: "moved/source.txt", dest: "copies/source-copy.txt" });
       expect(copied.ok).toBe(true);
-      expectSvnArgs(copied.command, "copy --parents");
+      expectSvnArgs(copied.command, "copy --parents --");
       expect(statusByPath(copied.changed_paths, fixture.wc).get("copies/source-copy.txt")).toBe("A");
       expect((await svnCommit({
         cwd: fixture.wc,
@@ -578,7 +683,7 @@ describe("SVN tool integration against a temp repository", () => {
 
       const renamed = await svnRename({ cwd: fixture.wc, src: "moved/source.txt", dest: "moved/final.txt" });
       expect(renamed.ok).toBe(true);
-      expectSvnArgs(renamed.command, "move --parents");
+      expectSvnArgs(renamed.command, "move --parents --");
       expect(statusByPath(renamed.changed_paths, fixture.wc).get("moved/source.txt")).toBe("D");
       expect(statusByPath(renamed.changed_paths, fixture.wc).get("moved/final.txt")).toBe("A");
       expect((await svnCommit({
@@ -712,7 +817,7 @@ describe("SVN tool integration against a temp repository", () => {
       const reverted = await svnRevert({ cwd: fixture.wc, paths: ["dir", "file.txt"], allowRecursive: true, dryRun: false });
 
       expect(reverted.ok).toBe(true);
-      expect(reverted.command).toContain("--depth infinity");
+      expect(reverted.command).toContain("--depth infinity --");
       expect(fs.readFileSync(path.join(fixture.wc, "dir", "nested.txt"), "utf8")).toBe("one\r\n");
       expect(fs.readFileSync(path.join(fixture.wc, "file.txt"), "utf8")).toBe("one\r\n");
     } finally {

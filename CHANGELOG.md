@@ -2,6 +2,26 @@
 
 All notable changes to the SVN MCP are recorded here.
 
+## [1.1.2] - 2026-07-20
+
+### Fixed
+
+- Prevented repository policy allow rules from overriding private-key, `.env*`, and `.npmrc`
+  never-commit guards.
+- Bounded individual streamed diff lines and per-file summaries, with explicit truncation signals.
+- Mapped buffered SVN output overflow to a scoped diagnostic instead of a generic failure.
+- Added consistent `--` operand separators to SVN commands as defense in depth.
+- Added finite public limits for path arrays, path strings, repository locations, messages, and cursors.
+- Accepted npm 12 and newer without an engine warning while keeping npm 11.16.0 as the minimum.
+- Required `externalDestAck:true` before exporting outside a working copy.
+- Checked mixed revisions at the working-copy root during precommit and commit flows.
+- Based EOL repair proof on complete per-file summaries and applied never-commit guards to EOL props.
+- Skipped `.svn` administrative directories during recursive add/import guard scans.
+
+### Documentation
+
+- Documented import/export filesystem reach, immutable credential guards, and output-size limits.
+
 ## [1.1.1] - 2026-07-20
 
 ### Added

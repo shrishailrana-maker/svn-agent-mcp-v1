@@ -76,10 +76,10 @@ export async function svnDiagnose(input: { cwd?: string; paths?: string[] }): Pr
   }
 
   const [localStatus, remoteStatus, remoteInfo, log] = await Promise.all([
-    runDiagnostic("local_status", ["status", "--xml", ...resolved.paths], context.cwd),
-    runDiagnostic("remote_status", ["status", "--show-updates", "--xml", ...resolved.paths], context.cwd),
-    runDiagnostic("remote_info_head", ["info", "--xml", "-r", "HEAD", ...resolved.paths], context.cwd),
-    runDiagnostic("log_latest", ["log", "--xml", "-l", "1", context.cwd], context.cwd)
+    runDiagnostic("local_status", ["status", "--xml", "--", ...resolved.paths], context.cwd),
+    runDiagnostic("remote_status", ["status", "--show-updates", "--xml", "--", ...resolved.paths], context.cwd),
+    runDiagnostic("remote_info_head", ["info", "--xml", "-r", "HEAD", "--", ...resolved.paths], context.cwd),
+    runDiagnostic("log_latest", ["log", "--xml", "-l", "1", "--", context.cwd], context.cwd)
   ]);
 
   for (const result of [localStatus, remoteStatus, remoteInfo, log]) {
