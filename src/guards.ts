@@ -26,7 +26,11 @@ export const sensitiveNeverCommitGlobs = [
   "**/*.p12",
   "**/*.snk",
   "**/.env*",
-  "**/.npmrc"
+  "**/.npmrc",
+  "**/.git/**",
+  "**/.hg/**",
+  "**/.svn/**",
+  "**/.ssh/**"
 ];
 
 export const neverCommitGlobs = [...overridableNeverCommitGlobs, ...sensitiveNeverCommitGlobs];
@@ -43,6 +47,7 @@ type LoadedNeverCommitPolicy = {
   deny: string[];
   invalid?: string;
   exists: boolean;
+  regular: boolean;
   mtimeMs: number;
   size: number;
 };
@@ -51,6 +56,7 @@ const MAX_POLICY_GLOBS = 128;
 const MAX_POLICY_GLOB_LENGTH = 256;
 const MAX_POLICY_DOUBLESTAR_SEGMENTS = 4;
 const MAX_POLICY_GLOB_WILDCARDS = 8;
+const MAX_POLICY_BYTES = 64 * 1024;
 const policyCache = new Map<string, LoadedNeverCommitPolicy>();
 
 const buildSystemNames = new Set([
@@ -86,10 +92,7 @@ export function resolveTargetsInsideWc(cwd: string, wcRoot: string, paths: strin
   const realRoot = realPathOfNearestExisting(wcRoot);
   const canonical = resolved.map((target) => realPathOfNearestExisting(target));
   for (const [index, target] of resolved.entries()) {
-    const realTarget = canonical[index];
-    if (!realTarget) {
-      return { ok: false, note: `path outside working copy: ${target}` };
-    }
+    const realTarget = canonical[index]!;
     if (!isInsideOrEqual(target, wcRoot) && !isInsideOrEqual(realTarget, realRoot)) {
       return { ok: false, note: `path outside working copy: ${target}` };
     }
@@ -263,14 +266,43 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
   const cacheKey = pathIdentityKey(wcRoot);
   const stat = safePolicyStat(policyPath);
   const cached = policyCache.get(cacheKey);
-  if (cached && cached.exists === stat.exists && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+  if (cached && cached.exists === stat.exists && cached.regular === stat.regular
+    && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     return cached;
   }
 
   if (!stat.exists) {
-    const empty = { allow: [], deny: [], exists: false, mtimeMs: 0, size: 0 };
+    const empty = { allow: [], deny: [], exists: false, regular: false, mtimeMs: 0, size: 0 };
     policyCache.set(cacheKey, empty);
     return empty;
+  }
+
+  if (!stat.regular) {
+    const invalid = {
+      allow: [],
+      deny: [],
+      invalid: "policy-error: .svn-mcp-policy.json must be a regular file",
+      exists: true,
+      regular: false,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size
+    };
+    policyCache.set(cacheKey, invalid);
+    return invalid;
+  }
+
+  if (stat.size > MAX_POLICY_BYTES) {
+    const invalid = {
+      allow: [],
+      deny: [],
+      invalid: `policy-error: .svn-mcp-policy.json is too large (max ${MAX_POLICY_BYTES} bytes)`,
+      exists: true,
+      regular: true,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size
+    };
+    policyCache.set(cacheKey, invalid);
+    return invalid;
   }
 
   try {
@@ -283,6 +315,7 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
       deny,
       ...(invalid ? { invalid } : {}),
       exists: true,
+      regular: true,
       mtimeMs: stat.mtimeMs,
       size: stat.size
     };
@@ -294,6 +327,7 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
       deny: [],
       invalid: "policy-error: invalid .svn-mcp-policy.json",
       exists: true,
+      regular: true,
       mtimeMs: stat.mtimeMs,
       size: stat.size
     };
@@ -333,12 +367,12 @@ function validatePolicyGlobs(globs: string[]): string | undefined {
   return undefined;
 }
 
-function safePolicyStat(policyPath: string): { exists: boolean; mtimeMs: number; size: number } {
+function safePolicyStat(policyPath: string): { exists: boolean; regular: boolean; mtimeMs: number; size: number } {
   try {
-    const stat = fs.statSync(policyPath);
-    return { exists: stat.isFile(), mtimeMs: stat.mtimeMs, size: stat.size };
+    const stat = fs.lstatSync(policyPath);
+    return { exists: true, regular: stat.isFile(), mtimeMs: stat.mtimeMs, size: stat.size };
   } catch {
-    return { exists: false, mtimeMs: 0, size: 0 };
+    return { exists: false, regular: false, mtimeMs: 0, size: 0 };
   }
 }
 

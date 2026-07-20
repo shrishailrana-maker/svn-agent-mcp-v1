@@ -22,8 +22,8 @@ read-only client configuration.
 
 Register the SVN MCP once globally without a project-specific launch `cwd` and without normal-use
 environment variables. Tool calls that provide absolute paths infer the nearest SVN working copy
-for those paths. Relative paths continue to resolve against explicit per-call `cwd`, or the MCP
-process cwd when no `cwd` is provided.
+for those paths. Relative paths require an explicit per-call `cwd` so they cannot accidentally bind
+to the MCP process working directory.
 
 Read-only clients use the `--readonly` launch argument. `SVN_AGENT_*` variables remain only
 as development/test escape hatches.
@@ -36,7 +36,6 @@ as development/test escape hatches.
   from `PATH` without per-client path configuration.
 - Clients should prefer absolute paths for zero-friction multi-repo tool calls.
 - Client registration remains static; the MCP does not rewrite client configuration at runtime.
-- Relative-path-only workflows still need either a meaningful client process cwd or explicit
-  per-call `cwd`.
+- Relative-path-only workflows need explicit per-call `cwd`.
 - `svn_self_check` verifies the runtime layout and resolved toolchain; `svn_diagnose` verifies
   read-only working-copy health without adding repo-specific client configuration.

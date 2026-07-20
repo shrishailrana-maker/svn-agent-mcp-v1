@@ -86,9 +86,12 @@ describe("guards and EOL sniffing", () => {
         "utf8"
       );
 
-      expect(neverCommitHit(path.join(root, "config", "signing.key"), root)).toBe("**/*.key");
-      expect(neverCommitHit(path.join(root, ".env.production"), root)).toBe("**/.env*");
-      expect(neverCommitHit(path.join(root, ".npmrc"), root)).toBe("**/.npmrc");
+    expect(neverCommitHit(path.join(root, "config", "signing.key"), root)).toBe("**/*.key");
+    expect(neverCommitHit(path.join(root, ".env.production"), root)).toBe("**/.env*");
+    expect(neverCommitHit(path.join(root, ".npmrc"), root)).toBe("**/.npmrc");
+    expect(neverCommitHit(path.join(root, ".git", "config"), root)).toBe("**/.git/**");
+    expect(neverCommitHit(path.join(root, ".hg", "hgrc"), root)).toBe("**/.hg/**");
+    expect(neverCommitHit(path.join(root, ".ssh", "id_rsa"), root)).toBe("**/.ssh/**");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -113,6 +116,30 @@ describe("guards and EOL sniffing", () => {
         "utf8"
       );
       expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("policy-error:");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized repository-local policies before parsing them", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-policy-large-"));
+    try {
+      fs.writeFileSync(path.join(root, ".svn-mcp-policy.json"), " ".repeat(64 * 1024 + 1), "utf8");
+
+      expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("policy-error:");
+      expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("too large");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a non-regular repository policy path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-policy-type-"));
+    try {
+      fs.mkdirSync(path.join(root, ".svn-mcp-policy.json"));
+
+      expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("policy-error:");
+      expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("regular file");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

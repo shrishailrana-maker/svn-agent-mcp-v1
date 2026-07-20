@@ -27,12 +27,15 @@ try {
   run(svn, ["checkout", pathToFileURL(repository).href, workingCopy]);
 
   const seed = path.join(workingCopy, "seed.txt");
+  const commitMessageFile = path.join(temporaryRoot, "commit-message.txt");
   fs.writeFileSync(seed, "revision 1\r\n", "utf8");
   run(svn, ["add", seed], workingCopy);
-  run(svn, ["commit", seed, "-m", "Add benchmark seed"], workingCopy);
+  fs.writeFileSync(commitMessageFile, "Add benchmark seed\n", "utf8");
+  run(svn, ["commit", seed, "-F", commitMessageFile], workingCopy);
   for (let revision = 2; revision <= 10; revision += 1) {
     fs.writeFileSync(seed, `revision ${revision}\r\n`, "utf8");
-    run(svn, ["commit", seed, "-m", `Benchmark revision ${revision}`], workingCopy);
+    fs.writeFileSync(commitMessageFile, `Benchmark revision ${revision}\n`, "utf8");
+    run(svn, ["commit", seed, "-F", commitMessageFile], workingCopy);
   }
   run(svn, ["checkout", pathToFileURL(repository).href, cleanWorkingCopy]);
 

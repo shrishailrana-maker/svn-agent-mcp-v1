@@ -23,10 +23,20 @@ Please do not publish exploit details until a fix or mitigation is available.
 ## Security Boundaries
 
 - Repository policy `allow` rules may override generated-output guards for intentional runtime
-  payloads. They cannot permit credential-like files such as private keys, `.env*`, or `.npmrc`.
+  payloads. They cannot permit credential-like files such as private keys, `.env*`, `.npmrc`,
+  `.ssh` content, or VCS administration directories.
 - `svn_export` may write to an explicit destination outside a working copy only when the caller sets
   `externalDestAck:true`, and `svn_import` may read an explicit source outside one. Both are refused
-  in read-only mode; import scans its source for never-commit paths before invoking SVN.
+  in read-only mode; import scans its source for never-commit paths and refuses symbolic links or
+  directory junctions before invoking SVN.
 - Buffered SVN output is limited to 20 MB. Streamed diff lines are limited to 1 MiB, and diff file
   summaries are limited to 20,000 entries. Truncation and over-limit failures are reported rather
   than silently discarded.
+- Response redaction covers credential-bearing URLs and common secret query parameters, but it is
+  not a substitute for keeping credentials out of versioned file content and commit messages.
+- SVN and conversion processes inherit the host environment so native credential caches, proxy
+  settings, home directories, and configured SSH transports continue to work. Treat MCP process
+  environment variables as trusted operator configuration and do not place secrets in debug logs.
+- The bundled Windows Subversion runtime is the redistributable VisualSVN command-line package.
+  Its source archive hash, individual file hashes, and upstream license texts are retained in the
+  repository. The package does not ship separate OpenSSL runtime DLLs.

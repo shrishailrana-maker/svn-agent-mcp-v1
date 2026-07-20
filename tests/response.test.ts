@@ -152,6 +152,26 @@ describe("public MCP response shaping", () => {
     expect(full.content[0]?.text).toBe(JSON.stringify(payload, null, 2));
   });
 
+  it("redacts parsed fields in standard and full responses", () => {
+    const payload = {
+      ...createEnvelope({ ok: true, command: "svn log --xml", cwd: "E:\\dev\\example" }),
+      entries: [{
+        rev: 42,
+        author: "user",
+        date: "2026-07-20T00:00:00Z",
+        msg: "See https://user:secret@example.com/repo?token=abc123",
+        changed_paths: [{ status: "M", path: "/trunk/file.txt?apikey=def456" }]
+      }]
+    };
+
+    for (const responseMode of ["standard", "full"] as const) {
+      const serialized = JSON.stringify(toToolResult("svn_log", payload, { responseMode }));
+      expect(serialized).not.toContain("secret");
+      expect(serialized).not.toContain("abc123");
+      expect(serialized).not.toContain("def456");
+    }
+  });
+
   it("keeps an SVN warning once without restoring successful raw stdout", () => {
     const result = toToolResult("svn_status", createEnvelope({
       ok: true,
@@ -729,6 +749,7 @@ describe("public MCP response shaping", () => {
       current_path: "E:\\dev\\example\\current",
       current_target: "E:\\dev\\example\\releases\\v1.0.0",
       current_matches_package: true,
+      runtime_layout_ok: true,
       toolchain_ok: true,
       startup_probe: { svn: { ok: true }, dos2unix: { ok: true }, unix2dos: { ok: true } }
     };
@@ -751,5 +772,28 @@ describe("public MCP response shaping", () => {
     }).structuredContent;
     expect(detailed.current_path).toBe("E:\\dev\\example\\current");
     expect(detailed.stdout_summary).toBe("");
+  });
+
+  it("does not call an incomplete matching release available", () => {
+    const payload = {
+      ...createEnvelope({
+        ok: false,
+        command: "svn_self_check",
+        cwd: "E:\\dev\\example",
+        note: "release payload is incomplete"
+      }),
+      server_version: "1.1.2",
+      toolchain_ok: true,
+      runtime_layout_ok: false,
+      current_matches_package: true
+    };
+
+    const result = toToolResult("svn_self_check", payload, {
+      responseMode: "compact",
+      request: {}
+    }).structuredContent;
+
+    expect(result.ok).toBe(false);
+    expect(result.available).toBe(false);
   });
 });

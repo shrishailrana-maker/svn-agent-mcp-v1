@@ -6,7 +6,7 @@ import { startupProbe } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 
 export async function svnSelfCheck(input: { cwd?: string }, runningServerVersion?: string): Promise<ToolEnvelope> {
-  const root = await projectRoot();
+  const root = await findProjectRoot();
   const packageJson = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as {
     version: string;
     scripts?: Record<string, string>;
@@ -121,21 +121,24 @@ async function runtimePayloadComplete(
   )).every(Boolean);
 }
 
-async function projectRoot(): Promise<string> {
-  let current = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
+export async function findProjectRoot(start = path.dirname(fileURLToPath(import.meta.url))): Promise<string> {
+  let current = path.resolve(start);
 
   while (true) {
     const candidate = path.join(current, "package.json");
     try {
-      await fs.access(candidate);
-      return current;
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        throw new Error("could not locate package.json");
+      const packageJson = JSON.parse(await fs.readFile(candidate, "utf8")) as { name?: unknown };
+      if (packageJson.name === "svn-agent-mcp") {
+        return current;
       }
-      current = parent;
+    } catch {
+      // Continue to the parent when the manifest is missing, unreadable, or malformed.
     }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      throw new Error("could not locate svn-agent-mcp package.json");
+    }
+    current = parent;
   }
 }
 

@@ -2,6 +2,49 @@
 
 All notable changes to the SVN MCP are recorded here.
 
+## [Unreleased]
+
+## [1.1.3] - 2026-07-20
+
+### Security
+
+- Replaced the SlikSVN payload and its outdated OpenSSL 3.0.16 DLLs with the July 2026
+  redistributable VisualSVN Apache Subversion 1.14.5 command-line package.
+- Added complete upstream license and Subversion notice files for the bundled Windows runtime.
+- Redacted secret-like URL values from parsed fields in standard and full MCP responses.
+- Rejected repository policy files larger than 64 KiB and non-regular policy paths before reading
+  or parsing them.
+- Made `.git`, `.hg`, `.svn`, and `.ssh` directory contents immutable never-commit paths.
+- Bounded XML entity expansion in all SVN XML parsers and continued to reject external entities.
+- Pinned GitHub Actions to immutable commit hashes.
+
+### Fixed
+
+- Treated literal `@` characters safely according to each SVN subcommand's operand semantics,
+  including VisualSVN's distinct move and copy destination parsing.
+- Refused symbolic links and Windows directory junctions in recursive import/add scans so SVN
+  cannot follow them into unscanned external content.
+- Made batched EOL property writes skip already-correct paths while updating the remaining paths.
+- Allowed `eol_fix_verified` dry runs in read-only mode because they do not modify the working copy.
+- Redacted identity-like URL query values including usernames, email addresses, and client IDs.
+- Reported unknown future SVN status values explicitly instead of synthesizing a potentially
+  misleading known status code.
+- Required self-check package-root discovery to match the `svn-agent-mcp` package name.
+- Replaced inline benchmark commit messages with temporary `-F` message files.
+- Derived the MCP server version from `package.json` so release version bumps cannot leave the
+  running server on stale metadata.
+- Prevented compact self-check from reporting an incomplete runtime layout as available.
+- Removed the per-file fallback process fan-out when a batched EOL property query returns partial
+  XML alongside SVN's expected missing-property exit code.
+- Failed EOL checks on genuine property-query errors or malformed XML rather than treating them as
+  paths without an EOL property.
+- Built `dist/` automatically before npm packing and made the packed-install smoke test launch the
+  installed `svn-agent-mcp` command shim.
+
+### Performance
+
+- Ran independent startup tool probes concurrently.
+
 ## [1.1.2] - 2026-07-20
 
 ### Fixed

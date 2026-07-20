@@ -119,6 +119,14 @@ describe("SVN text and XML parsers", () => {
     ]);
   });
 
+  it("labels unknown status items without colliding with known SVN codes", () => {
+    const parsed = parseStatusXml(
+      '<status><target path="."><entry path="future.txt"><wc-status item="mystery" /></entry></target></status>'
+    );
+
+    expect(parsed.changed_paths).toEqual([{ status: "UNKNOWN", path: "future.txt" }]);
+  });
+
   it("preserves numeric-looking log text as strings", () => {
     expect(
       parseLogXml(
@@ -133,5 +141,16 @@ describe("SVN text and XML parsers", () => {
         changed_paths: [{ status: "M", path: "/123" }]
       }
     ]);
+  });
+
+  it("bounds XML entity expansion while preserving standard entities", () => {
+    expect(
+      parseLogXml('<log><logentry revision="1"><msg>a&amp;b</msg></logentry></log>')[0]?.msg
+    ).toBe("a&b");
+
+    const repeatedEntity = "&x;".repeat(1001);
+    expect(() => parseLogXml(
+      `<!DOCTYPE log [<!ENTITY x "x">]><log><logentry revision="1"><msg>${repeatedEntity}</msg></logentry></log>`
+    )).toThrow(/entit|expansion/i);
   });
 });

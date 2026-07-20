@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
+import packageJson from "../package.json" with { type: "json" };
 import { readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe } from "./runner.js";
@@ -30,7 +31,7 @@ import {
 import type { ToolEnvelope } from "./types.js";
 
 export const serverName = "svn";
-export const serverVersion = "1.1.2";
+export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 
 export function createServer(): McpServer {

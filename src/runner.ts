@@ -78,6 +78,10 @@ export function platformExecutableName(name: string, platform: NodeJS.Platform =
   return platform === "win32" ? `${name}.exe` : name;
 }
 
+export function escapeSvnTarget(value: string): string {
+  return value.includes("@") ? `${value}@` : value;
+}
+
 function siblingExecutable(svnPath: string, name: string): string {
   const directory = path.dirname(svnPath);
   const executable = platformExecutableName(name);
@@ -342,11 +346,13 @@ export async function startupProbe(cwd = process.cwd()): Promise<{
   dos2unix: { ok: boolean; note: string };
   unix2dos: { ok: boolean; note: string };
 }> {
-  const svn = await runExecutable(svnExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
-  const svnversion = await runExecutable(svnVersionExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
-  const svnadmin = await runExecutable(svnAdminExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
-  const dos2unix = await runExecutable(dos2UnixExecutable("dos2unix"), ["--version"], { cwd, timeout: 10000 });
-  const unix2dos = await runExecutable(dos2UnixExecutable("unix2dos"), ["--version"], { cwd, timeout: 10000 });
+  const [svn, svnversion, svnadmin, dos2unix, unix2dos] = await Promise.all([
+    runExecutable(svnExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
+    runExecutable(svnVersionExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
+    runExecutable(svnAdminExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
+    runExecutable(dos2UnixExecutable("dos2unix"), ["--version"], { cwd, timeout: 10000 }),
+    runExecutable(dos2UnixExecutable("unix2dos"), ["--version"], { cwd, timeout: 10000 })
+  ]);
   const svnVersion = svn.exitCode === 0 ? svn.stdout.trim() : null;
   const svnSupported = svnVersion !== null && isSupportedSvnVersion(svnVersion);
   let svnNote = "";

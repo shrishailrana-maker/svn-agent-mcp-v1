@@ -5,3 +5,4 @@
 *.ps1 text eol=crlf
 
 bin/** binary
+third_party_licenses/** -text -whitespace

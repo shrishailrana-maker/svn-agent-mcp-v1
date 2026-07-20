@@ -3,10 +3,16 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import packageJson from "../package.json" with { type: "json" };
+import { serverVersion } from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
 
 describe("server entrypoint launch detection", () => {
+  it("uses the package version as the MCP server version", () => {
+    expect(serverVersion).toBe(packageJson.version);
+  });
+
   it("starts the server when launched through a directory junction", async () => {
     if (!fs.existsSync(distIndex)) {
       // dist/ is produced by `npm run build`; without it there is nothing to launch.

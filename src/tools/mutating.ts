@@ -20,7 +20,7 @@ import {
 } from "../guards.js";
 import { parseCommittedRevision } from "../parse/commitText.js";
 import { parseUpdateText } from "../parse/updateText.js";
-import { runSvn, runSvnVersion } from "../runner.js";
+import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 import { getWcContext, scopedStatusMap, svnDiff, svnStatus } from "./readonly.js";
 
@@ -65,7 +65,7 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   }
 
   const hasDirectory = [...targetStats.values()].some((stat) => stat.isDirectory());
-  const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths];
+  const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths.map(escapeSvnTarget)];
   const run = await runSvn(args, guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
@@ -122,7 +122,7 @@ export async function svnCommit(input: {
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
 
   try {
-    const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths], guard.cwd);
+    const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths.map(escapeSvnTarget)], guard.cwd);
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
     const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
     const postStatusClean = postStatus ? postStatus.changed_paths.length === 0 : false;
@@ -185,7 +185,7 @@ export async function svnUpdate(input: { cwd?: string; paths?: string[]; updateA
     targets = resolved.paths;
   }
 
-  const run = await runSvn(["update", "--accept", "postpone", ...(targets.length > 0 ? ["--", ...targets] : [])], context.cwd);
+  const run = await runSvn(["update", "--accept", "postpone", ...(targets.length > 0 ? ["--", ...targets.map(escapeSvnTarget)] : [])], context.cwd);
   const parsed = parseUpdateText(`${run.stdout}\n${run.stderr}`);
   return envelopeFromRun({
     run,
@@ -254,10 +254,10 @@ export async function svnRevert(input: {
   const fileTargets = guard.paths.filter((target) => !directoryTargets.includes(target));
   const runs = [];
   if (fileTargets.length > 0) {
-    runs.push(await runSvn(["revert", "--", ...fileTargets], guard.cwd));
+    runs.push(await runSvn(["revert", "--", ...fileTargets.map(escapeSvnTarget)], guard.cwd));
   }
   if (directoryTargets.length > 0) {
-    runs.push(await runSvn(["revert", "--depth", "infinity", "--", ...directoryTargets], guard.cwd));
+    runs.push(await runSvn(["revert", "--depth", "infinity", "--", ...directoryTargets.map(escapeSvnTarget)], guard.cwd));
   }
 
   const failed = runs.find((run) => run.exitCode !== 0);
@@ -279,7 +279,11 @@ export async function svnResolved(input: {
     return guard.envelope;
   }
 
-  const run = await runSvn(["resolve", "--accept", input.accept, "--", guard.paths[0]!], guard.cwd);
+  const [target] = guard.paths;
+  if (!target) {
+    return failEnvelope("svn resolve", guard.cwd, "explicit path required");
+  }
+  const run = await runSvn(["resolve", "--accept", input.accept, "--", escapeSvnTarget(target)], guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -300,7 +304,7 @@ export async function svnCleanup(input: { cwd?: string; path?: string }): Promis
     return failEnvelope("svn cleanup", context.cwd, resolved.note);
   }
 
-  const run = await runSvn(["cleanup", ...(resolved.paths.length > 0 ? ["--", ...resolved.paths] : [])], context.cwd);
+  const run = await runSvn(["cleanup", ...(resolved.paths.length > 0 ? ["--", ...resolved.paths.map(escapeSvnTarget)] : [])], context.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -315,18 +319,28 @@ export async function svnPropsetEolStyle(input: {
   }
 
   const style = input.style ?? "native";
+  const targetsToSet: string[] = [];
   for (const target of guard.paths) {
     const hit = neverCommitHit(target, guard.wcRoot);
     if (hit) {
       return failEnvelope("svn propset", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
     }
-    const prop = await runSvn(["propget", "--", "svn:eol-style", target], guard.cwd);
-    if (prop.exitCode === 0 && prop.stdout.trim() === style) {
-      return failEnvelope("svn propset", guard.cwd, `svn:eol-style already ${style}: ${repoRelativePath(target, guard.wcRoot)}`);
+    const prop = await runSvn(["propget", "--", "svn:eol-style", escapeSvnTarget(target)], guard.cwd);
+    if (prop.exitCode !== 0 || prop.stdout.trim() !== style) {
+      targetsToSet.push(target);
     }
   }
 
-  const run = await runSvn(["propset", "--", "svn:eol-style", style, ...guard.paths], guard.cwd);
+  if (targetsToSet.length === 0) {
+    return createEnvelope({
+      ok: true,
+      command: "svn propset",
+      cwd: guard.cwd,
+      note: `svn:eol-style already ${style} on all paths`
+    });
+  }
+
+  const run = await runSvn(["propset", "--", "svn:eol-style", style, ...targetsToSet.map(escapeSvnTarget)], guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
 
@@ -368,7 +382,7 @@ export async function svnPropset(input: {
     };
   }
 
-  const run = await runSvn(["propset", "--", input.name, input.value, ...guard.paths], guard.cwd);
+  const run = await runSvn(["propset", "--", input.name, input.value, ...guard.paths.map(escapeSvnTarget)], guard.cwd);
   const status = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
   return {
     ...envelopeFromRun({
@@ -409,15 +423,19 @@ export async function svnExport(input: {
     if (!resolved.ok) {
       return failEnvelope("svn export", cwd, resolved.note);
     }
-    const hit = neverCommitHit(resolved.paths[0]!, destinationContext.wcRoot);
+    const [resolvedDestination] = resolved.paths;
+    if (!resolvedDestination) {
+      return failEnvelope("svn export", cwd, "explicit destination required");
+    }
+    const hit = neverCommitHit(resolvedDestination, destinationContext.wcRoot);
     if (hit) {
-      return failEnvelope("svn export", cwd, neverCommitNote(hit, resolved.paths[0]!, destinationContext.wcRoot));
+      return failEnvelope("svn export", cwd, neverCommitNote(hit, resolvedDestination, destinationContext.wcRoot));
     }
   } else if (!input.externalDestAck) {
     return failEnvelope("svn export", cwd, "export destination outside a working copy requires externalDestAck:true");
   }
 
-  args.push("--", input.src, destination);
+  args.push("--", escapeSvnTarget(input.src), escapeSvnTarget(destination));
   const run = await runSvn(args, cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
@@ -442,6 +460,9 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
   const sourceStat = statTargetForMutation("svn import", cwd, importSource);
   if (!sourceStat.ok) {
     return sourceStat.envelope;
+  }
+  if (sourceStat.lstat.isSymbolicLink()) {
+    return failEnvelope("svn import", cwd, `symbolic link refused as import source: ${importSource}`);
   }
   if (sourceStat.stat.isDirectory()) {
     const descendantHit = await firstNeverCommitDescendant(importSource, importSource);
@@ -588,6 +609,9 @@ async function firstNeverCommitDescendant(directory: string, wcRoot: string): Pr
       }
 
       const child = path.join(current.directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        return { error: `symbolic link refused during recursive scan: ${repoRelativePath(child, wcRoot)}` };
+      }
       const hit = neverCommitHit(child, wcRoot);
       if (hit) {
         return { hit: { glob: hit, path: repoRelativePath(child, wcRoot) } };
@@ -646,7 +670,8 @@ async function svnMoveOrCopy(
     }
   }
 
-  const run = await runSvn([svnVerb, "--parents", "--", src, dest], context.cwd);
+  const destinationOperand = svnVerb === "copy" ? escapeSvnTarget(dest) : dest;
+  const run = await runSvn([svnVerb, "--parents", "--", escapeSvnTarget(src), destinationOperand], context.cwd);
   const status = run.exitCode === 0 ? await svnStatus({ cwd: context.cwd, paths: [src, dest] }) : null;
   return {
     ...envelopeFromRun({
@@ -666,9 +691,14 @@ function isSvnUrl(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
 }
 
-export function statTargetForMutation(commandName: string, cwd: string, target: string): { ok: true; stat: fs.Stats } | { ok: false; envelope: ToolEnvelope } {
+export function statTargetForMutation(
+  commandName: string,
+  cwd: string,
+  target: string
+): { ok: true; stat: fs.Stats; lstat: fs.Stats } | { ok: false; envelope: ToolEnvelope } {
   try {
-    return { ok: true, stat: fs.statSync(target) };
+    const lstat = fs.lstatSync(target);
+    return { ok: true, stat: fs.statSync(target), lstat };
   } catch {
     return {
       ok: false,

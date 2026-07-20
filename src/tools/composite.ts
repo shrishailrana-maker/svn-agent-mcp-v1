@@ -13,7 +13,7 @@ import {
   resolveCwd,
   resolveTargetsInsideWc
 } from "../guards.js";
-import { runSvn, runSvnVersion } from "../runner.js";
+import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 import {
   defaultDiffLineLimit,
@@ -185,7 +185,7 @@ export async function eolFixVerified(input: {
   allowLarge?: boolean;
 }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
-  if (readonlyMode()) {
+  if (readonlyMode() && !input.dryRun) {
     return failEnvelope("eol_fix_verified", cwd, "READONLY instance");
   }
 
@@ -199,7 +199,10 @@ export async function eolFixVerified(input: {
     return failEnvelope("eol_fix_verified", context.cwd, resolved.note);
   }
 
-  const filePath = resolved.paths[0]!;
+  const [filePath] = resolved.paths;
+  if (!filePath) {
+    return failEnvelope("eol_fix_verified", context.cwd, "explicit path required");
+  }
   const existsError = assertExistingTargets([filePath]);
   if (existsError) {
     return failEnvelope("eol_fix_verified", context.cwd, existsError);
@@ -222,7 +225,7 @@ export async function eolFixVerified(input: {
     };
   }
 
-  const prop = await runSvn(["propget", "--", "svn:eol-style", filePath], context.cwd);
+  const prop = await runSvn(["propget", "--", "svn:eol-style", escapeSvnTarget(filePath)], context.cwd);
   const eolStyle = prop.exitCode === 0 ? prop.stdout.trim() || null : null;
   const target = normalizeEolTarget(input.target, eolStyle);
   const converter = converterForEolTarget(target);

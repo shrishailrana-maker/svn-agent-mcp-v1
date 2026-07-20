@@ -1,10 +1,12 @@
 import { XMLParser } from "fast-xml-parser";
 import type { ChangedPath, Conflict } from "../types.js";
+import { svnXmlEntityLimits } from "./xmlOptions.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
-  textNodeName: "text"
+  textNodeName: "text",
+  processEntities: svnXmlEntityLimits
 });
 
 const statusMap: Record<string, string> = {
@@ -51,7 +53,7 @@ export function parseStatusXml(xml: string): { changed_paths: ChangedPath[]; con
       };
       const item = entryObj["wc-status"]?.item ?? "";
       const props = entryObj["wc-status"]?.props ?? "";
-      let status = statusMap[item] ?? item.slice(0, 1).toUpperCase();
+      let status = statusMap[item] ?? (item ? "UNKNOWN" : "");
       const path = entryObj.path ?? "";
 
       if (!status && props === "modified") {

@@ -21,7 +21,8 @@ import { createDiffAccumulator } from "../parse/diffText.js";
 import { parseInfoXml } from "../parse/infoXml.js";
 import { parseLogXml } from "../parse/logXml.js";
 import { parseStatusXml } from "../parse/statusXml.js";
-import { runSvn, runSvnStreamingLines, runSvnVersion } from "../runner.js";
+import { svnXmlEntityLimits } from "../parse/xmlOptions.js";
+import { escapeSvnTarget, runSvn, runSvnStreamingLines, runSvnVersion } from "../runner.js";
 import type { DiffSummary, EolCheckResult, Envelope, ToolEnvelope, WcInfo } from "../types.js";
 
 export interface ToolInputWithCwd {
@@ -31,7 +32,8 @@ export interface ToolInputWithCwd {
 const propgetParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
-  textNodeName: "text"
+  textNodeName: "text",
+  processEntities: svnXmlEntityLimits
 });
 
 export async function getWcContext(cwdInput?: string, pathHints: string[] = []): Promise<{ ok: true; cwd: string; info: WcInfo; wcRoot: string } | { ok: false; envelope: Envelope }> {
@@ -45,7 +47,7 @@ export async function getWcContext(cwdInput?: string, pathHints: string[] = []):
   let lastRun: Awaited<ReturnType<typeof runSvn>> | null = null;
 
   for (const probe of wcProbeCandidates(cwdInput, pathHints)) {
-    const run = await runSvn(["info", "--xml", "--", probe.target], probe.execCwd);
+    const run = await runSvn(["info", "--xml", "--", escapeSvnTarget(probe.target)], probe.execCwd);
     if (run.exitCode !== 0) {
       lastRun = run;
       continue;
@@ -103,7 +105,7 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
     "status",
     "--xml",
     ...(input.includeIgnored ? ["--no-ignore"] : []),
-    ...(targets.length > 0 ? ["--", ...resolved.paths] : [])
+    ...(targets.length > 0 ? ["--", ...resolved.paths.map(escapeSvnTarget)] : [])
   ];
   const run = await runSvn(args, context.cwd);
   const parsed = run.exitCode === 0 ? parseStatusXml(run.stdout) : { changed_paths: [], conflicts: [] };
@@ -135,7 +137,7 @@ export async function svnInfo(input: { cwd?: string; paths?: string[] }): Promis
     return failEnvelope("svn info --xml", context.cwd, resolved.note);
   }
 
-  const run = await runSvn(["info", "--xml", "--", ...resolved.paths], context.cwd);
+  const run = await runSvn(["info", "--xml", "--", ...resolved.paths.map(escapeSvnTarget)], context.cwd);
   const entries = run.exitCode === 0 ? parseInfoXml(run.stdout) : [];
   const versionNotes: string[] = [];
   let mixedRevision = false;
@@ -305,7 +307,7 @@ export async function svnLog(input: {
   if (input.cursor) {
     args.push("-r", `${input.cursor}:0`);
   }
-  args.push("--", ...logTargets.targets);
+  args.push("--", ...logTargets.targets.map(escapeSvnTarget));
 
   const run = await runSvn(args, context.cwd);
   const parsedEntries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
@@ -358,7 +360,26 @@ export async function eolCheck(input: { cwd?: string; paths: string[] }): Promis
   }
 
   const files: EolCheckResult[] = [];
-  const eolStyles = await eolStylesForTargets(context.cwd, resolved.paths);
+  const eolProperties = await runSvn(
+    ["propget", "--xml", "--", "svn:eol-style", ...resolved.paths.map(escapeSvnTarget)],
+    context.cwd
+  );
+  if (eolProperties.exitCode !== 0 && !isMissingPropertyRun(eolProperties)) {
+    return {
+      ...envelopeFromRun({ run: eolProperties, ok: false, note: noteFromRun(eolProperties) }),
+      files: []
+    };
+  }
+
+  let eolStyles: Map<string, string>;
+  try {
+    eolStyles = parsePropgetEolStyles(eolProperties.stdout, context.cwd);
+  } catch {
+    return {
+      ...failEnvelope("eol_check", context.cwd, "invalid SVN property XML"),
+      files: []
+    };
+  }
   for (const target of resolved.paths) {
     files.push(await makeEolCheck(target, eolStyles.get(pathIdentityKey(target)) ?? null));
   }
@@ -421,7 +442,7 @@ export async function svnPropget(input: { cwd?: string; paths: string[]; name: s
     };
   }
 
-  const run = await runSvn(["propget", "--xml", "--", input.name, ...resolved.paths], context.cwd);
+  const run = await runSvn(["propget", "--xml", "--", input.name, ...resolved.paths.map(escapeSvnTarget)], context.cwd);
   const properties = parsePropgetProperties(run.stdout, context.cwd, context.wcRoot);
   const missingPaths = propertyMissingPaths(properties, resolved.paths, context.wcRoot);
   if (run.exitCode !== 0 && isMissingPropertyRun(run)) {
@@ -544,7 +565,7 @@ function mergeRevisionRange(
 
 async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<number | null> {
   let head: number | null = null;
-  const run = await runSvn(["info", "--xml", "-r", "HEAD", "--", ...targets], cwd);
+  const run = await runSvn(["info", "--xml", "-r", "HEAD", "--", ...targets.map(escapeSvnTarget)], cwd);
   if (run.exitCode !== 0) {
     return null;
   }
@@ -555,22 +576,6 @@ async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<num
     head = head === null ? entry.revision : Math.max(head, entry.revision);
   }
   return head;
-}
-
-async function eolStylesForTargets(cwd: string, targets: string[]): Promise<Map<string, string>> {
-  const batched = await runSvn(["propget", "--xml", "--", "svn:eol-style", ...targets], cwd);
-  if (batched.exitCode === 0) {
-    return parsePropgetEolStyles(batched.stdout, cwd);
-  }
-
-  const styles = new Map<string, string>();
-  for (const target of targets) {
-    const prop = await runSvn(["propget", "--", "svn:eol-style", target], cwd);
-    if (prop.exitCode === 0 && prop.stdout.trim()) {
-      styles.set(pathIdentityKey(target), prop.stdout.trim());
-    }
-  }
-  return styles;
 }
 
 function parsePropgetEolStyles(xml: string, cwd: string): Map<string, string> {
@@ -673,7 +678,7 @@ async function repositoryLogTargets(cwd: string, paths: string[]): Promise<{
   mode: "repository-url" | "working-copy-path";
   note: string;
 }> {
-  const info = await runSvn(["info", "--xml", "--", ...paths], cwd);
+  const info = await runSvn(["info", "--xml", "--", ...paths.map(escapeSvnTarget)], cwd);
   if (info.exitCode !== 0) {
     return { targets: paths, mode: "working-copy-path", note: "" };
   }

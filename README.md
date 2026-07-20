@@ -2,10 +2,10 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.1.2`; each source clone can prepare a local runtime under `releases/v1.1.2`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.1.3`; each source clone can prepare a local runtime under `releases/v1.1.3`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
-bundled SlikSVN and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
+bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
 `dos2unix`, and `unix2dos` must be available on `PATH`.
 
 ## Quick Start
@@ -29,7 +29,7 @@ Resolve the executable with the platform command lookup: where.exe svn-agent-mcp
 On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
 Ensure the MCP client entry is named "svn" and uses command "svn-agent-mcp", never a source checkout, junction, current pointer, or dist path. Do not add --readonly.
 Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
-After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. The latest published npm version is 1.1.1; the GitHub source release is 1.1.2. Report the installed version instead of forcing a downgrade.
+After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. The expected latest release is 1.1.3; report the installed version instead of relying on a remembered version.
 ```
 
 ## Agent Setup From GitHub
@@ -92,10 +92,11 @@ npm run prepare:local
 node ./current/dist/index.js
 ```
 
-The source tree includes `bin/` with the Windows SlikSVN and dos2unix payload. Releases copy that
+The source tree includes `bin/` with the Windows VisualSVN Apache Subversion and dos2unix payload. Releases copy that
 folder to `current/bin`, so Windows clients do not need separate tool installations. On macOS and
 Linux, the server ignores those `.exe` files and resolves the native tools from `PATH`. See
-`THIRD_PARTY_NOTICES.md` and `THIRD_PARTY_CHECKSUMS.txt` for bundled binary notices and hashes.
+`THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_CHECKSUMS.txt`, and `third_party_licenses/` for bundled
+binary notices, hashes, and complete license texts.
 
 ## Plug-And-Play Client Config
 
@@ -171,6 +172,7 @@ Release history is maintained in `CHANGELOG.md`.
 | `tests/` | Unit and temp-repository integration tests |
 | `.svn-mcp-policy.json` | Repo-local guard exceptions for this MCP's intentional runtime payloads |
 | `bin/` | Versioned Windows SVN and EOL converter runtime binaries |
+| `third_party_licenses/` | License and notice texts shipped with the bundled runtime |
 | `THIRD_PARTY_NOTICES.md` | Notices for bundled binary payloads |
 | `docs/` | Spec, local rules, and decisions |
 | `releases/` | Generated versioned runtime release payloads, ignored by Git |

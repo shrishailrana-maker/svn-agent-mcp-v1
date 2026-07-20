@@ -2,18 +2,21 @@ import { describe, expect, it } from "@jest/globals";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { inspectRuntimeLayout, svnSelfCheck } from "../src/tools/selfcheck.js";
+import { findProjectRoot, inspectRuntimeLayout, svnSelfCheck } from "../src/tools/selfcheck.js";
 
 describe("svn self-check", () => {
   it("reports package version, current release pointer, and bundled payload counts", async () => {
     const check = await svnSelfCheck({});
+    const expectedBinFileCount = process.platform === "win32"
+      ? (await fs.readdir(path.resolve("bin"), { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile()).length
+      : 0;
 
     expect(check.ok).toBe(true);
     expect(check.server_version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(check.package_version).toBe(check.server_version);
     expect(check.current_release).toBe(`v${check.server_version}`);
     expect(check.current_matches_package).toBe(true);
-    expect(check.bin_file_count).toBe(process.platform === "win32" ? 48 : 0);
+    expect(check.bin_file_count).toBe(expectedBinFileCount);
     expect(check.dist_file_count).toBeGreaterThanOrEqual(60);
     expect(check.release_prepare_available).toBe(true);
     expect(check.clean_uses_node).toBe(true);
@@ -111,6 +114,21 @@ describe("svn self-check", () => {
       expect(layout.distFileCount).toBe(0);
     } finally {
       await fs.rm(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips unrelated package manifests while locating the server package root", async () => {
+    const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-root-"));
+    const nestedPackage = path.join(temporaryRoot, "nested");
+    const start = path.join(nestedPackage, "dist", "tools");
+    try {
+      await fs.mkdir(start, { recursive: true });
+      await fs.writeFile(path.join(temporaryRoot, "package.json"), JSON.stringify({ name: "svn-agent-mcp" }));
+      await fs.writeFile(path.join(nestedPackage, "package.json"), JSON.stringify({ name: "unrelated-package" }));
+
+      await expect(findProjectRoot(start)).resolves.toBe(temporaryRoot);
+    } finally {
+      await fs.rm(temporaryRoot, { recursive: true, force: true });
     }
   });
 });

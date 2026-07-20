@@ -138,6 +138,16 @@ describe("diff parsing and command redaction", () => {
     expect(redacted).not.toContain("def456");
   });
 
+  it("redacts identity-like URL query parameters", () => {
+    const redacted = redactText(
+      "https://example.com/repo?user=alice&login=bob&email=alice@example.com&client_id=private-app&x=ok"
+    );
+
+    expect(redacted).toBe(
+      "https://example.com/repo?user=***&login=***&email=***&client_id=***&x=ok"
+    );
+  });
+
   it("does not treat user source lines containing binary words as SVN binary markers", () => {
     const diff = parseDiffText([
       "Index: src/a.ts",

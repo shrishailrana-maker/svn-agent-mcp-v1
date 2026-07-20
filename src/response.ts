@@ -58,16 +58,17 @@ export function toToolResult<T extends ToolEnvelope>(
   options: ResponseOptions = {}
 ): ToolResult<Record<string, unknown>> {
   const mode = options.responseMode ?? defaultResponseMode();
-  const shaped = shapePayload(tool, payload, mode, options.request ?? {});
-  const warning = mode === "compact" && payload.ok ? payload.stderr_summary.slice(0, 2000) : "";
+  const safePayload = redactStructuredValue(payload) as T;
+  const shaped = shapePayload(tool, safePayload, mode, options.request ?? {});
+  const warning = mode === "compact" && safePayload.ok ? safePayload.stderr_summary.slice(0, 2000) : "";
   const structured = warning
     ? {
         ...shaped,
         warning,
-        ...(warning.length < payload.stderr_summary.length ? { warningTruncated: true } : {})
+        ...(warning.length < safePayload.stderr_summary.length ? { warningTruncated: true } : {})
       }
     : shaped;
-  const text = mode === "full" ? JSON.stringify(payload, null, 2) : summarizeToolResult(tool, structured);
+  const text = mode === "full" ? JSON.stringify(safePayload, null, 2) : summarizeToolResult(tool, structured);
 
   return {
     content: [{ type: "text", text }],
@@ -263,9 +264,30 @@ function compactSelfCheck(payload: ToolEnvelope, request: Record<string, unknown
   return {
     ok: payload.ok,
     version: payload.server_version,
-    available: payload.toolchain_ok === true && (payload.runtime_layout_ok === true || payload.current_matches_package === true),
+    available: payload.toolchain_ok === true && payload.runtime_layout_ok === true,
     ...(payload.note ? { diagnostics: payload.note } : {})
   };
+}
+
+function redactStructuredValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactStructuredValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactStructuredValue(item)])
+  );
 }
 
 function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {

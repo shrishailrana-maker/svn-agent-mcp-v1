@@ -37,7 +37,7 @@ export function quoteArgForDisplay(arg: string): string {
 export function redactText(value: string): string {
   const withSafeUrl = redactUrlUserinfo(value);
   return withSafeUrl.replace(
-    /([?&](?:access_token|api[_-]?key|auth|key|pass(?:word)?|secret|token)=)[^&#\s]*/gi,
+    /([?&](?:access_token|api[_-]?key|auth|client[_-]?id|email|key|login|pass(?:word)?|secret|token|user(?:name)?)=)[^&#\s]*/gi,
     "$1***"
   );
 }

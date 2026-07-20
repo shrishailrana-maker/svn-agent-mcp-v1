@@ -13,6 +13,52 @@ import { eolCheck, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../sr
 jest.setTimeout(30000);
 
 describe("SVN tool integration against a temp repository", () => {
+  it("treats at signs in working-copy and export paths as literal characters", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const sourceName = "revision@123";
+      const source = path.join(fixture.wc, sourceName);
+      const exportPath = path.join(fixture.root, "export@123");
+      fs.writeFileSync(source, "one\r\n", "utf8");
+
+      expect((await svnAdd({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      expect((await svnPropset({ cwd: fixture.wc, paths: [sourceName], name: "custom:flag", value: "yes" })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [sourceName],
+        message: "Add literal at-sign path\n\n- Verify SVN target escaping"
+      })).ok).toBe(true);
+
+      expect((await svnInfo({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      expect((await svnLog({ cwd: fixture.wc, paths: [sourceName], limit: 1 })).ok).toBe(true);
+      expect((await svnPropget({ cwd: fixture.wc, paths: [sourceName], name: "custom:flag" })).ok).toBe(true);
+      expect((await svnExport({
+        cwd: fixture.wc,
+        src: source,
+        dest: exportPath,
+        externalDestAck: true
+      })).ok).toBe(true);
+      expect(fs.existsSync(exportPath)).toBe(true);
+
+      fs.writeFileSync(source, "two\r\n", "utf8");
+      expect((await svnStatus({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      expect((await svnDiff({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      expect((await eolCheck({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      expect((await svnPrecommit({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+
+      const movedName = "archive@456";
+      expect((await svnMove({ cwd: fixture.wc, src: sourceName, dest: movedName })).ok).toBe(true);
+      expect(fs.existsSync(path.join(fixture.wc, movedName))).toBe(true);
+
+      const copiedName = "copy@789";
+      const copied = await svnCopy({ cwd: fixture.wc, src: movedName, dest: copiedName });
+      expect(copied).toMatchObject({ ok: true });
+      expect(fs.existsSync(path.join(fixture.wc, copiedName))).toBe(true);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("detects LF EOL churn, fixes it, and commits via a -F message flow", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -279,6 +325,94 @@ describe("SVN tool integration against a temp repository", () => {
       expect(imported.ok).toBe(true);
     } finally {
       fs.rmSync(srcRoot, { recursive: true, force: true });
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses recursive adds containing directory links", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const source = path.join(fixture.wc, "src");
+      const outside = path.join(fixture.root, "outside-add");
+      fs.mkdirSync(source);
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, ".env"), "SECRET=fake\r\n", "utf8");
+      fs.symlinkSync(outside, path.join(source, "linked"), process.platform === "win32" ? "junction" : "dir");
+
+      const added = await svnAdd({ cwd: fixture.wc, paths: ["src"], allowRecursive: true });
+
+      expect(added.ok).toBe(false);
+      expect(added.note).toContain("symbolic link refused during recursive scan");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats at signs in import source and repository paths as literal characters", async () => {
+    const fixture = createTempWorkingCopy();
+    const srcRoot = path.join(fixture.root, "import-source@123");
+    try {
+      fs.mkdirSync(srcRoot);
+      fs.writeFileSync(path.join(srcRoot, "safe.txt"), "safe\r\n", "utf8");
+      const targetUrl = `${pathToFileURL(fixture.repo).href}/imported@456`;
+
+      const imported = await svnImport({
+        cwd: fixture.wc,
+        src: srcRoot,
+        url: targetUrl,
+        message: commitMessage("Import literal at-sign paths")
+      });
+
+      expect(imported).toMatchObject({ ok: true });
+      expect(execFileSync(svnExecutable(), ["list", `${targetUrl}@`], { cwd: fixture.wc, encoding: "utf8" })).toContain("safe.txt");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses recursive imports containing directory links", async () => {
+    const fixture = createTempWorkingCopy();
+    const srcRoot = path.join(fixture.root, "import-source");
+    const outside = path.join(fixture.root, "outside");
+    try {
+      fs.mkdirSync(srcRoot);
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, ".env"), "SECRET=fake\r\n", "utf8");
+      fs.symlinkSync(outside, path.join(srcRoot, "linked"), process.platform === "win32" ? "junction" : "dir");
+
+      const imported = await svnImport({
+        cwd: fixture.wc,
+        src: srcRoot,
+        url: `${pathToFileURL(fixture.repo).href}/linked-import`,
+        message: commitMessage("Reject linked import tree")
+      });
+
+      expect(imported.ok).toBe(false);
+      expect(imported.note).toContain("symbolic link refused during recursive scan");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a symbolic link as the import source", async () => {
+    const fixture = createTempWorkingCopy();
+    const outside = path.join(fixture.root, "outside-source");
+    const sourceLink = path.join(fixture.root, "linked-source");
+    try {
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, "safe.txt"), "safe\r\n", "utf8");
+      fs.symlinkSync(outside, sourceLink, process.platform === "win32" ? "junction" : "dir");
+
+      const imported = await svnImport({
+        cwd: fixture.wc,
+        src: sourceLink,
+        url: `${pathToFileURL(fixture.repo).href}/linked-source`,
+        message: commitMessage("Reject linked import source")
+      });
+
+      expect(imported.ok).toBe(false);
+      expect(imported.note).toContain("symbolic link refused as import source");
+    } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
   });
@@ -633,6 +767,62 @@ describe("SVN tool integration against a temp repository", () => {
       expect(result.ok).toBe(false);
       expect(result.note).toContain("never-commit path");
     } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("sets EOL style on remaining paths when one path already matches", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "already-lf.txt"), "one\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "needs-lf.txt"), "two\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["already-lf.txt", "needs-lf.txt"] })).ok).toBe(true);
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: ["already-lf.txt"], style: "LF" })).ok).toBe(true);
+
+      const updated = await svnPropsetEolStyle({
+        cwd: fixture.wc,
+        paths: ["already-lf.txt", "needs-lf.txt"],
+        style: "LF"
+      });
+      const properties = await svnPropget({
+        cwd: fixture.wc,
+        paths: ["already-lf.txt", "needs-lf.txt"],
+        name: "svn:eol-style"
+      });
+
+      expect(updated.ok).toBe(true);
+      expect(properties.properties).toEqual([
+        { path: "already-lf.txt", name: "svn:eol-style", value: "LF" },
+        { path: "needs-lf.txt", name: "svn:eol-style", value: "LF" }
+      ]);
+      expect((await svnPropsetEolStyle({
+        cwd: fixture.wc,
+        paths: ["already-lf.txt", "needs-lf.txt"],
+        style: "LF"
+      })).ok).toBe(true);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows EOL repair dry runs in readonly mode without changing the file", async () => {
+    const fixture = createTempWorkingCopy();
+    const oldReadonly = process.env.SVN_AGENT_READONLY;
+    try {
+      const file = path.join(fixture.wc, "readonly-eol.txt");
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      process.env.SVN_AGENT_READONLY = "1";
+
+      const dryRun = await eolFixVerified({ cwd: fixture.wc, path: "readonly-eol.txt", target: "lf", dryRun: true });
+
+      expect(dryRun).toMatchObject({ ok: true, target: "lf" });
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\r\n");
+    } finally {
+      if (oldReadonly === undefined) {
+        delete process.env.SVN_AGENT_READONLY;
+      } else {
+        process.env.SVN_AGENT_READONLY = oldReadonly;
+      }
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
   });

@@ -99,7 +99,7 @@ workflow).
 | D8 | Commit message format checked, **warn not refuse** | Format is policy but judgment; a hard block would fight legitimate cases |
 | D9 | Commit message via temp **`-F` file outside the WC**, never `-m` | Encodes the shared SVN policy |
 | D10 | `svn_update` needs explicit `paths[]` or `updateAll:true`; always `--accept postpone` | Update is operator-gated; conflicts must surface, never auto-resolve |
-| D11 | XML output (`--xml`) for status/info/log parsing; regex only where svn has no XML (diff, update, commit) | Locale-proof, stable parsing |
+| D11 | XML output (`--xml`) for status/info/log parsing with finite entity-expansion limits; regex only where svn has no XML (diff, update, commit) | Locale-proof, stable parsing without unbounded entity expansion |
 | D12 | ESM TypeScript, strict mode; deps only `@modelcontextprotocol/sdk`, `zod`, `fast-xml-parser` | Small, auditable |
 | D13 | Server registered under the name **`svn`**; tools named `svn_*` / `eol_*` | Short, unambiguous |
 | D14 | External SVN MCPs are reference material, not the base implementation | Borrow diagnostics/docs lessons; reject force flags, optional broad commits, shell execution, credential env vars, and repo-specific registration |
@@ -270,12 +270,12 @@ missing).
 - **G1 explicit targets:** mutating path-list tools require non-empty `paths[]`; source/destination tools require explicit `src` and `dest` (exceptions: `svn_update` with `updateAll:true`; `svn_cleanup` takes one `path`). No implicit `.`, no recursive default anywhere. Public path arrays are capped at 500 entries, filesystem paths at 4,096 characters, and repository locations at 8,192 characters.
 - **G2 READONLY:** `--readonly` (or legacy/dev `SVN_AGENT_READONLY=1`) → all §8.4 tools + `eol_fix_verified` refuse.
 - **G3 WC containment:** resolved paths must be inside the working copy (§6.3).
-- **G4 never-commit globs** (block in `svn_add`, `svn_move`, `svn_rename`, `svn_copy`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`, `**/.npmrc`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions for generated payloads, for example to version a toolchain payload in the MCP repository itself. Credential-file guards cannot be overridden. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
+- **G4 never-commit globs** (block in `svn_add`, `svn_move`, `svn_rename`, `svn_copy`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`, `**/.npmrc`, `**/.git/**`, `**/.hg/**`, `**/.svn/**`, `**/.ssh/**`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions for generated payloads, for example to version a toolchain payload in the MCP repository itself. Credential and VCS-metadata guards cannot be overridden. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
   Policy shape:
   ```json
   { "neverCommit": { "allow": ["bin/**"], "deny": ["custom-generated/**"] } }
   ```
-  Defaults stay strict when no policy file is present; policy is read from the working-copy root and never from an environment variable. Policy files are cached by working-copy root and mtime/size, and malformed or pathological policy globs fail with a `policy-error:` guard note.
+  Defaults stay strict when no policy file is present; policy is read from the working-copy root and never from an environment variable. Policy files must be regular files, are capped at 64 KiB, cached by working-copy root and mtime/size, and malformed or pathological policy globs fail with a `policy-error:` guard note.
   Repository-local `deny` rules are evaluated before repository-local `allow` rules, so a broad
   allow exception cannot bypass a stricter project-specific deny or the immutable credential-file guards.
 - **G5 must-be-changed:** `svn_commit` verifies every listed path is actually modified/added/deleted per scoped status; unknown/clean path → refusal naming the path.
@@ -643,6 +643,22 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.21 / v1.1.3 — 2026-07-20
+
+- Replaces the SlikSVN payload with the July 2026 redistributable VisualSVN Apache Subversion
+  1.14.5 command-line package and retains complete upstream license/notice files.
+- Handles literal peg-revision markers according to each SVN subcommand's operand semantics,
+  including names ending in a revision-like `@123` and VisualSVN's distinct move/copy destination
+  parsing.
+- Refuses symbolic links and Windows directory junctions during recursive add/import guard scans,
+  preventing SVN from following links into unscanned external content.
+- Applies finite XML entity-expansion limits and fails EOL checks on real property-query errors or
+  malformed XML instead of treating them as absent properties.
+- Requires regular repository policy files, bounds them at 64 KiB, and redacts parsed structured
+  fields in every public response mode.
+- Makes VCS administration directories and `.ssh` content immutable never-commit paths.
+- Requires npm packing to build current output and tests the installed command shim directly.
 
 ### Spec 1.20 / v1.1.2 — 2026-07-20
 

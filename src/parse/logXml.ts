@@ -1,11 +1,13 @@
 import { XMLParser } from "fast-xml-parser";
 import type { ChangedPath } from "../types.js";
+import { svnXmlEntityLimits } from "./xmlOptions.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   textNodeName: "text",
-  parseTagValue: false
+  parseTagValue: false,
+  processEntities: svnXmlEntityLimits
 });
 
 export interface LogEntry {

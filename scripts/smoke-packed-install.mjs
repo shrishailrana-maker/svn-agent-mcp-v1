@@ -30,6 +30,21 @@ try {
     throw new Error(`installed command shim is missing: ${shim}`);
   }
 
+  for (const relative of [
+    "third_party_licenses/apache-subversion-windows/Subversion License.txt",
+    "third_party_licenses/apache-subversion-windows/Subversion NOTICE.txt",
+    "third_party_licenses/dos2unix/COPYING.txt"
+  ]) {
+    if (!fs.existsSync(path.join(packageRoot, relative))) {
+      throw new Error(`installed third-party notice is missing: ${relative}`);
+    }
+  }
+  const staleRuntimeFiles = fs.readdirSync(path.join(packageRoot, "bin"))
+    .filter((name) => /Slik|libssl|libcrypto/i.test(name));
+  if (staleRuntimeFiles.length > 0) {
+    throw new Error(`installed package contains retired runtime files: ${staleRuntimeFiles.join(", ")}`);
+  }
+
   const selfcheckModule = path.join(packageRoot, "dist", "tools", "selfcheck.js");
   const { svnSelfCheck } = await import(pathToFileURL(selfcheckModule).href);
   const check = await svnSelfCheck({ cwd: root });
@@ -42,8 +57,7 @@ try {
 
   const client = new Client({ name: "packed-install-smoke", version: "1.0.0" });
   const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [path.join(packageRoot, "dist", "index.js")],
+    command: shim,
     stderr: "ignore"
   });
   try {

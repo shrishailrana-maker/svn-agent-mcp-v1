@@ -1,6 +1,6 @@
 import { createEnvelope, failEnvelope, noteFromRun } from "../envelope.js";
 import { resolveCwd, resolveTargetsInsideWc } from "../guards.js";
-import { runSvn, startupProbe } from "../runner.js";
+import { escapeSvnTarget, runSvn, startupProbe } from "../runner.js";
 import type { RunResult, ToolEnvelope } from "../types.js";
 import { getWcContext } from "./readonly.js";
 
@@ -76,10 +76,10 @@ export async function svnDiagnose(input: { cwd?: string; paths?: string[] }): Pr
   }
 
   const [localStatus, remoteStatus, remoteInfo, log] = await Promise.all([
-    runDiagnostic("local_status", ["status", "--xml", "--", ...resolved.paths], context.cwd),
-    runDiagnostic("remote_status", ["status", "--show-updates", "--xml", "--", ...resolved.paths], context.cwd),
-    runDiagnostic("remote_info_head", ["info", "--xml", "-r", "HEAD", "--", ...resolved.paths], context.cwd),
-    runDiagnostic("log_latest", ["log", "--xml", "-l", "1", "--", context.cwd], context.cwd)
+    runDiagnostic("local_status", ["status", "--xml", "--", ...resolved.paths.map(escapeSvnTarget)], context.cwd),
+    runDiagnostic("remote_status", ["status", "--show-updates", "--xml", "--", ...resolved.paths.map(escapeSvnTarget)], context.cwd),
+    runDiagnostic("remote_info_head", ["info", "--xml", "-r", "HEAD", "--", ...resolved.paths.map(escapeSvnTarget)], context.cwd),
+    runDiagnostic("log_latest", ["log", "--xml", "-l", "1", "--", escapeSvnTarget(context.cwd)], context.cwd)
   ]);
 
   for (const result of [localStatus, remoteStatus, remoteInfo, log]) {

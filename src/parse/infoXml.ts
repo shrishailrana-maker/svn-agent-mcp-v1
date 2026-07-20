@@ -1,10 +1,12 @@
 import { XMLParser } from "fast-xml-parser";
 import type { WcInfo } from "../types.js";
+import { svnXmlEntityLimits } from "./xmlOptions.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
-  textNodeName: "text"
+  textNodeName: "text",
+  processEntities: svnXmlEntityLimits
 });
 
 export function parseInfoXml(xml: string): WcInfo[] {
