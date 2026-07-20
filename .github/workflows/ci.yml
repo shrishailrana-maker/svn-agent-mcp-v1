@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   build-test:
-    name: Build and Test
-    runs-on: windows-latest
+    name: Build and Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
       - name: Check out repository
@@ -20,11 +24,26 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.18.0
           cache: npm
 
+      - name: Verify LTS runtime
+        run: npm run check:runtime
+
+      - name: Install native tools on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes subversion dos2unix
+
+      - name: Install native tools on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install subversion dos2unix
+          echo "$(brew --prefix subversion)/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --strict-allow-scripts
 
       - name: Typecheck
         run: npm run typecheck
@@ -35,5 +54,12 @@ jobs:
       - name: Test
         run: npm test -- --runInBand
 
+      - name: Test through MCP client
+        run: npm run test:client
+
+      - name: Test packed npm installation
+        run: npm run test:package
+
       - name: Audit dependencies
+        if: runner.os == 'Windows'
         run: npm audit --audit-level=moderate

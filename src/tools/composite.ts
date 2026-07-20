@@ -6,6 +6,7 @@ import {
   assertExistingTargets,
   neverCommitHit,
   neverCommitNote,
+  pathIdentityKey,
   readonlyMode,
   repoRelativePath,
   requireExplicitPaths,
@@ -79,9 +80,9 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
   });
   const eol = await eolCheck({ cwd: context.cwd, paths: input.paths });
   const eolFiles = new Map(
-    ((eol.files as Array<{ path: string }> | undefined) ?? []).map((file) => [path.resolve(file.path).toLowerCase(), file])
+    ((eol.files as Array<{ path: string }> | undefined) ?? []).map((file) => [pathIdentityKey(file.path), file])
   );
-  const diffFiles = new Map(diff.per_file.map((file) => [path.resolve(context.cwd, file.path).toLowerCase(), file]));
+  const diffFiles = new Map(diff.per_file.map((file) => [pathIdentityKey(path.resolve(context.cwd, file.path)), file]));
   const riskSignals = dryRiskSignals(resolved.paths, context.wcRoot, status.map);
   const perFile = [];
   const guardNotes: string[] = [];
@@ -97,10 +98,10 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
   }
 
   for (const target of resolved.paths) {
-    const lower = target.toLowerCase();
+    const targetKey = pathIdentityKey(target);
     const statusCode = normalizeStatusLookup(status.map, target);
-    const diffFile = diffFiles.get(lower);
-    const eolFile = eolFiles.get(lower) as
+    const diffFile = diffFiles.get(targetKey);
+    const eolFile = eolFiles.get(targetKey) as
       | { kind?: string; eol_style?: string | null; has_bom?: boolean; mismatch?: boolean }
       | undefined;
     const never = neverCommitHit(target, context.wcRoot);

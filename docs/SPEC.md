@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.18 — public implementation contract. Single source of truth.**
+**Spec version 1.19 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-07-20.
 
@@ -68,13 +68,14 @@ workflow).
 
 ## 3. Reference environment assumptions
 
-- The full Windows SVN `bin` payload and full EOL converter `bin` payload are bundled under
-  `<MCP_HOME>\svn-agent\bin` and copied into every release under `releases\v<version>\bin`.
-  The reference implementation targets SVN 1.14+ behavior and should probe the exact client at
-  startup.
+- The Windows SVN and EOL converter payload is bundled under `<MCP_HOME>/svn-agent/bin` and copied
+  into every release under `releases/v<version>/bin`. On macOS and Linux, the runtime ignores the
+  Windows executables and resolves native `svn`, `svnversion`, `svnadmin`, `dos2unix`, and
+  `unix2dos` commands from `PATH`. The implementation targets SVN 1.14+ behavior and probes the
+  exact client at startup.
 - Normal end-user configuration needs no environment variables and no project-specific `cwd`.
   `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, and `SVN_AGENT_DOS2UNIX_DIR` are development/test
-  overrides; PATH lookup is only a final fallback when the bundled tools are missing.
+  overrides; compatible bundled tools are preferred, with `PATH` as the native fallback.
 - Each tool call operates against a caller-provided `cwd` or an inferred working copy from absolute
   paths. Relative paths require explicit per-call `cwd`. A single MCP registration may service many
   SVN working copies on the same machine.
@@ -82,7 +83,7 @@ workflow).
   remediation target is CRLF + `svn:eol-style=native`, no BOM, but this must not hard-code one
   repository's language or folder names.
 - MCP installation home is chosen by the deployer, for example `<MCP_HOME>\svn-agent`.
-- Node ≥ 20 is required.
+- Node 24.18.0 or newer within the Node 24 LTS line and npm 11.16.0 or newer within the npm 11 line are required.
 
 ## 4. Locked decisions (no open questions)
 
@@ -94,7 +95,7 @@ workflow).
 | D4 | `riskAck:true` required for mechanically detectable risky slices (§7 G6); undetectable risk categories stay the calling client's approval-gate duty | Encodes the risky-slice gate without pretending to detect the undetectable |
 | D5 | Branch/switch/merge/relocate/delete: **out of v0.1** | Not needed for daily flow; each is high-risk |
 | D6 | Versioning: **semver**, first release `v0.1.0`; `current` junction → `releases\v0.1.0` | One pin, easy rollback |
-| D7 | Prefer bundled `bin` tools; env overrides win; PATH is final fallback | Self-contained runtime, no client time spent locating tools |
+| D7 | Env overrides win; use compatible bundled tools next and native `PATH` tools otherwise | Windows stays self-contained while macOS/Linux use their normal package-managed toolchain |
 | D8 | Commit message format checked, **warn not refuse** | Format is policy but judgment; a hard block would fight legitimate cases |
 | D9 | Commit message via temp **`-F` file outside the WC**, never `-m` | Encodes the shared SVN policy |
 | D10 | `svn_update` needs explicit `paths[]` or `updateAll:true`; always `--accept postpone` | Update is operator-gated; conflicts must surface, never auto-resolve |
@@ -140,7 +141,7 @@ These are restated here so the implementer does not need deployment-specific rul
 ### 6.1 Process model & layout
 
 Stdio MCP server, one process per client instance. Write-capable clients launch normally;
-read-only clients launch with `--readonly`. Thin wrapper: every tool call launches `svn.exe` (or
+read-only clients launch with `--readonly`. Thin wrapper: every tool call launches `svn` (or
 `unix2dos`/`dos2unix`) through `execFile` or streaming `spawn` with `shell:false` — **no shell**,
 no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
 
@@ -185,8 +186,8 @@ only as development/test escape hatches:
 |---|---:|---|
 | `SVN_AGENT_READONLY` | No | Legacy/dev equivalent of `--readonly`; mutating tools return `ok:false`, `note:"READONLY instance"` |
 | `SVN_AGENT_BIN_DIR` | No | Dev/test override for directory containing bundled svn/EOL tools |
-| `SVN_AGENT_SVN_PATH` | No | Dev/test full path override for svn.exe |
-| `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing dos2unix.exe/unix2dos.exe |
+| `SVN_AGENT_SVN_PATH` | No | Dev/test full path or command override for the platform-native SVN executable |
+| `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact` (default), `standard`, or `full` |
@@ -243,8 +244,9 @@ cached auth).
 ### 6.5 Startup probe
 
 All SVN child processes run without a shell, with `--non-interactive`, a stable `C` locale, bounded
-stderr capture, timeout settlement, and latin1 fallback for non-UTF8 bytes. On boot: resolve bundled-or-overridden svn (`--version --quiet`), resolve bundled-or-overridden
-dos2unix/unix2dos (`--version`), detect READONLY. Failures don't kill the server — the affected
+stderr capture, timeout settlement, and latin1 fallback for non-UTF8 bytes. On boot: resolve
+overridden, compatible bundled, or `PATH` SVN (`--version --quiet`) and dos2unix/unix2dos
+(`--version`), then detect READONLY. Failures don't kill the server — the affected
 tools return `ok:false` with an explanatory `note` (e.g. `eol_*` unavailable when dos2unix
 missing).
 
@@ -358,7 +360,11 @@ whether `current` matches the package version, release `bin` and `dist` payload 
 probe results for bundled tools, whether the bundled SVN/EOL toolchain is healthy, and whether
 release/clean scripts use the Node-based paths. Compact output normally returns only version,
 availability, and short diagnostics; `detailed:true` includes paths, counts, and capabilities.
-Purpose: avoid manual checks for ignored `current` drift and noisy release payload adds.
+Prepared source clones use `current -> releases/v<version>`; npm installations are valid with
+package-root `dist/` and `bin/` and no generated junction. Unprepared source trees remain invalid.
+The live toolchain probe remains authoritative: Windows normally resolves bundled executables,
+while macOS and Linux resolve native commands from `PATH`. Purpose: avoid manual checks for ignored
+`current` drift, npm layout false alarms, and noisy release payload adds.
 
 **`svn_diagnose`** — `{ cwd?, paths?: string[] }`
 Pure read working-copy diagnostic tool. Runs startup SVN availability, then local status, remote
@@ -569,7 +575,7 @@ Gate: Defender win measured with before/after `Measure-Command`; EOL repair is v
 `eol_fix_verified`, not an external hook.
 
 **Phase 1 — scaffold + read-only tools**
-`package.json` (ESM, `"engines": {"node": ">=20"}`), `tsconfig` (strict, ES2022), deps per D12;
+`package.json` (ESM, Node 24 LTS and npm 11 engines), `tsconfig` (strict, ES2022), deps per D12;
 `runner`, `envelope`, `guards`, XML parsers; tools `svn_status`, `svn_info`, `svn_diff`,
 `svn_log`, `eol_check`; startup probe.
 Gate: jest unit tests green (guard matrix, envelope shape, parser fixtures incl. locale-odd and
@@ -631,6 +637,15 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.19 / v1.1.1 — 2026-07-20
+
+- Recognizes both prepared source-release and direct npm-package runtime layouts in self-check.
+- Keeps unprepared source trees invalid and reports the selected runtime layout.
+- Supports native SVN and dos2unix commands from `PATH` on macOS and Linux while retaining the
+  bundled Windows toolchain.
+- Verifies the packed npm artifact through an isolated install and self-check on every CI platform.
+- Pins release verification to Node.js 24.18.0 LTS with npm 11.16.0 and matching Node 24 types.
 
 ### Spec 1.18 / v1.1.0 — 2026-07-20
 
@@ -967,8 +982,8 @@ operator can repair it (`svn_self_check` / `svn_diagnose` once the server is bac
 - A one-time MCP client registration is still required.
 - A stdio MCP cannot safely rewrite every possible client configuration file at runtime.
 - Bundled Windows runtime binaries make the source and release payloads larger.
-- The bundled runtime is Windows-oriented; cross-platform packaging would need matching binaries
-  or a documented PATH fallback strategy for those platforms.
+- macOS and Linux require package-managed SVN and dos2unix commands on `PATH`; Windows remains
+  self-contained through the bundled runtime.
 - Absolute paths give the best zero-`cwd` multi-repository behavior. Relative-path-only workflows
   need explicit per-call `cwd`.
 - The MCP reduces SVN housekeeping, but it does not remove the caller's responsibility to inspect

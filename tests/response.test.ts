@@ -474,6 +474,29 @@ describe("public MCP response shaping", () => {
       verifiedStatus: "renamed"
     });
 
+    const imported = toToolResult("svn_import", createEnvelope({
+      ok: true,
+      command: "svn import",
+      cwd: "E:\\dev\\example",
+      revision: 43
+    }), {
+      responseMode: "compact",
+      request: {
+        src: "source",
+        url: "https://user:secret@example.com/repo?token=abc123"
+      }
+    }).structuredContent;
+    expect(imported).toEqual({
+      ok: true,
+      action: "import",
+      source: "source",
+      target: "https://***:***@example.com/repo?token=***",
+      revision: 43,
+      status: "imported"
+    });
+    expect(JSON.stringify(imported)).not.toContain("secret");
+    expect(JSON.stringify(imported)).not.toContain("abc123");
+
     const add = toToolResult("svn_add", createEnvelope({ ok: true, command: "svn add", cwd: "E:\\dev\\example" }), {
       responseMode: "compact",
       request: { paths: ["src/new.ts"] }
@@ -705,6 +728,14 @@ describe("public MCP response shaping", () => {
     const compact = toToolResult("svn_self_check", payload, { responseMode: "compact" }).structuredContent;
     expect(compact).toEqual({ ok: true, version: "1.0.0", available: true });
     expect(JSON.stringify(compact)).not.toContain("current_path");
+
+    const npmCompact = toToolResult("svn_self_check", {
+      ...payload,
+      current_matches_package: false,
+      runtime_layout: "npm-package",
+      runtime_layout_ok: true
+    }, { responseMode: "compact" }).structuredContent;
+    expect(npmCompact).toEqual({ ok: true, version: "1.0.0", available: true });
 
     const detailed = toToolResult("svn_self_check", payload, {
       responseMode: "compact",

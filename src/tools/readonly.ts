@@ -6,6 +6,7 @@ import { makeEolCheck } from "../eol.js";
 import {
   assertExistingTargets,
   isInsideOrEqual,
+  pathIdentityKey,
   realPathOfNearestExisting,
   repoRelativePath,
   requireExplicitPaths,
@@ -345,7 +346,7 @@ export async function eolCheck(input: { cwd?: string; paths: string[] }): Promis
   const files: EolCheckResult[] = [];
   const eolStyles = await eolStylesForTargets(context.cwd, resolved.paths);
   for (const target of resolved.paths) {
-    files.push(await makeEolCheck(target, eolStyles.get(path.resolve(target).toLowerCase()) ?? null));
+    files.push(await makeEolCheck(target, eolStyles.get(pathIdentityKey(target)) ?? null));
   }
 
   return {
@@ -456,7 +457,7 @@ export function defaultDiffLineLimit(): number {
 }
 
 export function normalizeStatusLookup(statuses: Map<string, string>, target: string): string | undefined {
-  return statuses.get(path.resolve(target).toLowerCase());
+  return statuses.get(pathIdentityKey(target));
 }
 
 function filterNoisePaths(changedPaths: Array<{ status: string; path: string }>, cwd: string, wcRoot: string): {
@@ -552,7 +553,7 @@ async function eolStylesForTargets(cwd: string, targets: string[]): Promise<Map<
   for (const target of targets) {
     const prop = await runSvn(["propget", "svn:eol-style", target], cwd);
     if (prop.exitCode === 0 && prop.stdout.trim()) {
-      styles.set(path.resolve(target).toLowerCase(), prop.stdout.trim());
+      styles.set(pathIdentityKey(target), prop.stdout.trim());
     }
   }
   return styles;
@@ -572,7 +573,7 @@ function parsePropgetEolStyles(xml: string, cwd: string): Map<string, string> {
 
   for (const target of asArray(parsed.properties?.target)) {
     const targetObj = target as { path?: string; property?: unknown };
-    const targetPath = targetObj.path ? path.resolve(cwd, targetObj.path).toLowerCase() : null;
+    const targetPath = targetObj.path ? pathIdentityKey(path.resolve(cwd, targetObj.path)) : null;
     if (!targetPath) {
       continue;
     }
@@ -636,10 +637,10 @@ function propertyMissingPaths(
   resolvedPaths: string[],
   wcRoot: string
 ): string[] {
-  const pathsWithProperty = new Set(properties.map((property) => property.path.toLowerCase()));
+  const pathsWithProperty = new Set(properties.map((property) => pathIdentityKey(path.resolve(wcRoot, property.path))));
   return resolvedPaths
     .map((target) => repoRelativePath(target, wcRoot))
-    .filter((target) => !pathsWithProperty.has(target.toLowerCase()));
+    .filter((target) => !pathsWithProperty.has(pathIdentityKey(path.resolve(wcRoot, target))));
 }
 
 function asArray<T>(value: T | T[] | undefined): T[] {
@@ -787,7 +788,7 @@ function uniqueProbes(probes: WcProbe[]): WcProbe[] {
   const unique: WcProbe[] = [];
 
   for (const probe of probes) {
-    const key = path.resolve(probe.target).toLowerCase();
+    const key = pathIdentityKey(probe.target);
     if (!seen.has(key)) {
       seen.add(key);
       unique.push(probe);

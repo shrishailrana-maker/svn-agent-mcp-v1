@@ -21,7 +21,7 @@ describe("SVN tool integration against a temp repository", () => {
 
       expect((await svnAdd({ cwd: fixture.wc, paths: ["app.txt"] })).ok).toBe(true);
       expect((await svnCommit({ cwd: fixture.wc, paths: ["app.txt"], message: commitMessage("Initial import") })).ok).toBe(true);
-      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "native", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
       execFileSync(svnExecutable(), ["commit", "-m", "set prop", file], { cwd: fixture.wc });
 
       fs.writeFileSync(file, "one\nTWO\n", "utf8");
@@ -439,6 +439,36 @@ describe("SVN tool integration against a temp repository", () => {
 
       expect(exported.ok).toBe(false);
       expect(exported.note).toContain("invalid revision");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats dash-prefixed export destinations and property values as operands", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const exported = await svnExport({
+        cwd: fixture.wc,
+        src: pathToFileURL(fixture.repo).href,
+        dest: "--force"
+      });
+
+      expect(exported.ok).toBe(true);
+      expect(fs.existsSync(path.join(fixture.wc, "--force"))).toBe(true);
+      expect(fs.existsSync(path.join(fixture.wc, path.basename(fixture.repo)))).toBe(false);
+
+      fs.writeFileSync(path.join(fixture.wc, "dash-property.txt"), "value\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["dash-property.txt"] })).ok).toBe(true);
+      const set = await svnPropset({
+        cwd: fixture.wc,
+        paths: ["dash-property.txt"],
+        name: "custom:dash-value",
+        value: "--force"
+      });
+      const got = await svnPropget({ cwd: fixture.wc, paths: ["dash-property.txt"], name: "custom:dash-value" });
+
+      expect(set.ok).toBe(true);
+      expect(got.properties).toEqual([{ path: "dash-property.txt", name: "custom:dash-value", value: "--force" }]);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

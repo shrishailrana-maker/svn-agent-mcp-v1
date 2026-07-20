@@ -2,6 +2,33 @@
 
 All notable changes to the SVN MCP are recorded here.
 
+## [1.1.1] - 2026-07-20
+
+### Added
+
+- Added macOS and Linux support through native SVN and dos2unix tools resolved from `PATH`, while
+  retaining the bundled Windows toolchain.
+- Added Windows, macOS, and Linux CI coverage.
+- Added an isolated packed-npm installation smoke test on every CI platform.
+- Added an MCP protocol handshake and tool-health check to the packed-install smoke test.
+- Added a disposable-repository MCP client smoke test covering guarded read and write workflows.
+- Standardized development and CI on Node.js 24.18.0 LTS with npm 11.16.0.
+- Added strict, version-pinned npm install-script approvals so new dependency lifecycle scripts fail
+  CI until reviewed.
+
+### Fixed
+
+- Fixed `svn_self_check` for global and local npm installations, where the valid runtime lives in
+  root `bin/` and `dist/` without a generated `current` junction or `releases/` directory.
+- Kept unprepared source checkouts invalid while reporting the active runtime layout explicitly.
+- Removed Windows-only `.exe` assumptions from explicit SVN and EOL tool overrides.
+- Updated compatible dependencies within the Node 24 LTS line and corrected the release label in
+  the bundled binary checksum manifest.
+- Protected export, import, and generic property operands from being parsed as SVN options.
+- Redacted credentials and sensitive query values from compact mutation receipts.
+- Returned working-copy-relative paths in compact diff summaries.
+- Hardened self-check against running/package version drift and incomplete runtime payloads.
+
 ## [1.1.0] - 2026-07-20
 
 ### Added

@@ -125,9 +125,14 @@ export function assertExistingTargets(paths: string[]): string | null {
 }
 
 export function isInsideOrEqual(candidate: string, root: string): boolean {
-  const normalizedRoot = path.resolve(root).toLowerCase();
-  const normalizedCandidate = path.resolve(candidate).toLowerCase();
+  const normalizedRoot = pathIdentityKey(root);
+  const normalizedCandidate = pathIdentityKey(candidate);
   return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(normalizedRoot + path.sep);
+}
+
+export function pathIdentityKey(value: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = path.resolve(value);
+  return platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 export function repoRelativePath(absPath: string, wcRoot: string): string {
@@ -182,7 +187,7 @@ export function riskySignals(absPaths: string[], wcRoot: string, statusByPath?: 
   for (const absPath of absPaths) {
     const relative = repoRelativePath(absPath, wcRoot).toLowerCase();
     const basename = path.basename(relative).toLowerCase();
-    const status = statusByPath?.get(absPath.toLowerCase());
+    const status = statusByPath?.get(pathIdentityKey(absPath));
 
     if (status === "D") {
       signals.add("delete-scheduled path");
@@ -213,7 +218,7 @@ export function isBuildSystemFile(relativePath: string): boolean {
 export function statusMap(changedPaths: ChangedPath[], cwd: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const changedPath of changedPaths) {
-    map.set(path.resolve(cwd, changedPath.path).toLowerCase(), changedPath.status);
+    map.set(pathIdentityKey(path.resolve(cwd, changedPath.path)), changedPath.status);
   }
   return map;
 }
@@ -243,7 +248,7 @@ function matchesGlob(relative: string, glob: string): boolean {
 
 function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
   const policyPath = path.join(wcRoot, ".svn-mcp-policy.json");
-  const cacheKey = path.resolve(wcRoot).toLowerCase();
+  const cacheKey = pathIdentityKey(wcRoot);
   const stat = safePolicyStat(policyPath);
   const cached = policyCache.get(cacheKey);
   if (cached && cached.exists === stat.exists && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {

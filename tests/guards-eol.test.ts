@@ -2,10 +2,19 @@ import { describe, expect, it } from "@jest/globals";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { messageFormatWarning, neverCommitHit, readonlyMode, resolveTargetsInsideWc, riskySignals } from "../src/guards.js";
+import { messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals } from "../src/guards.js";
 import { sniffEol } from "../src/eol.js";
 
 describe("guards and EOL sniffing", () => {
+  it("preserves case for POSIX path identities", () => {
+    const upper = path.resolve("CaseSensitiveRoot");
+    const lower = path.resolve("casesensitiveroot");
+
+    expect(pathIdentityKey(upper, "linux")).not.toBe(pathIdentityKey(lower, "linux"));
+    expect(pathIdentityKey(upper, "darwin")).not.toBe(pathIdentityKey(lower, "darwin"));
+    expect(pathIdentityKey(upper, "win32")).toBe(pathIdentityKey(lower, "win32"));
+  });
+
   it("detects never-commit paths and risky slices", () => {
     const root = path.resolve("C:/repo");
     expect(neverCommitHit(path.join(root, "bin", "app.dll"), root)).toBe("**/bin/**");

@@ -2,14 +2,15 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current release is `1.1.0`; each clone can prepare a self-contained local runtime bundle under `releases/v1.1.0`.
+The implementation contract lives in `docs/SPEC.md`. The current release is `1.1.1`; each source clone can prepare a local runtime under `releases/v1.1.1`, while npm installations run directly from package-root `dist/`.
 
-Requirements: Windows, Node.js 20 or newer, Git, and access to the public npm registry. The bundled
-SlikSVN and dos2unix runtime payload is Windows-only.
+Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer within the npm 11 line, Git, and access to the public npm registry. Windows uses the
+bundled SlikSVN and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
+`dos2unix`, and `unix2dos` must be available on `PATH`.
 
 ## Quick Start
 
-```powershell
+```shell
 git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git
 cd svn-agent-mcp-v1
 npm install
@@ -17,19 +18,33 @@ npm run prepare:local
 npm test
 ```
 
+## Agent-Managed Global Install
+
+Give this prompt to Codex, Claude, or another local coding agent:
+
+```text
+Install or update the SVN MCP globally with: npm install -g svn-agent-mcp@latest
+Verify the package with: npm list -g svn-agent-mcp --depth=0
+Resolve the executable with the platform command lookup: where.exe svn-agent-mcp on Windows, or command -v svn-agent-mcp on macOS/Linux.
+On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
+Ensure the MCP client entry is named "svn" and uses command "svn-agent-mcp", never a source checkout, junction, current pointer, or dist path. Do not add --readonly.
+Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
+After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. Expected latest for this release is 1.1.1; if npm reports a newer version, report the installed version instead of forcing a downgrade.
+```
+
 ## Agent Setup From GitHub
 
 Tell an agent:
 
 ```text
-Get the SVN MCP from https://github.com/shrishailrana-maker/svn-agent-mcp-v1, clone it to C:\MCP\svn-agent-mcp-v1, run npm install, run npm run prepare:local, then configure the MCP command as node C:\MCP\svn-agent-mcp-v1\current\dist\index.js.
+Get the SVN MCP from https://github.com/shrishailrana-maker/svn-agent-mcp-v1, clone it to a stable absolute path, run npm install, run npm run prepare:local, then configure the MCP command as node <absolute-clone-path>/current/dist/index.js. Use the host platform's native path syntax.
 ```
 
 The setup commands are:
 
-```powershell
-git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git C:\MCP\svn-agent-mcp-v1
-cd C:\MCP\svn-agent-mcp-v1
+```shell
+git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git
+cd svn-agent-mcp-v1
 npm install
 npm run prepare:local
 ```
@@ -37,7 +52,7 @@ npm run prepare:local
 Then configure the MCP client to run:
 
 ```text
-node C:\MCP\svn-agent-mcp-v1\current\dist\index.js
+node <absolute-clone-path>/current/dist/index.js
 ```
 
 ### Claude Desktop Config Example
@@ -49,7 +64,7 @@ Add this under `mcpServers`:
   "mcpServers": {
     "svn": {
       "command": "node",
-      "args": ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
+      "args": ["<absolute-clone-path>/current/dist/index.js"]
     }
   }
 }
@@ -60,7 +75,7 @@ Add this under `mcpServers`:
 ```toml
 [mcp_servers.svn]
 command = "node"
-args = ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
+args = ["<absolute-clone-path>/current/dist/index.js"]
 startup_timeout_sec = 120
 ```
 
@@ -70,18 +85,22 @@ Restart the MCP client after changing the config.
 
 For development from this working copy:
 
-```powershell
+```shell
 cd <path-to-svn-agent-mcp-v1>
 npm install
 npm run prepare:local
-node .\current\dist\index.js
+node ./current/dist/index.js
 ```
 
-The source tree includes `bin/` with the full SlikSVN `bin` payload plus the full dos2unix `bin` payload. Releases copy that folder to `current/bin`, so normal Windows clients do not need to locate or install `svn`, `svnversion`, `svnadmin`, `dos2unix`, `unix2dos`, or their required DLLs. See `THIRD_PARTY_NOTICES.md` and `THIRD_PARTY_CHECKSUMS.txt` for bundled binary notices and SHA256 hashes.
+The source tree includes `bin/` with the Windows SlikSVN and dos2unix payload. Releases copy that
+folder to `current/bin`, so Windows clients do not need separate tool installations. On macOS and
+Linux, the server ignores those `.exe` files and resolves the native tools from `PATH`. See
+`THIRD_PARTY_NOTICES.md` and `THIRD_PARTY_CHECKSUMS.txt` for bundled binary notices and hashes.
 
 ## Plug-And-Play Client Config
 
-Register the MCP once globally. Do not set `cwd` and do not set environment variables:
+After `npm install -g svn-agent-mcp@latest`, register the MCP once. Do not set `cwd` or add
+environment variables unless an existing installation already needs an explicit override:
 
 Generic client example:
 
@@ -89,8 +108,7 @@ Generic client example:
 {
   "mcpServers": {
     "svn": {
-      "command": "node",
-      "args": ["C:\\MCP\\svn-agent-mcp-v1\\current\\dist\\index.js"]
+      "command": "svn-agent-mcp"
     }
   }
 }
@@ -100,7 +118,8 @@ The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths 
 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
 
-Environment variables are not required for normal use. `SVN_MCP_RESPONSE_MODE` selects `compact`
+Environment variables are not required when the toolchain is bundled or available on `PATH`.
+`SVN_MCP_RESPONSE_MODE` selects `compact`
 (default), `standard`, or `full` responses. Compact mode returns bounded structured results and
 short text receipts; use `responseMode: "full"` on a call when bounded raw SVN diagnostics are needed.
 Errors retain bounded stdout/stderr diagnostics in every mode. Other development/test escape
@@ -118,9 +137,11 @@ mixed-revision checks, and commit verification run unchanged.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Run the TypeScript entry point during development |
+| `npm run check:runtime` | Verify the supported Node 24 LTS and npm 11 toolchain |
 | `npm run typecheck` | Check TypeScript without emitting build output |
 | `npm run build` | Compile `src/` into `dist/` |
 | `npm test` | Run the Jest test suite |
+| `npm run test:package` | Pack, install, and self-check the real npm artifact in isolation |
 | `npm run benchmark:responses` | Compare compact MCP, full MCP, and equivalent raw SVN output sizes |
 | `npm run prepare:local` | Build and prepare the local `current` runtime |
 | `npm run release:prepare` | Copy `dist/` and `bin/` into `releases/v<version>` and repoint `current` |
@@ -128,7 +149,7 @@ mixed-revision checks, and commit verification run unchanged.
 
 ## Operator Diagnostics
 
-Use `svn_self_check` to verify the MCP package, `current` release pointer, bundled binaries, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
+Use `svn_self_check` to verify the MCP package, runtime layout, resolved native or bundled tools, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
 
 For SVN property work, use `svn_propget` and guarded `svn_propset` instead of raw `svn propget`/`svn propset`. `svn_propset_eol_style` remains the safer shortcut for `svn:eol-style` normalization.
 

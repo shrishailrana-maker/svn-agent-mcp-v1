@@ -20,22 +20,27 @@ const releaseRoot = path.join(releasesRoot, `v${version}`);
 const releaseDist = path.join(releaseRoot, "dist");
 const releaseBin = path.join(releaseRoot, "bin");
 const current = path.join(root, "current");
+const bundleRuntime = process.platform === "win32";
 
 for (const target of [releasesRoot, releaseRoot, releaseDist, releaseBin, current]) {
   assertInside(root, target);
 }
 
 await assertDirectory(sourceDist, "dist is missing; run npm run build first");
-await assertDirectory(sourceBin, "bin is missing; bundled runtime payload is required");
+if (bundleRuntime) {
+  await assertDirectory(sourceBin, "bin is missing; bundled Windows runtime payload is required");
+}
 
 await fs.rm(releaseRoot, { recursive: true, force: true });
 await fs.mkdir(releaseRoot, { recursive: true });
 await fs.cp(sourceDist, releaseDist, { recursive: true });
-await fs.cp(sourceBin, releaseBin, { recursive: true });
+if (bundleRuntime) {
+  await fs.cp(sourceBin, releaseBin, { recursive: true });
+}
 
-const binFileCount = await countFiles(releaseBin);
+const binFileCount = bundleRuntime ? await countFiles(releaseBin) : 0;
 const distFileCount = await countFiles(releaseDist);
-if (binFileCount < 35) {
+if (bundleRuntime && binFileCount < 35) {
   throw new Error(`release bin payload is incomplete: expected at least 35 files, found ${binFileCount}`);
 }
 if (distFileCount < 60) {
@@ -47,7 +52,7 @@ await fs.symlink(path.relative(root, releaseRoot), current, process.platform ===
 
 console.log(`Prepared release v${version}`);
 console.log(`  dist: ${releaseDist} (${distFileCount} files)`);
-console.log(`  bin: ${releaseBin} (${binFileCount} files)`);
+console.log(bundleRuntime ? `  bin: ${releaseBin} (${binFileCount} files)` : "  bin: native PATH toolchain");
 console.log(`  current -> ${releaseRoot}`);
 
 async function assertDirectory(candidate, message) {

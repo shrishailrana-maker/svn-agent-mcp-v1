@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   dos2UnixExecutable,
+  isSupportedSvnVersion,
+  platformExecutableName,
   runExecutable,
   runExecutableStreamingLines,
   runSvn,
@@ -13,31 +15,49 @@ import {
 } from "../src/runner.js";
 
 describe("runner executable resolution", () => {
-  it("prefers bundled binaries when no explicit environment override is set", () => {
+  it("uses the executable naming convention for each supported platform", () => {
+    expect(platformExecutableName("svn", "win32")).toBe("svn.exe");
+    expect(platformExecutableName("svn", "darwin")).toBe("svn");
+    expect(platformExecutableName("svn", "linux")).toBe("svn");
+  });
+
+  it("requires SVN 1.14 or newer", () => {
+    expect(isSupportedSvnVersion("1.14.0")).toBe(true);
+    expect(isSupportedSvnVersion("1.15.2")).toBe(true);
+    expect(isSupportedSvnVersion("1.13.9")).toBe(false);
+    expect(isSupportedSvnVersion("not-a-version")).toBe(false);
+  });
+
+  it("prefers compatible bundled binaries and otherwise falls back to PATH", () => {
     withCleanToolEnv(() => {
       const bin = path.join(process.cwd(), "bin");
+      const expected = (name: string) => {
+        const bundled = path.join(bin, platformExecutableName(name));
+        return fs.existsSync(bundled) ? bundled : name;
+      };
 
-      expect(path.normalize(svnExecutable())).toBe(path.join(bin, "svn.exe"));
-      expect(path.normalize(svnVersionExecutable())).toBe(path.join(bin, "svnversion.exe"));
-      expect(path.normalize(svnAdminExecutable())).toBe(path.join(bin, "svnadmin.exe"));
-      expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(bin, "dos2unix.exe"));
-      expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(bin, "unix2dos.exe"));
+      expect(path.normalize(svnExecutable())).toBe(expected("svn"));
+      expect(path.normalize(svnVersionExecutable())).toBe(expected("svnversion"));
+      expect(path.normalize(svnAdminExecutable())).toBe(expected("svnadmin"));
+      expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(expected("dos2unix"));
+      expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(expected("unix2dos"));
     });
   });
 
   it("keeps explicit environment overrides ahead of the bundled bin", () => {
     withCleanToolEnv(() => {
-      const svn = path.join("C:", "custom", "svn.exe");
-      const eol = path.join("C:", "custom-eol");
+      const customRoot = process.platform === "win32" ? "C:\\custom" : "/opt/custom";
+      const svn = path.join(customRoot, platformExecutableName("svn"));
+      const eol = path.join(customRoot, "eol");
 
       process.env.SVN_AGENT_SVN_PATH = svn;
       process.env.SVN_AGENT_DOS2UNIX_DIR = eol;
 
       expect(path.normalize(svnExecutable())).toBe(svn);
-      expect(path.normalize(svnVersionExecutable())).toBe(path.join(path.dirname(svn), "svnversion.exe"));
-      expect(path.normalize(svnAdminExecutable())).toBe(path.join(path.dirname(svn), "svnadmin.exe"));
-      expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(eol, "dos2unix.exe"));
-      expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(eol, "unix2dos.exe"));
+      expect(path.normalize(svnVersionExecutable())).toBe(path.join(path.dirname(svn), platformExecutableName("svnversion")));
+      expect(path.normalize(svnAdminExecutable())).toBe(path.join(path.dirname(svn), platformExecutableName("svnadmin")));
+      expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(eol, platformExecutableName("dos2unix")));
+      expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(eol, platformExecutableName("unix2dos")));
     });
   });
 
@@ -45,17 +65,18 @@ describe("runner executable resolution", () => {
     withCleanToolEnv(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-bin-"));
       try {
-        for (const executable of ["svn.exe", "svnversion.exe", "svnadmin.exe", "dos2unix.exe", "unix2dos.exe"]) {
+        for (const name of ["svn", "svnversion", "svnadmin", "dos2unix", "unix2dos"]) {
+          const executable = platformExecutableName(name);
           fs.writeFileSync(path.join(dir, executable), "");
         }
 
         process.env.SVN_AGENT_BIN_DIR = dir;
 
-        expect(path.normalize(svnExecutable())).toBe(path.join(dir, "svn.exe"));
-        expect(path.normalize(svnVersionExecutable())).toBe(path.join(dir, "svnversion.exe"));
-        expect(path.normalize(svnAdminExecutable())).toBe(path.join(dir, "svnadmin.exe"));
-        expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(dir, "dos2unix.exe"));
-        expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(dir, "unix2dos.exe"));
+        expect(path.normalize(svnExecutable())).toBe(path.join(dir, platformExecutableName("svn")));
+        expect(path.normalize(svnVersionExecutable())).toBe(path.join(dir, platformExecutableName("svnversion")));
+        expect(path.normalize(svnAdminExecutable())).toBe(path.join(dir, platformExecutableName("svnadmin")));
+        expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(dir, platformExecutableName("dos2unix")));
+        expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(dir, platformExecutableName("unix2dos")));
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

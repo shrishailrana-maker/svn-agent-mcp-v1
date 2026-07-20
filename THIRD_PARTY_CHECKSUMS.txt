@@ -1,6 +1,6 @@
 # SHA256 checksums for bundled third-party binaries
 #
-# Generated from the files under bin/ for release v1.0.0.
+# Generated from the files under bin/ for release v1.1.1.
 
 95bbe265f53f94d60a99bd5660bcdd97de96045cddf508ae43482f91bfdb4755  bin/dos2unix.exe
 0f369ba0c0807a79216ad641a63c16b8f3d5ed1248d9db5a2447082f4cd984cd  bin/engines/capi.dll

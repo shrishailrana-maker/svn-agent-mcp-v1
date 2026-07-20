@@ -4,9 +4,11 @@ import path from "node:path";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   assertExistingTargets,
+  isInsideOrEqual,
   messageFormatWarning,
   neverCommitHit,
   neverCommitNote,
+  pathIdentityKey,
   readonlyMode,
   repoRelativePath,
   requireExplicitPaths,
@@ -91,7 +93,7 @@ export async function svnCommit(input: {
   }
 
   for (const target of guard.paths) {
-    const code = status.map.get(target.toLowerCase());
+    const code = status.map.get(pathIdentityKey(target));
     if (!code || code === "?" || code === "!" || code === "I") {
       return failEnvelope("svn commit", guard.cwd, `target not changed or not scheduled: ${repoRelativePath(target, guard.wcRoot)}`);
     }
@@ -209,7 +211,7 @@ export async function svnRevert(input: {
     return guard.envelope;
   }
 
-  if (guard.paths.some((target) => path.resolve(target).toLowerCase() === guard.wcRoot.toLowerCase())) {
+  if (guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
     return failEnvelope("svn revert", guard.cwd, "refusing to revert working-copy root");
   }
 
@@ -361,7 +363,7 @@ export async function svnPropset(input: {
     };
   }
 
-  const run = await runSvn(["propset", input.name, input.value, ...guard.paths], guard.cwd);
+  const run = await runSvn(["propset", "--", input.name, input.value, ...guard.paths], guard.cwd);
   const status = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
   return {
     ...envelopeFromRun({
@@ -388,7 +390,7 @@ export async function svnExport(input: { cwd?: string; src: string; dest: string
     }
     args.push("-r", input.revision);
   }
-  args.push(input.src, input.dest);
+  args.push("--", input.src, input.dest);
   const run = await runSvn(args, cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
@@ -432,7 +434,7 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
 
   const messageTemp = writeMessageTemp("svn-agent-import-", input.message);
   try {
-    const run = await runSvn(["import", "-F", messageTemp.file, importSource, input.url], cwd);
+    const run = await runSvn(["import", "-F", messageTemp.file, "--", importSource, input.url], cwd);
     return envelopeFromRun({
       run,
       ok: run.exitCode === 0,
@@ -505,7 +507,7 @@ function commitPathsWithAddedParents(paths: string[], wcRoot: string, statusByPa
   const expanded: string[] = [];
   for (const target of paths) {
     for (const ancestor of ancestorDirectories(target, wcRoot)) {
-      if (statusByPath.get(ancestor.toLowerCase()) === "A") {
+      if (statusByPath.get(pathIdentityKey(ancestor)) === "A") {
         pushUniquePath(expanded, ancestor);
       }
     }
@@ -516,11 +518,11 @@ function commitPathsWithAddedParents(paths: string[], wcRoot: string, statusByPa
 
 function ancestorDirectories(absPath: string, wcRoot: string): string[] {
   const root = path.resolve(wcRoot);
-  const normalizedRoot = root.toLowerCase();
+  const normalizedRoot = pathIdentityKey(root);
   const ancestors: string[] = [];
   let current = path.dirname(path.resolve(absPath));
 
-  while (current.toLowerCase() !== normalizedRoot && current.toLowerCase().startsWith(`${normalizedRoot}${path.sep}`)) {
+  while (pathIdentityKey(current) !== normalizedRoot && isInsideOrEqual(current, root)) {
     ancestors.push(current);
     current = path.dirname(current);
   }
@@ -529,8 +531,8 @@ function ancestorDirectories(absPath: string, wcRoot: string): string[] {
 }
 
 function pushUniquePath(paths: string[], value: string): void {
-  const normalized = path.resolve(value).toLowerCase();
-  if (!paths.some((existing) => path.resolve(existing).toLowerCase() === normalized)) {
+  const normalized = pathIdentityKey(value);
+  if (!paths.some((existing) => pathIdentityKey(existing) === normalized)) {
     paths.push(value);
   }
 }
@@ -603,7 +605,7 @@ async function svnMoveOrCopy(
   if (existsError) {
     return failEnvelope(commandName, context.cwd, existsError);
   }
-  if (path.resolve(src).toLowerCase() === context.wcRoot.toLowerCase()) {
+  if (pathIdentityKey(src) === pathIdentityKey(context.wcRoot)) {
     return failEnvelope(commandName, context.cwd, "refusing to copy or move working-copy root");
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "svn-agent-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,11 +16,23 @@
   "bin": {
     "svn-agent-mcp": "dist/index.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "CHANGELOG.md",
+    "README.md",
+    "SECURITY.md",
+    "THIRD_PARTY_CHECKSUMS.txt",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
+    "check:runtime": "node scripts/check-runtime.mjs",
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --passWithNoTests",
+    "test:client": "node scripts/smoke-mcp-client.mjs",
+    "test:package": "node scripts/smoke-packed-install.mjs",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "benchmark:responses": "node scripts/benchmark-responses.mjs",
     "prepare:local": "npm run build && npm run release:prepare",
@@ -35,18 +47,25 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.18.0 <25",
+    "npm": ">=11.16.0 <12"
   },
+  "packageManager": "npm@11.16.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "fast-xml-parser": "^5.9.3",
+    "fast-xml-parser": "^5.10.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
+    "@types/node": "^24.13.3",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.11",
-    "tsx": "^4.23.0",
+    "tsx": "^4.23.1",
     "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "unrs-resolver@1.12.2": true
   }
 }

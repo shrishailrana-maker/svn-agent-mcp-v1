@@ -28,7 +28,7 @@ project instructions, or build scripts.
   `Select-Object -Index`; PowerShell treats it as a string in some invocation contexts.
 - Use single-quoted strings for literal Windows paths. Use `curl.exe`, not `curl`, for real HTTP.
 - Multi-line strings to native exes: single-quoted here-strings with the closing `'@` at column 0.
-- For SVN EOL repair, use MCP `eol_fix_verified` or the bundled `unix2dos`/`dos2unix` binaries.
+- For SVN EOL repair, use MCP `eol_fix_verified` or its resolved `unix2dos`/`dos2unix` tools.
   Do not use PowerShell byte rewrites or redirects on tracked text files.
 - For SVN property reads/writes, use MCP `svn_propget` and guarded `svn_propset` before falling
   back to raw `svn propget` / `svn propset`.

@@ -21,26 +21,26 @@ export function svnExecutable(): string {
 
 export function svnVersionExecutable(): string {
   const svnPath = process.env.SVN_AGENT_SVN_PATH;
-  if (!svnPath || svnPath === "svn") {
+  if (!svnPath) {
     return bundledExecutable("svnversion") || "svnversion";
   }
 
-  return path.join(path.dirname(svnPath), "svnversion.exe");
+  return siblingExecutable(svnPath, "svnversion");
 }
 
 export function svnAdminExecutable(): string {
   const svnPath = process.env.SVN_AGENT_SVN_PATH;
-  if (!svnPath || svnPath === "svn") {
+  if (!svnPath) {
     return bundledExecutable("svnadmin") || "svnadmin";
   }
 
-  return path.join(path.dirname(svnPath), "svnadmin.exe");
+  return siblingExecutable(svnPath, "svnadmin");
 }
 
 export function dos2UnixExecutable(name: "dos2unix" | "unix2dos"): string {
   const dir = process.env.SVN_AGENT_DOS2UNIX_DIR;
   if (dir) {
-    return path.join(dir, `${name}.exe`);
+    return path.join(dir, platformExecutableName(name));
   }
 
   return bundledExecutable(name) || name;
@@ -68,10 +68,19 @@ function bundledBinDirs(): string[] {
 }
 
 function executableCandidates(dir: string, name: string): string[] {
-  const suffix = process.platform === "win32" ? ".exe" : "";
-  const primary = path.join(dir, `${name}${suffix}`);
+  const primary = path.join(dir, platformExecutableName(name));
   const fallback = path.join(dir, name);
   return primary === fallback ? [primary] : [primary, fallback];
+}
+
+export function platformExecutableName(name: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? `${name}.exe` : name;
+}
+
+function siblingExecutable(svnPath: string, name: string): string {
+  const directory = path.dirname(svnPath);
+  const executable = platformExecutableName(name);
+  return directory === "." ? executable : path.join(directory, executable);
 }
 
 export async function runExecutable(
@@ -293,19 +302,39 @@ export async function runDos2Unix(name: "dos2unix" | "unix2dos", args: string[],
 export async function startupProbe(cwd = process.cwd()): Promise<{
   readonly: boolean;
   svn: { ok: boolean; version: string | null; note: string };
+  svnversion: { ok: boolean; note: string };
+  svnadmin: { ok: boolean; note: string };
   dos2unix: { ok: boolean; note: string };
   unix2dos: { ok: boolean; note: string };
 }> {
   const svn = await runExecutable(svnExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
+  const svnversion = await runExecutable(svnVersionExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
+  const svnadmin = await runExecutable(svnAdminExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 });
   const dos2unix = await runExecutable(dos2UnixExecutable("dos2unix"), ["--version"], { cwd, timeout: 10000 });
   const unix2dos = await runExecutable(dos2UnixExecutable("unix2dos"), ["--version"], { cwd, timeout: 10000 });
+  const svnVersion = svn.exitCode === 0 ? svn.stdout.trim() : null;
+  const svnSupported = svnVersion !== null && isSupportedSvnVersion(svnVersion);
+  let svnNote = "";
+  if (svn.exitCode !== 0) {
+    svnNote = "svn unavailable";
+  } else if (!svnSupported) {
+    svnNote = `SVN 1.14 or newer required; found ${svnVersion}`;
+  }
 
   return {
     readonly: readonlyMode(),
     svn: {
-      ok: svn.exitCode === 0,
-      version: svn.exitCode === 0 ? svn.stdout.trim() : null,
-      note: svn.exitCode === 0 ? "" : "svn unavailable"
+      ok: svnSupported,
+      version: svnVersion,
+      note: svnNote
+    },
+    svnversion: {
+      ok: svnversion.exitCode === 0,
+      note: svnversion.exitCode === 0 ? "" : "svnversion unavailable"
+    },
+    svnadmin: {
+      ok: svnadmin.exitCode === 0,
+      note: svnadmin.exitCode === 0 ? "" : "svnadmin unavailable"
     },
     dos2unix: {
       ok: dos2unix.exitCode === 0,
@@ -316,6 +345,16 @@ export async function startupProbe(cwd = process.cwd()): Promise<{
       note: unix2dos.exitCode === 0 ? firstLine(unix2dos.stdout) : "unix2dos unavailable"
     }
   };
+}
+
+export function isSupportedSvnVersion(value: string): boolean {
+  const match = value.trim().match(/^(\d+)\.(\d+)/);
+  if (!match) {
+    return false;
+  }
+  const major = Number.parseInt(match[1] ?? "", 10);
+  const minor = Number.parseInt(match[2] ?? "", 10);
+  return major > 1 || (major === 1 && minor >= 14);
 }
 
 function firstLine(text: string): string {

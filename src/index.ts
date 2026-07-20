@@ -30,7 +30,7 @@ import {
 import type { ToolEnvelope } from "./types.js";
 
 export const serverName = "svn";
-export const serverVersion = "1.1.0";
+export const serverVersion = "1.1.1";
 export const readonlyMode = isReadonlyMode();
 
 export function createServer(): McpServer {
@@ -59,7 +59,7 @@ export function createServer(): McpServer {
       description: "Check package and bundled runtime health.",
       inputSchema: { cwd, detailed: z.boolean().optional(), ...response }
     },
-    async (args) => publicToolResult("svn_self_check", await svnSelfCheck(compactArgs(args)), args)
+    async (args) => publicToolResult("svn_self_check", await svnSelfCheck(compactArgs(args), serverVersion), args)
   );
 
   server.registerTool(
@@ -401,6 +401,9 @@ export async function main(): Promise<void> {
   const probe = await startupProbe();
   if (!probe.svn.ok) {
     console.error(`svn-agent starting with unavailable svn: ${probe.svn.note}`);
+  }
+  if (!probe.svnversion.ok || !probe.svnadmin.ok) {
+    console.error("svn-agent starting with an incomplete SVN toolchain; svnversion or svnadmin is unavailable");
   }
   if (!probe.dos2unix.ok || !probe.unix2dos.ok) {
     console.error("svn-agent starting with unavailable EOL converter; eol_fix_verified may fail");

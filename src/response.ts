@@ -263,7 +263,7 @@ function compactSelfCheck(payload: ToolEnvelope, request: Record<string, unknown
   return {
     ok: payload.ok,
     version: payload.server_version,
-    available: payload.toolchain_ok === true && payload.current_matches_package === true,
+    available: payload.toolchain_ok === true && (payload.runtime_layout_ok === true || payload.current_matches_package === true),
     ...(payload.note ? { diagnostics: payload.note } : {})
   };
 }
@@ -315,7 +315,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   const fileOffset = cursorOffset(request.fileCursor);
   const maxFiles = boundedInteger(request.maxFiles, 100, 1, 500);
   const files = sourceFiles.slice(fileOffset, fileOffset + maxFiles).map((file) => ({
-    path: redactText(stringValue(file.path)).slice(0, 4096),
+    path: redactText(relativePath(payload.cwd, stringValue(file.path))).slice(0, 4096),
     added: file.added,
     removed: file.removed,
     binary: file.binary,
@@ -505,12 +505,15 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
       : tool === "eol_fix_verified"
         ? payload.after !== undefined
         : false;
+  const source = receiptValue(request.src);
+  const target = receiptValue(request.dest ?? request.url);
+  const targetPath = receiptValue(request.path);
   const receipt: Record<string, unknown> = {
     ok: true,
     action: tool.replace(/^svn_/, ""),
-    ...(request.src !== undefined ? { source: request.src } : {}),
-    ...(request.dest !== undefined ? { target: request.dest } : request.url !== undefined ? { target: request.url } : {}),
-    ...(request.path !== undefined ? { path: request.path } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(target !== undefined ? { target } : {}),
+    ...(targetPath !== undefined ? { path: targetPath } : {}),
     ...(payload.revision !== null ? { revision: payload.revision } : {}),
     ...(verified ? { verifiedStatus: result } : { status: result })
   };
@@ -748,6 +751,10 @@ function firstLine(value: string): string {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function receiptValue(value: unknown): string | undefined {
+  return typeof value === "string" ? redactText(value).slice(0, 4096) : undefined;
 }
 
 function numberValue(value: unknown): number {

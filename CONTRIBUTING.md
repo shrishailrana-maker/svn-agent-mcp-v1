@@ -4,18 +4,18 @@ Thanks for taking the time to improve `svn-agent-mcp`.
 
 ## Prerequisites
 
-- Windows
-- Node.js 20 or newer
+- Windows, macOS, or Linux
+- Node.js 24.18.0 or newer within the Node 24 LTS line, with npm 11.16.0 or newer within the npm 11 line
 - Git
 - Access to the public npm registry
 
-The bundled runtime payload under `bin/` is Windows-only. Cross-platform support needs separate
-runtime packaging and testing.
+Windows uses the bundled runtime payload under `bin/`. On macOS and Linux, install Subversion 1.14
+or newer and dos2unix so `svn`, `svnversion`, `svnadmin`, `dos2unix`, and `unix2dos` are on `PATH`.
 
 ## Local Setup
 
-```powershell
-npm install
+```shell
+npm ci --strict-allow-scripts
 npm run prepare:local
 npm test
 ```
@@ -24,10 +24,13 @@ npm test
 
 Before opening a pull request, run:
 
-```powershell
+```shell
+npm run check:runtime
 npm run typecheck
 npm run prepare:local
 npm test
+npm run test:package
+npm run benchmark:responses
 npm audit --audit-level=moderate
 ```
 

@@ -4,14 +4,16 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { svnAdminExecutable, svnExecutable, svnVersionExecutable } from "../dist/runner.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryRoot = path.join(root, ".response-benchmark");
 const repository = path.join(temporaryRoot, "repo");
 const workingCopy = path.join(temporaryRoot, "wc");
 const cleanWorkingCopy = path.join(temporaryRoot, "clean-wc");
-const svn = path.join(root, "bin", "svn.exe");
-const svnadmin = path.join(root, "bin", "svnadmin.exe");
+const svn = svnExecutable();
+const svnadmin = svnAdminExecutable();
+const svnversion = svnVersionExecutable();
 const server = path.join(root, "dist", "index.js");
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
@@ -59,7 +61,7 @@ try {
   const rawPrecommit = [
     raw(svn, ["status", seed], workingCopy),
     raw(svn, ["diff", "--internal-diff", "-x", "--ignore-eol-style", seed], workingCopy),
-    raw(path.join(root, "bin", "svnversion.exe"), [workingCopy], workingCopy)
+    raw(svnversion, [workingCopy], workingCopy)
   ].join("\n");
   const cases = [
     ["clean status", "svn_status", { cwd: cleanWorkingCopy }, raw(svn, ["status"], cleanWorkingCopy)],
