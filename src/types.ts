@@ -52,6 +52,7 @@ export interface DiffFileSummary {
   added: number;
   removed: number;
   binary: boolean;
+  property_changed?: boolean;
 }
 
 export interface DiffSummary {

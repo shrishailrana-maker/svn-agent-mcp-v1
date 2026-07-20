@@ -1,6 +1,7 @@
 import type { ChangedPath, Conflict, Envelope, RunResult } from "./types.js";
 
 const DEFAULT_SUMMARY_LINES = 200;
+const DEFAULT_SUMMARY_CHARS = 16000;
 
 export function redactArgv(executable: string, args: string[]): string {
   const redacted = [executable, ...args];
@@ -21,7 +22,6 @@ export function redactArgv(executable: string, args: string[]): string {
 
   return redacted.map(quoteArgForDisplay).join(" ");
 }
-
 export function quoteArgForDisplay(arg: string): string {
   if (arg.length === 0) {
     return '""';
@@ -53,12 +53,13 @@ export function summarizeText(text: string, maxLines = DEFAULT_SUMMARY_LINES): {
 
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const lines = normalized.split("\n");
-  if (lines.length <= maxLines) {
+  if (lines.length <= maxLines && normalized.length <= DEFAULT_SUMMARY_CHARS) {
     return { text: normalized, truncated: false };
   }
 
+  const lineLimited = lines.slice(0, maxLines).join("\n");
   return {
-    text: lines.slice(0, maxLines).join("\n"),
+    text: lineLimited.slice(0, DEFAULT_SUMMARY_CHARS),
     truncated: true
   };
 }
@@ -164,19 +165,4 @@ export function noteFromRun(run: RunResult): string {
   }
 
   return run.exitCode === 0 ? "" : "svn command failed";
-}
-
-export function toToolResult<T extends Envelope>(payload: T): {
-  content: Array<{ type: "text"; text: string }>;
-  structuredContent: T;
-} {
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(payload, null, 2)
-      }
-    ],
-    structuredContent: payload
-  };
 }

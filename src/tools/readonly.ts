@@ -196,6 +196,7 @@ export async function svnDiff(input: {
   paths: string[];
   ignoreEol?: boolean;
   lineLimit?: number;
+  cursor?: string;
 }): Promise<ToolEnvelope & DiffSummary> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
@@ -229,11 +230,12 @@ export async function svnDiff(input: {
   }
 
   const lineLimit = input.lineLimit ?? defaultDiffLineLimit();
+  const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
   const ignoreEol = input.ignoreEol ?? true;
   const args = ignoreEol
     ? ["diff", "--internal-diff", "-x", "--ignore-eol-style", ...resolved.paths]
     : ["diff", "--internal-diff", ...resolved.paths];
-  const diffAccumulator = createDiffAccumulator(lineLimit);
+  const diffAccumulator = createDiffAccumulator(lineLimit, lineOffset);
   const run = await runSvnStreamingLines(args, context.cwd, diffAccumulator.pushLine, { stdoutLineLimit: lineLimit });
   const rawDiff = run.exitCode === 0 ? diffAccumulator.summary() : { per_file: [], diff_excerpt: "", truncated: false };
   const diff = { ...rawDiff, diff_excerpt: redactText(rawDiff.diff_excerpt) };
@@ -248,6 +250,8 @@ export async function svnDiff(input: {
       truncated: diff.truncated
     }),
     ...diff,
+    page_offset: lineOffset,
+    ...(diff.truncated ? { next_cursor: String(lineOffset + lineLimit) } : {}),
     ignore_eol: ignoreEol,
     ...(eolDiagnostic
       ? {
@@ -263,6 +267,8 @@ export async function svnLog(input: {
   paths?: string[];
   limit?: number;
   verbose?: boolean;
+  changedPaths?: boolean;
+  cursor?: string;
 }): Promise<ToolEnvelope> {
   const context = await getWcContext(input.cwd, input.paths ?? []);
   if (!context.ok) {
@@ -276,14 +282,19 @@ export async function svnLog(input: {
   }
 
   const logTargets = await repositoryLogTargets(context.cwd, resolved.paths);
-  const args = ["log", "--xml", "-l", String(input.limit ?? 10)];
-  if (input.verbose ?? true) {
+  const limit = input.limit ?? 10;
+  const args = ["log", "--xml", "-l", String(limit + 1)];
+  if (input.changedPaths ?? input.verbose ?? false) {
     args.push("-v");
+  }
+  if (input.cursor) {
+    args.push("-r", `${input.cursor}:0`);
   }
   args.push(...logTargets.targets);
 
   const run = await runSvn(args, context.cwd);
-  const entries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
+  const parsedEntries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
+  const entries = parsedEntries.slice(0, limit);
   return {
     ...envelopeFromRun({
       run,
@@ -292,6 +303,7 @@ export async function svnLog(input: {
       note: run.exitCode === 0 ? logTargets.note : noteFromRun(run)
     }),
     entries,
+    has_more: parsedEntries.length > entries.length,
     target_mode: logTargets.mode
   };
 }
@@ -440,7 +452,7 @@ export function dryRiskSignals(absPaths: string[], wcRoot: string, statusByPath?
 
 export function defaultDiffLineLimit(): number {
   const parsed = Number.parseInt(process.env.SVN_AGENT_MAX_DIFF_LINES ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 800;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 2000) : 200;
 }
 
 export function normalizeStatusLookup(statuses: Map<string, string>, target: string): string | undefined {

@@ -295,6 +295,15 @@ describe("SVN tool integration against a temp repository", () => {
       expect(log.revision).toBe(committed.revision);
       expect(log.target_mode).toBe("repository-url");
       expect(log.note).toContain("repository URL at HEAD");
+      expect(log.has_more).toBe(false);
+      expect(log.command).toContain("-l 2");
+      expect((log.entries as Array<{ changed_paths: unknown[] }>)[0]?.changed_paths).toEqual([]);
+
+      const changedPathLog = await svnLog({ cwd: fixture.wc, limit: 1, changedPaths: true });
+      expect((changedPathLog.entries as Array<{ changed_paths: unknown[] }>)[0]?.changed_paths).not.toEqual([]);
+
+      const olderLog = await svnLog({ cwd: fixture.wc, limit: 1, cursor: String(committed.revision! - 1) });
+      expect(Number(olderLog.revision)).toBeLessThan(committed.revision!);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

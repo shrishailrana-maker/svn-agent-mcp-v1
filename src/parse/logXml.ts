@@ -4,7 +4,8 @@ import type { ChangedPath } from "../types.js";
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
-  textNodeName: "text"
+  textNodeName: "text",
+  parseTagValue: false
 });
 
 export interface LogEntry {
@@ -29,26 +30,30 @@ export function parseLogXml(xml: string): LogEntry[] {
   return asArray(parsed.log?.logentry).map((entry) => {
     const entryObj = entry as {
       revision?: string | number;
-      author?: string;
-      date?: string;
-      msg?: string;
+      author?: unknown;
+      date?: unknown;
+      msg?: unknown;
       paths?: { path?: unknown };
     };
 
     return {
       rev: parseNumber(entryObj.revision),
-      author: entryObj.author ?? "",
-      date: entryObj.date ?? "",
-      msg: entryObj.msg ?? "",
+      author: parseText(entryObj.author),
+      date: parseText(entryObj.date),
+      msg: parseText(entryObj.msg),
       changed_paths: asArray(entryObj.paths?.path).map((pathEntry) => {
-        const pathObj = pathEntry as { action?: string; text?: string };
+        const pathObj = pathEntry as { action?: unknown; text?: unknown };
         return {
-          status: pathObj.action ?? "",
-          path: pathObj.text ?? ""
+          status: parseText(pathObj.action),
+          path: parseText(pathObj.text)
         };
       })
     };
   });
+}
+
+function parseText(value: unknown): string {
+  return value === undefined || value === null ? "" : String(value);
 }
 
 function parseNumber(value: string | number | undefined): number {

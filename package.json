@@ -1,6 +1,6 @@
 {
   "name": "svn-agent-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
   "type": "module",
   "main": "dist/index.js",
@@ -22,6 +22,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --passWithNoTests",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
+    "benchmark:responses": "node scripts/benchmark-responses.mjs",
     "prepare:local": "npm run build && npm run release:prepare",
     "release:prepare": "node scripts/prepare-release.mjs",
     "clean": "node scripts/clean.mjs"

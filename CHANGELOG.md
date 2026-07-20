@@ -2,6 +2,34 @@
 
 All notable changes to the SVN MCP are recorded here.
 
+## [1.1.0] - 2026-07-20
+
+### Added
+
+- Added `compact`, `standard`, and `full` MCP response modes with a compact default and the
+  `SVN_MCP_RESPONSE_MODE` server override.
+- Added bounded status results, diff continuation, log revision cursors, opt-in log changed paths,
+  field projection for info/property reads, failure-oriented EOL output, and compact mutation and
+  precommit receipts.
+- Added response-size coverage for large status/log/diff payloads and compact safety receipts.
+- Added a repeatable live MCP protocol response benchmark backed by a disposable local repository
+  and equivalent raw SVN commands.
+
+### Changed
+
+- Successful compact/standard calls no longer duplicate raw SVN stdout when parsed fields already
+  represent it; failures keep bounded diagnostics.
+- Changed `svn_log` changed-path collection from opt-out to opt-in and reduced the default diff
+  excerpt from 800 to 200 lines, with a hard 2,000-line maximum.
+- Capped stdout/stderr summaries at 16,000 characters in addition to the existing 200-line cap.
+- Bounded opt-in log details, diff file summaries, property reads, conflicts, and precommit failure
+  lists with explicit truncation or continuation metadata.
+- Compact precommit now distinguishes an evaluated guard refusal from an early diagnostic failure.
+- Compact precommit diff totals count only paths with content, binary, or property changes.
+- Preserved numeric-looking log authors/messages as strings and named ignored, external, and
+  property-only statuses consistently.
+- Redacted credential-like URL content in compact log/property values and projected repository URLs.
+
 ## [1.0.0] - 2026-07-08
 
 ### Changed

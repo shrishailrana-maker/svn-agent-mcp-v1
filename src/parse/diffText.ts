@@ -12,7 +12,7 @@ export function parseDiffText(text: string, lineLimit: number): DiffSummary {
   return accumulator.summary();
 }
 
-export function createDiffAccumulator(lineLimit: number): {
+export function createDiffAccumulator(lineLimit: number, lineOffset = 0): {
   pushLine: (line: string) => void;
   summary: () => DiffSummary;
 } {
@@ -20,16 +20,18 @@ export function createDiffAccumulator(lineLimit: number): {
   let current: DiffFileSummary | null = null;
   const excerptLines: string[] = [];
   let totalLines = 0;
+  let inPropertyChanges = false;
 
   return {
     pushLine(line: string): void {
       totalLines += 1;
-      if (excerptLines.length < lineLimit) {
+      if (totalLines > lineOffset && excerptLines.length < lineLimit) {
         excerptLines.push(line);
       }
 
       const indexMatch = /^Index: (.+)$/.exec(line);
       if (indexMatch) {
+        inPropertyChanges = false;
         current = {
           path: indexMatch[1] ?? "",
           added: 0,
@@ -37,6 +39,21 @@ export function createDiffAccumulator(lineLimit: number): {
           binary: false
         };
         perFile.set(current.path, current);
+        return;
+      }
+
+      const propertyMatch = /^Property changes on: (.+)$/.exec(line);
+      if (propertyMatch) {
+        const propertyPath = propertyMatch[1] ?? "";
+        current = perFile.get(propertyPath) ?? {
+          path: propertyPath,
+          added: 0,
+          removed: 0,
+          binary: false
+        };
+        current.property_changed = true;
+        perFile.set(propertyPath, current);
+        inPropertyChanges = true;
         return;
       }
 
@@ -49,9 +66,9 @@ export function createDiffAccumulator(lineLimit: number): {
         return;
       }
 
-      if (line.startsWith("+") && !line.startsWith("+++")) {
+      if (!inPropertyChanges && line.startsWith("+") && !line.startsWith("+++")) {
         current.added += 1;
-      } else if (line.startsWith("-") && !line.startsWith("---")) {
+      } else if (!inPropertyChanges && line.startsWith("-") && !line.startsWith("---")) {
         current.removed += 1;
       }
     },
@@ -59,7 +76,7 @@ export function createDiffAccumulator(lineLimit: number): {
       return {
         per_file: [...perFile.values()],
         diff_excerpt: excerptLines.join("\n"),
-        truncated: totalLines > lineLimit
+        truncated: totalLines > lineOffset + lineLimit
       };
     }
   };

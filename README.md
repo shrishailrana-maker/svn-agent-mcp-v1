@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. Version `1.0.0` is the first public open-source release and can prepare a self-contained local runtime bundle under `releases/v1.0.0`.
+The implementation contract lives in `docs/SPEC.md`. The current release is `1.1.0`; each clone can prepare a self-contained local runtime bundle under `releases/v1.1.0`.
 
 Requirements: Windows, Node.js 20 or newer, Git, and access to the public npm registry. The bundled
 SlikSVN and dos2unix runtime payload is Windows-only.
@@ -100,7 +100,18 @@ The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths 
 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
 
-Environment variables are not required for normal use. They are development/test escape hatches only: `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`, `SVN_AGENT_TIMEOUT_MS`, and `SVN_AGENT_MAX_DIFF_LINES`.
+Environment variables are not required for normal use. `SVN_MCP_RESPONSE_MODE` selects `compact`
+(default), `standard`, or `full` responses. Compact mode returns bounded structured results and
+short text receipts; use `responseMode: "full"` on a call when bounded raw SVN diagnostics are needed.
+Errors retain bounded stdout/stderr diagnostics in every mode. Other development/test escape
+hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
+`SVN_AGENT_TIMEOUT_MS`, and `SVN_AGENT_MAX_DIFF_LINES`.
+
+High-volume reads are bounded by default. Log messages and changed paths are capped and opt-in
+where appropriate. Diff collection defaults to 200 lines, compact excerpts are capped at 3,000
+characters, and large file/property/status/EOL collections expose explicit continuation cursors.
+Compact mode changes response size only; path containment, mutation guards, EOL checks,
+mixed-revision checks, and commit verification run unchanged.
 
 ## Commands
 
@@ -110,6 +121,7 @@ Environment variables are not required for normal use. They are development/test
 | `npm run typecheck` | Check TypeScript without emitting build output |
 | `npm run build` | Compile `src/` into `dist/` |
 | `npm test` | Run the Jest test suite |
+| `npm run benchmark:responses` | Compare compact MCP, full MCP, and equivalent raw SVN output sizes |
 | `npm run prepare:local` | Build and prepare the local `current` runtime |
 | `npm run release:prepare` | Copy `dist/` and `bin/` into `releases/v<version>` and repoint `current` |
 | `npm run clean` | Remove root `dist/` with the Node clean script |

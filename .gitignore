@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+.response-benchmark/
 current
 releases/
 

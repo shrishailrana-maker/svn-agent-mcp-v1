@@ -127,8 +127,11 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
       status: statusCode ?? "",
       added: diffFile?.added ?? 0,
       removed: diffFile?.removed ?? 0,
+      binary: diffFile?.binary ?? false,
+      property_changed: diffFile?.property_changed ?? false,
       eol: eolFile?.kind ?? null,
       eol_style: eolFile?.eol_style ?? null,
+      eol_mismatch: eolFile?.mismatch ?? false,
       bom: eolFile?.has_bom ?? false,
       pure_eol_churn: pureEolChurn,
       guard
@@ -167,6 +170,7 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
     verdict,
     per_file: perFile,
     risk_signals: riskSignals,
+    mixed_revision: mixedRevision,
     diff_excerpt: diff.diff_excerpt,
     truncated: diff.truncated
   };

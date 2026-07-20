@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
-import { createEnvelope, noteFromRun, redactArgv, redactText } from "../src/envelope.js";
+import { createEnvelope, noteFromRun, redactArgv, redactText, summarizeText } from "../src/envelope.js";
 import { createDiffAccumulator, parseDiffText } from "../src/parse/diffText.js";
+import { defaultDiffLineLimit } from "../src/tools/readonly.js";
 import type { RunResult } from "../src/types.js";
 
 describe("diff parsing and command redaction", () => {
@@ -33,6 +34,40 @@ describe("diff parsing and command redaction", () => {
       diff_excerpt: "Index: streamed.txt\n+one",
       truncated: true
     });
+  });
+
+  it("pages streamed diff excerpts without losing complete per-file counts", () => {
+    const diff = createDiffAccumulator(2, 2);
+    for (const line of ["Index: streamed.txt", "+one", "+two", "-old", "+three"]) {
+      diff.pushLine(line);
+    }
+
+    expect(diff.summary()).toEqual({
+      per_file: [{ path: "streamed.txt", added: 3, removed: 1, binary: false }],
+      diff_excerpt: "+two\n-old",
+      truncated: true
+    });
+  });
+
+  it("marks property changes without counting property values as source lines", () => {
+    const diff = parseDiffText([
+      "Index: settings.txt",
+      "===================================================================",
+      "Property changes on: settings.txt",
+      "___________________________________________________________________",
+      "Modified: svn:eol-style",
+      "## -1 +1 ##",
+      "-LF",
+      "+CRLF"
+    ].join("\n"), 20);
+
+    expect(diff.per_file).toEqual([{
+      path: "settings.txt",
+      added: 0,
+      removed: 0,
+      binary: false,
+      property_changed: true
+    }]);
   });
 
   it("redacts URL userinfo and sensitive query parameters", () => {
@@ -128,6 +163,34 @@ describe("diff parsing and command redaction", () => {
     expect(note).toContain("failsafe");
     expect(note).toContain("must never be bypassed");
     expect(noteFromRun(fakeRun("svn: E170001: authorization failed"))).not.toContain("failsafe");
+  });
+
+  it("uses a token-conscious default diff excerpt cap", () => {
+    const previous = process.env.SVN_AGENT_MAX_DIFF_LINES;
+    delete process.env.SVN_AGENT_MAX_DIFF_LINES;
+    try {
+      expect(defaultDiffLineLimit()).toBe(200);
+    } finally {
+      if (previous === undefined) delete process.env.SVN_AGENT_MAX_DIFF_LINES;
+      else process.env.SVN_AGENT_MAX_DIFF_LINES = previous;
+    }
+  });
+
+  it("clamps the diff environment override to the public hard limit", () => {
+    const previous = process.env.SVN_AGENT_MAX_DIFF_LINES;
+    process.env.SVN_AGENT_MAX_DIFF_LINES = "999999";
+    try {
+      expect(defaultDiffLineLimit()).toBe(2000);
+    } finally {
+      if (previous === undefined) delete process.env.SVN_AGENT_MAX_DIFF_LINES;
+      else process.env.SVN_AGENT_MAX_DIFF_LINES = previous;
+    }
+  });
+
+  it("caps diagnostic summaries by characters as well as lines", () => {
+    const summary = summarizeText("x".repeat(50000));
+    expect(summary.text.length).toBeLessThanOrEqual(16000);
+    expect(summary.truncated).toBe(true);
   });
 });
 

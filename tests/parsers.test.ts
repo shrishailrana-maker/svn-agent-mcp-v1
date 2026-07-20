@@ -35,6 +35,7 @@ describe("SVN text and XML parsers", () => {
     <entry path="src/b.ts"><wc-status item="conflicted" revision="1" tree-conflicted="true" /></entry>
     <entry path="src/props.txt"><wc-status item="normal" props="modified" /></entry>
     <entry path="src/prop-conflict.txt"><wc-status item="normal" props="conflicted" /></entry>
+    <entry path="scratch/ignored.txt"><wc-status item="ignored" /></entry>
   </target>
 </status>`);
 
@@ -42,7 +43,8 @@ describe("SVN text and XML parsers", () => {
       { status: "M", path: "src/a.ts" },
       { status: "C", path: "src/b.ts" },
       { status: "_M", path: "src/props.txt" },
-      { status: "C", path: "src/prop-conflict.txt" }
+      { status: "C", path: "src/prop-conflict.txt" },
+      { status: "I", path: "scratch/ignored.txt" }
     ]);
     expect(parsed.conflicts).toEqual([
       { path: "src/b.ts", type: "text" },
@@ -113,6 +115,22 @@ describe("SVN text and XML parsers", () => {
         date: "d",
         msg: "m",
         changed_paths: [{ status: "M", path: "/trunk/a" }]
+      }
+    ]);
+  });
+
+  it("preserves numeric-looking log text as strings", () => {
+    expect(
+      parseLogXml(
+        `<log><logentry revision="9"><author>123</author><date>20260720</date><msg>456</msg><paths><path action="M">/123</path></paths></logentry></log>`
+      )
+    ).toEqual([
+      {
+        rev: 9,
+        author: "123",
+        date: "20260720",
+        msg: "456",
+        changed_paths: [{ status: "M", path: "/123" }]
       }
     ]);
   });

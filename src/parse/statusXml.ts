@@ -13,6 +13,8 @@ const statusMap: Record<string, string> = {
   deleted: "D",
   replaced: "R",
   conflicted: "C",
+  external: "X",
+  ignored: "I",
   unversioned: "?",
   missing: "!",
   incomplete: "!",
