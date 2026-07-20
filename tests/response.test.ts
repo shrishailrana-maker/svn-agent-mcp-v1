@@ -29,7 +29,7 @@ describe("public MCP response shaping", () => {
 
     expect(structured.counts).toEqual({ added: 200, modified: 800 });
     expect(items).toHaveLength(25);
-    expect(items[0]).toEqual({ path: "src\\file-0000.ts", status: "added" });
+    expect(items[0]).toEqual({ path: "src/file-0000.ts", status: "added" });
     expect(structured.truncated).toBe(true);
     expect(structured.nextCursor).toBe("25");
     expect(structured).not.toHaveProperty("stdout_summary");

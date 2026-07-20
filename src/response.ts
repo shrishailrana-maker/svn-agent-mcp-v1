@@ -604,9 +604,8 @@ function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>):
 }
 
 function compactStatusItem(item: ChangedPath, root: string): { path: string; status: string } {
-  const relative = path.isAbsolute(item.path) ? path.relative(root, item.path) : item.path;
   return {
-    path: relative || ".",
+    path: relativePath(root, item.path),
     status: normalizeStatus(item.status)
   };
 }
@@ -739,10 +738,16 @@ function projectFields(source: Record<string, unknown>, fields: string[]): Recor
 }
 
 function relativePath(root: string, candidate: string): string {
-  if (!candidate || !path.isAbsolute(candidate)) {
+  if (!candidate) {
     return candidate;
   }
-  return path.relative(root, candidate) || ".";
+  const windowsAbsolute = /^[A-Za-z]:[\\/]/;
+  const relative = windowsAbsolute.test(root) && windowsAbsolute.test(candidate)
+    ? path.win32.relative(root, candidate)
+    : path.posix.isAbsolute(root) && path.posix.isAbsolute(candidate)
+      ? path.posix.relative(root, candidate)
+      : candidate;
+  return (relative || ".").replace(/\\/g, "/");
 }
 
 function firstLine(value: string): string {

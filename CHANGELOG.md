@@ -27,6 +27,7 @@ All notable changes to the SVN MCP are recorded here.
 - Protected export, import, and generic property operands from being parsed as SVN options.
 - Redacted credentials and sensitive query values from compact mutation receipts.
 - Returned working-copy-relative paths in compact diff summaries.
+- Normalized compact relative paths to forward slashes across operating systems.
 - Hardened self-check against running/package version drift and incomplete runtime payloads.
 
 ## [1.1.0] - 2026-07-20

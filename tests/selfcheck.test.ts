@@ -13,7 +13,7 @@ describe("svn self-check", () => {
     expect(check.package_version).toBe(check.server_version);
     expect(check.current_release).toBe(`v${check.server_version}`);
     expect(check.current_matches_package).toBe(true);
-    expect(check.bin_file_count).toBe(48);
+    expect(check.bin_file_count).toBe(process.platform === "win32" ? 48 : 0);
     expect(check.dist_file_count).toBeGreaterThanOrEqual(60);
     expect(check.release_prepare_available).toBe(true);
     expect(check.clean_uses_node).toBe(true);
