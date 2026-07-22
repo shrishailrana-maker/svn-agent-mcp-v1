@@ -4,13 +4,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
-import { serverVersion } from "../src/index.js";
+import { handleTool, serverVersion } from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
 
 describe("server entrypoint launch detection", () => {
   it("uses the package version as the MCP server version", () => {
     expect(serverVersion).toBe(packageJson.version);
+  });
+
+  it("contains unexpected tool failures in a redacted error envelope", async () => {
+    const secret = "unexpected-private-detail";
+    const result = await handleTool(
+      "svn_status",
+      { responseMode: "compact" },
+      new AbortController().signal,
+      async () => { throw new Error(secret); }
+    );
+
+    expect(result.structuredContent).toEqual({ ok: false, note: "unexpected MCP tool failure" });
+    expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it("starts the server when launched through a directory junction", async () => {

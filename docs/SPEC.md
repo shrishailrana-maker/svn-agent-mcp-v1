@@ -233,7 +233,9 @@ interface Envelope {
 
 Tools add tool-specific fields beside these (documented per tool). Public compact responses map
 those fields to smaller camel-case receipts; `responseMode:"full"` returns the envelope above.
-Internally, errors are always envelopes and never thrown raw stacks. Compact public errors retain
+Internally, errors are always envelopes and never thrown raw stacks; the public tool boundary
+converts unexpected parser, filesystem, and runtime exceptions into a generic failure envelope.
+Compact public errors retain
 `ok:false`, the actionable note, bounded diagnostics, conflicts, and recovery hints while omitting
 empty legacy fields. Redaction applies to `command`, `stdout_summary`, `stderr_summary`, compact
 log/property values, and projected repository URLs: `--password`/`--username` values, inline
@@ -517,7 +519,9 @@ written; when every target already matches, the call succeeds as a no-op with an
 every target. Rarely needed once §10.2 lands.
 
 **`svn_propset`** — `{ cwd?, paths: string[], name: string, value: string, riskAck?: boolean = false }`
-argv: `svn propset -- <name> <value> <paths…>`. Guard: explicit existing paths inside one working
+argv: `svn propset -F <tmpfile> -- <name> <paths…>`. The bounded value is written to a mode-0600
+temporary file outside the working copy and removed in `finally`, so it is not echoed in the
+displayed process command. Guard: explicit existing paths inside one working
 copy, READONLY refusal, never-commit target checks, bounded property names/values. `riskAck:true`
 is required for high-risk properties that can hide or redirect repository behavior:
 `svn:ignore`, `svn:global-ignores`, `svn:externals`, and `svn:auto-props`.
@@ -669,12 +673,14 @@ housekeeping — separate initiative.
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 
-### Spec 1.22 / v1.2.0 (unreleased) — 2026-07-22
+### Spec 1.22 / v1.2.0 — 2026-07-22
 
 - Adds guarded delete, canonical conflict resolution naming, MCP request cancellation, compact
   snapshots, exact/range history and diff queries, and bounded historical cat/blame tools.
 - Requires explicit acknowledgement for root commits and rejects whitespace-only messages.
 - Ships the specification and generated MCP API contract in npm artifacts.
+- Contains unexpected tool failures in structured envelopes and keeps arbitrary property values
+  out of displayed process commands by using secure temporary files.
 
 ### Spec 1.21 / v1.1.3 — 2026-07-20
 

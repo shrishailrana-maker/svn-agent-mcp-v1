@@ -8,8 +8,8 @@
   compact MCP responses, the bundled Windows runtime, and the external SVN MCP comparison decision.
 - `../CHANGELOG.md` records release history.
 
-The registry release is `1.1.3`; the current source version is `1.2.0`, with changes listed under
-Unreleased in `../CHANGELOG.md`.
+The registry and current source release is `1.2.0`; release history is recorded in
+`../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the
 local ignored `current` release pointer, then use `svn_self_check` to verify it and the bundled
 runtime. Global npm installations use package-root `dist/` and `bin/` directly and do not require

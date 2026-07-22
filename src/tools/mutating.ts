@@ -470,18 +470,23 @@ export async function svnPropset(input: {
     };
   }
 
-  const run = await runSvn(["propset", "--", input.name, input.value, ...guard.paths.map(escapeSvnTarget)], guard.cwd);
-  const status = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
-  return {
-    ...envelopeFromRun({
-      run,
-      ok: run.exitCode === 0,
-      changed_paths: status?.changed_paths ?? [],
-      conflicts: status?.conflicts ?? [],
-      note: run.exitCode === 0 ? "" : noteFromRun(run)
-    }),
-    risk_signals: riskSignals
-  };
+  const propertyTemp = writeSecureTemp("svn-agent-property-", "value.txt", input.value);
+  try {
+    const run = await runSvn(["propset", "-F", propertyTemp.file, "--", input.name, ...guard.paths.map(escapeSvnTarget)], guard.cwd);
+    const status = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
+    return {
+      ...envelopeFromRun({
+        run,
+        ok: run.exitCode === 0,
+        changed_paths: status?.changed_paths ?? [],
+        conflicts: status?.conflicts ?? [],
+        note: run.exitCode === 0 ? "" : noteFromRun(run)
+      }),
+      risk_signals: riskSignals
+    };
+  } finally {
+    fs.rmSync(propertyTemp.dir, { recursive: true, force: true });
+  }
 }
 
 export async function svnExport(input: {
@@ -799,9 +804,13 @@ export function statTargetForMutation(
 }
 
 function writeMessageTemp(prefix: string, message: string): { dir: string; file: string } {
+  return writeSecureTemp(prefix, "message.txt", normalizeMessageFile(message));
+}
+
+function writeSecureTemp(prefix: string, filename: string, value: string): { dir: string; file: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const file = path.join(dir, "message.txt");
-  fs.writeFileSync(file, normalizeMessageFile(message), { encoding: "utf8", mode: 0o600 });
+  const file = path.join(dir, filename);
+  fs.writeFileSync(file, value, { encoding: "utf8", mode: 0o600 });
   return { dir, file };
 }
 

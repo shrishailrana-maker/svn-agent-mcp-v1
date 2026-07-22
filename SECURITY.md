@@ -34,6 +34,8 @@ Please do not publish exploit details until a fix or mitigation is available.
   than silently discarded.
 - Response redaction covers credential-bearing URLs and common secret query parameters, but it is
   not a substitute for keeping credentials out of versioned file content and commit messages.
+- Commit/import messages and generic property values are passed through mode-0600 temporary files
+  outside the working copy and removed in `finally`, rather than embedded in displayed commands.
 - SVN and conversion processes inherit the host environment so native credential caches, proxy
   settings, home directories, and configured SSH transports continue to work. Treat MCP process
   environment variables as trusted operator configuration and do not place secrets in debug logs.

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
+import { failEnvelope } from "./envelope.js";
 import { readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
@@ -474,13 +475,19 @@ export function createServer(): McpServer {
   return server;
 }
 
-async function handleTool(
+export async function handleTool(
   tool: string,
   request: Record<string, unknown>,
   signal: AbortSignal,
   operation: () => Promise<ToolEnvelope>
 ) {
-  return withRequestCancellation(signal, async () => publicToolResult(tool, await operation(), request));
+  try {
+    return await withRequestCancellation(signal, async () => publicToolResult(tool, await operation(), request));
+  } catch {
+    const cwd = typeof request.cwd === "string" ? request.cwd : process.cwd();
+    const note = signal.aborted ? "svn request cancelled" : "unexpected MCP tool failure";
+    return publicToolResult(tool, failEnvelope(tool, cwd, note), request);
+  }
 }
 
 function publicToolResult(tool: string, payload: ToolEnvelope, request: Record<string, unknown>) {

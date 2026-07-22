@@ -596,6 +596,8 @@ describe("SVN tool integration against a temp repository", () => {
         value: "checked by MCP"
       });
       expect(set.ok).toBe(true);
+      expect(set.command).toContain("-F");
+      expect(set.command).not.toContain("checked by MCP");
 
       const got = await svnPropget({ cwd: fixture.wc, paths: ["props.txt"], name: "custom:review-note" });
       expect(got.ok).toBe(true);

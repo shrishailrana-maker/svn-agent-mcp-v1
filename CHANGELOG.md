@@ -4,6 +4,8 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-22
+
 ### Added
 
 - Added guarded `svn_delete` with dry-run-by-default behavior, explicit paths, root refusal,
@@ -26,6 +28,23 @@ All notable changes to the SVN MCP are recorded here.
 ### Fixed
 
 - Compact revert receipts now identify the default dry-run behavior even when `dryRun` is omitted.
+- Blocked direct imports of files beneath sensitive `.ssh`, `.git`, and `.svn` directories by
+  preserving ancestor path segments during guard evaluation.
+- Refused conflicted, obstructed, external, and unknown working-copy states during precommit and
+  commit instead of reporting them as committable.
+- Distinguished colons inside date revisions from revision-range separators.
+- Kept the requested lower revision bound across paginated numeric `svn_log` ranges.
+- Contained NUL-byte process launch failures and unexpected tool exceptions in structured MCP
+  error envelopes.
+- Kept arbitrary `svn_propset` values out of displayed process commands by passing them through a
+  mode-0600 temporary `-F` file.
+- Bounded retained streamed stdout and diff excerpts independently of line and file-summary caps.
+
+### Security
+
+- Updated transitive dependencies and the MCP HTTP adapter override; `npm audit` reports no known
+  vulnerabilities at the moderate threshold.
+- Added regressions for sensitive import ancestors and end-to-end conflicted working-copy refusal.
 
 ### Packaging
 
