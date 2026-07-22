@@ -19,6 +19,9 @@ All notable changes to the SVN MCP are recorded here.
   refused before SVN runs.
 - Agent install instructions now compare the installed version with `npm view` instead of pinning a
   remembered latest version.
+- Builds and typechecks now run on native TypeScript 7 (`tsc` 7.0.2), while the Jest `ts-jest`
+  transform keeps the TypeScript 6 compiler through the `@typescript/typescript6` shim (`tsc6`)
+  until tooling gains TypeScript 7 API support.
 
 ### Fixed
 
