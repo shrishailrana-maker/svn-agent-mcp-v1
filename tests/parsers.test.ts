@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
 import { parseCommittedRevision } from "../src/parse/commitText.js";
+import { parseBlameXml } from "../src/parse/blameXml.js";
 import { parseDiffText } from "../src/parse/diffText.js";
 import { parseInfoXml } from "../src/parse/infoXml.js";
 import { parseLogXml } from "../src/parse/logXml.js";
@@ -140,6 +141,17 @@ describe("SVN text and XML parsers", () => {
         msg: "456",
         changed_paths: [{ status: "M", path: "/123" }]
       }
+    ]);
+  });
+
+  it("parses bounded blame metadata without file contents", () => {
+    expect(parseBlameXml(`<?xml version="1.0"?>
+<blame><target path="history.txt">
+  <entry line-number="1"><commit revision="4"><author>dev</author><date>2026-07-22</date></commit></entry>
+  <entry line-number="2"><commit revision="5"><author>reviewer</author><date>2026-07-23</date></commit></entry>
+</target></blame>`)).toEqual([
+      { line: 1, revision: 4, author: "dev", date: "2026-07-22" },
+      { line: 2, revision: 5, author: "reviewer", date: "2026-07-23" }
     ]);
   });
 

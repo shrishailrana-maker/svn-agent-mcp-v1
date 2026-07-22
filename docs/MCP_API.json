@@ -1,0 +1,1504 @@
+{
+  "schemaVersion": 1,
+  "server": {
+    "name": "svn",
+    "version": "1.2.0"
+  },
+  "tools": [
+    {
+      "name": "svn_self_check",
+      "description": "Check package and bundled runtime health.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "detailed": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_diagnose",
+      "description": "Diagnose local and remote working-copy health.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_status",
+      "description": "Return scoped status, counts, and conflicts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "includeIgnored": {
+            "type": "boolean"
+          },
+          "hideNoise": {
+            "type": "boolean"
+          },
+          "statuses": {
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "includeUnversioned": {
+            "type": "boolean"
+          },
+          "countOnly": {
+            "type": "boolean"
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_info",
+      "description": "Return WC revision and mixed-revision state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "fields": {
+            "maxItems": 11,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "root",
+                "revision",
+                "url",
+                "repositoryRoot",
+                "mixedRevision",
+                "revisionRange",
+                "localModifications",
+                "switched",
+                "partial",
+                "remoteHeadRevision",
+                "staleBase"
+              ]
+            }
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_snapshot",
+      "description": "Return one compact working-copy status and revision snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "includeIgnored": {
+            "type": "boolean"
+          },
+          "hideNoise": {
+            "type": "boolean"
+          },
+          "statuses": {
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "includeUnversioned": {
+            "type": "boolean"
+          },
+          "countOnly": {
+            "type": "boolean"
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_diff",
+      "description": "Return a bounded scoped diff and per-file counts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "ignoreEol": {
+            "type": "boolean"
+          },
+          "lineLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "diffMode": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "compact",
+              "full"
+            ]
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 64000
+          },
+          "maxHunksPerFile": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "maxFiles": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "fileCursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 257,
+            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})(?::(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\}))?$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_log",
+      "description": "Return bounded structured history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "verbose": {
+            "type": "boolean"
+          },
+          "fullMessage": {
+            "type": "boolean"
+          },
+          "changedPaths": {
+            "type": "boolean"
+          },
+          "maxMessageChars": {
+            "type": "integer",
+            "minimum": 32,
+            "maximum": 8000
+          },
+          "maxChangedPaths": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 65,
+            "pattern": "^\\d+(?::\\d+)?$"
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 257,
+            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})(?::(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\}))?$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_cat",
+      "description": "Return a bounded page of one file at an optional revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 64000
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_blame",
+      "description": "Return bounded line attribution for one file.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+          },
+          "maxLines": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "eol_check",
+      "description": "Check EOL, BOM, and svn:eol-style.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "includePassing": {
+            "type": "boolean"
+          },
+          "countOnly": {
+            "type": "boolean"
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_propget",
+      "description": "Read one property from explicit paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "fields": {
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "path",
+                "name",
+                "value"
+              ]
+            }
+          },
+          "maxValueChars": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 64000
+          },
+          "countOnly": {
+            "type": "boolean"
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths",
+          "name"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_precommit",
+      "description": "Run guarded status, diff, EOL, and revision checks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "lineLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "includeDiff": {
+            "type": "boolean"
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 64000
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "eol_fix_verified",
+      "description": "Normalize and verify one file's EOL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "crlf",
+              "lf"
+            ]
+          },
+          "removeBom": {
+            "type": "boolean"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "allowLarge": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_add",
+      "description": "Guarded add for explicit paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "allowRecursive": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_commit",
+      "description": "Guarded commit with explicit paths and message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000,
+            "pattern": "^[^\\x00]*$"
+          },
+          "riskAck": {
+            "type": "boolean"
+          },
+          "allowRoot": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths",
+          "message"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_move",
+      "description": "Guarded working-copy move.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "src": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "dest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "src",
+          "dest"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_rename",
+      "description": "Alias for guarded working-copy move.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "src": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "dest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "src",
+          "dest"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_copy",
+      "description": "Guarded working-copy copy.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "src": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "dest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "src",
+          "dest"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_update",
+      "description": "Guarded update with conflicts postponed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "description": "Optional paths inside one WC.",
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "updateAll": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_revert",
+      "description": "Preview or perform a guarded revert.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "allowRecursive": {
+            "type": "boolean"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_delete",
+      "description": "Preview or schedule guarded deletion of explicit paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "allowRecursive": {
+            "type": "boolean"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "riskAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_resolve",
+      "description": "Resolve one conflict with an explicit mode.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "accept": {
+            "type": "string",
+            "enum": [
+              "working",
+              "mine-full",
+              "theirs-full",
+              "base"
+            ]
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "accept"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_resolved",
+      "description": "Deprecated alias for svn_resolve.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "accept": {
+            "type": "string",
+            "enum": [
+              "working",
+              "mine-full",
+              "theirs-full",
+              "base"
+            ]
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "accept"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_cleanup",
+      "description": "Run non-destructive WC cleanup.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_propset_eol_style",
+      "description": "Set svn:eol-style on explicit files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "style": {
+            "type": "string",
+            "enum": [
+              "native",
+              "LF",
+              "CRLF"
+            ]
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_propset",
+      "description": "Guarded property write on explicit paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "Explicit paths inside one WC."
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 16000,
+            "pattern": "^[^\\x00]*$"
+          },
+          "riskAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "paths",
+          "name",
+          "value"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_export",
+      "description": "Export an explicit SVN source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "src": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192,
+            "pattern": "^[^\\x00]*$"
+          },
+          "dest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "revision": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+          },
+          "externalDestAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "src",
+          "dest"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_import",
+      "description": "Import with an explicit source, URL, and message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "src": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192,
+            "pattern": "^[^\\x00]*$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000,
+            "pattern": "^[^\\x00]*$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "src",
+          "url",
+          "message"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}

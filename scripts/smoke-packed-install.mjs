@@ -31,6 +31,8 @@ try {
   }
 
   for (const relative of [
+    "docs/SPEC.md",
+    "docs/MCP_API.json",
     "third_party_licenses/apache-subversion-windows/Subversion License.txt",
     "third_party_licenses/apache-subversion-windows/Subversion NOTICE.txt",
     "third_party_licenses/dos2unix/COPYING.txt"
@@ -63,8 +65,8 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    if (tools.tools.length !== 23) {
-      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 23`);
+    if (tools.tools.length !== 28) {
+      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 28`);
     }
     const response = await client.callTool({
       name: "svn_self_check",
@@ -79,7 +81,7 @@ try {
   }
 
   console.log(`Packed install smoke passed: ${filename}`);
-  console.log("  MCP handshake: 23 tools, healthy self-check");
+  console.log("  MCP handshake: 28 tools, healthy self-check");
   console.log(`  layout: ${check.runtime_layout}`);
   console.log(`  dist files: ${check.dist_file_count}`);
   console.log(`  bin files: ${check.bin_file_count}`);

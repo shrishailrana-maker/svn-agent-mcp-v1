@@ -230,6 +230,14 @@ export function isBuildSystemFile(relativePath: string): boolean {
   );
 }
 
+// Conflicted (C), obstructed (~), external (X), and unknown codes must never
+// reach `svn commit`; only these codes represent a committable local change.
+const committableStatusCodes = new Set(["A", "M", "D", "R", "_M"]);
+
+export function isCommittableStatus(code: string | undefined): boolean {
+  return code !== undefined && committableStatusCodes.has(code);
+}
+
 export function statusMap(changedPaths: ChangedPath[], cwd: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const changedPath of changedPaths) {

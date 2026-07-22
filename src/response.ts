@@ -34,12 +34,14 @@ const MUTATION_STATUS: Record<string, string> = {
   svn_cleanup: "cleaned",
   svn_commit: "committed",
   svn_copy: "copied",
+  svn_delete: "deleted",
   svn_export: "exported",
   svn_import: "imported",
   svn_move: "renamed",
   svn_propset: "property-set",
   svn_propset_eol_style: "property-set",
   svn_rename: "renamed",
+  svn_resolve: "resolved",
   svn_resolved: "resolved",
   svn_revert: "reverted",
   svn_update: "updated"
@@ -114,12 +116,24 @@ function shapePayload(
     return compactInfo(payload, request);
   }
 
+  if (mode === "compact" && tool === "svn_snapshot") {
+    return compactSnapshot(payload, request);
+  }
+
   if (mode === "compact" && tool === "svn_log") {
     return compactLog(payload, request);
   }
 
   if (mode === "compact" && tool === "svn_diff") {
     return compactDiff(payload, request);
+  }
+
+  if (mode === "compact" && tool === "svn_cat") {
+    return compactCat(payload, request);
+  }
+
+  if (mode === "compact" && tool === "svn_blame") {
+    return compactBlame(payload, request);
   }
 
   if (mode === "compact" && tool === "eol_check") {
@@ -204,6 +218,40 @@ function compactInfo(payload: ToolEnvelope, request: Record<string, unknown>): R
         staleBase: payload.stale_base
       };
   return { ok: true, ...selected };
+}
+
+function compactSnapshot(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  const info = compactInfo(payload, {});
+  const status = compactStatus(payload, { ...request, cwd: request.cwd ?? payload.cwd });
+  const { ok: _infoOk, ...infoFields } = info;
+  const { ok: _statusOk, truncated, ...statusFields } = status;
+  return {
+    ok: true,
+    ...infoFields,
+    ...statusFields,
+    ...(truncated === true ? { truncated: true } : {})
+  };
+}
+
+function compactCat(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ok: true,
+    path: payload.path ?? request.path,
+    content: payload.content,
+    ...(payload.binary === true ? { binary: true } : {}),
+    hasMore: payload.has_more === true,
+    ...(payload.next_cursor ? { nextCursor: payload.next_cursor } : {})
+  };
+}
+
+function compactBlame(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ok: true,
+    path: payload.path ?? request.path,
+    lines: recordArray(payload.lines).slice(0, 500),
+    hasMore: payload.has_more === true,
+    ...(payload.next_cursor ? { nextCursor: payload.next_cursor } : {})
+  };
 }
 
 function compactPropget(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
@@ -321,14 +369,46 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
   });
   const lastRevision = entries.at(-1)?.revision;
   const truncated = payload.has_more === true || sourceEntries.length > entries.length;
+  const continuationFloor = logContinuationFloor(request);
+  const nextRevision = typeof lastRevision === "number" ? lastRevision - 1 : null;
+  const nextCursor = truncated && nextRevision !== null && continuationFloor !== null && nextRevision >= continuationFloor
+    ? continuationFloor > 0
+      ? `${nextRevision}:${continuationFloor}`
+      : String(Math.max(0, nextRevision))
+    : null;
 
   return {
     ok: true,
     entries,
     ...(payload.target_mode === "working-copy-path" ? { targetMode: payload.target_mode } : {}),
     truncated,
-    ...(truncated && typeof lastRevision === "number" ? { nextCursor: String(Math.max(0, lastRevision - 1)) } : {})
+    ...(nextCursor !== null ? { nextCursor } : {})
   };
+}
+
+// Lower bound a paginated svn_log continuation must not cross. Null means no
+// safe numeric continuation exists (single, symbolic, date, or ascending
+// selectors), so no cursor is offered and callers must narrow the range.
+function logContinuationFloor(request: Record<string, unknown>): number | null {
+  const cursor = typeof request.cursor === "string" ? request.cursor : "";
+  const cursorRange = cursor.match(/^\d+:(\d+)$/);
+  if (cursorRange) {
+    return Number.parseInt(cursorRange[1] ?? "0", 10);
+  }
+  if (/^\d+$/.test(cursor)) {
+    return 0;
+  }
+  const revision = typeof request.revision === "string" ? request.revision : "";
+  if (!revision) {
+    return 0;
+  }
+  const range = revision.match(/^(\d+):(\d+)$/);
+  if (!range) {
+    return null;
+  }
+  const upper = Number.parseInt(range[1] ?? "0", 10);
+  const lower = Number.parseInt(range[2] ?? "0", 10);
+  return upper >= lower ? lower : null;
 }
 
 function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
@@ -512,7 +592,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
 }
 
 function compactMutation(tool: string, payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
-  if (tool === "svn_revert" && request.dryRun === true) {
+  if (tool === "svn_revert" && request.dryRun !== false) {
     return {
       ok: true,
       action: "revert",
@@ -520,10 +600,20 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
       counts: countByStatus(payload.changed_paths.map((item) => ({ status: normalizeStatus(item.status) })))
     };
   }
+  if (tool === "svn_delete" && request.dryRun !== false) {
+    return {
+      ok: true,
+      action: "delete",
+      dryRun: true,
+      pathCount: stringArray(request.paths).length
+    };
+  }
 
   const result = MUTATION_STATUS[tool];
   const verified = (tool === "svn_move" || tool === "svn_rename" || tool === "svn_copy")
     ? payload.changed_paths.length > 0
+    : tool === "svn_delete"
+      ? payload.post_status_verified === true
     : tool === "svn_commit"
       ? payload.revision !== null
       : tool === "eol_fix_verified"

@@ -51,6 +51,9 @@ jobs:
       - name: Prepare local runtime
         run: npm run prepare:local
 
+      - name: Verify generated MCP API contract
+        run: npm run check:api-contract
+
       - name: Test
         run: npm test -- --runInBand
 

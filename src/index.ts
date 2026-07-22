@@ -8,22 +8,24 @@ import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
 import { readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
-import { startupProbe } from "./runner.js";
-import { eolFixVerified, svnPrecommit } from "./tools/composite.js";
+import { startupProbe, withRequestCancellation } from "./runner.js";
+import { eolFixVerified, svnPrecommit, svnSnapshot } from "./tools/composite.js";
 import { svnDiagnose } from "./tools/diagnose.js";
-import { eolCheck, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "./tools/readonly.js";
+import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "./tools/readonly.js";
 import { svnSelfCheck } from "./tools/selfcheck.js";
 import {
   svnAdd,
   svnCleanup,
   svnCommit,
   svnCopy,
+  svnDelete,
   svnExport,
   svnImport,
   svnMove,
   svnPropset,
   svnPropsetEolStyle,
   svnRename,
+  svnResolve,
   svnResolved,
   svnRevert,
   svnUpdate
@@ -40,17 +42,23 @@ export function createServer(): McpServer {
     version: serverVersion
   });
 
-  const filesystemPath = z.string().min(1).max(4096);
-  const repositoryLocation = z.string().min(1).max(8192);
-  const commitMessage = z.string().min(1).max(16000);
+  const noNul = /^[^\x00]*$/;
+  const filesystemPath = z.string().min(1).max(4096).regex(noNul, "must not contain NUL");
+  const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL");
+  const commitMessage = z.string().min(1).max(16000).regex(noNul, "must not contain NUL");
   const cwd = filesystemPath.optional().describe("Absolute WC directory; required for relative paths.");
   const paths = z.array(filesystemPath).min(1).max(500).describe("Explicit paths inside one WC.");
   const optionalPaths = z.array(filesystemPath).max(500).optional().describe("Optional paths inside one WC.");
-  const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n]+\})$/i).optional();
+  const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i).optional();
+  const revisionSelector = z.string().max(257).regex(
+    /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})(?::(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\}))?$/i
+  ).optional();
   const propertyName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   const responseMode = z.enum(["compact", "standard", "full"]).optional();
   const response = { responseMode };
   const cursor = z.string().max(32).regex(/^\d+$/).optional();
+  // svn_log cursors may carry the range floor as "next:floor".
+  const logCursor = z.string().max(65).regex(/^\d+(?::\d+)?$/).optional();
   const infoField = z.enum([
     "root", "revision", "url", "repositoryRoot", "mixedRevision", "revisionRange",
     "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
@@ -63,7 +71,7 @@ export function createServer(): McpServer {
       description: "Check package and bundled runtime health.",
       inputSchema: { cwd, detailed: z.boolean().optional(), ...response }
     },
-    async (args) => publicToolResult("svn_self_check", await svnSelfCheck(compactArgs(args), serverVersion), args)
+    async (args, extra) => handleTool("svn_self_check", args, extra.signal, () => svnSelfCheck(compactArgs(args), serverVersion))
   );
 
   server.registerTool(
@@ -72,7 +80,7 @@ export function createServer(): McpServer {
       description: "Diagnose local and remote working-copy health.",
       inputSchema: { cwd, paths: optionalPaths, ...response }
     },
-    async (args) => publicToolResult("svn_diagnose", await svnDiagnose(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_diagnose", args, extra.signal, () => svnDiagnose(compactArgs(args)))
   );
 
   server.registerTool(
@@ -92,7 +100,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_status", await svnStatus(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_status", args, extra.signal, () => svnStatus(compactArgs(args)))
   );
 
   server.registerTool(
@@ -106,7 +114,27 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_info", await svnInfo(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_info", args, extra.signal, () => svnInfo(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_snapshot",
+    {
+      description: "Return one compact working-copy status and revision snapshot.",
+      inputSchema: {
+        cwd,
+        paths: optionalPaths,
+        includeIgnored: z.boolean().optional(),
+        hideNoise: z.boolean().optional(),
+        statuses: z.array(z.string().max(64)).max(16).optional(),
+        includeUnversioned: z.boolean().optional(),
+        countOnly: z.boolean().optional(),
+        maxItems: z.number().int().min(1).max(500).optional(),
+        cursor,
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_snapshot", args, extra.signal, () => svnSnapshot(compactArgs(args)))
   );
 
   server.registerTool(
@@ -124,10 +152,11 @@ export function createServer(): McpServer {
         maxFiles: z.number().int().min(1).max(500).optional(),
         fileCursor: cursor,
         cursor,
+        revision: revisionSelector,
         ...response
       }
     },
-    async (args) => publicToolResult("svn_diff", await svnDiff(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_diff", args, extra.signal, () => svnDiff(compactArgs(args)))
   );
 
   server.registerTool(
@@ -143,11 +172,44 @@ export function createServer(): McpServer {
         changedPaths: z.boolean().optional(),
         maxMessageChars: z.number().int().min(32).max(8000).optional(),
         maxChangedPaths: z.number().int().min(1).max(500).optional(),
+        cursor: logCursor,
+        revision: revisionSelector,
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_log", args, extra.signal, () => svnLog(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_cat",
+    {
+      description: "Return a bounded page of one file at an optional revision.",
+      inputSchema: {
+        cwd,
+        path: filesystemPath,
+        revision,
+        maxChars: z.number().int().min(256).max(64000).optional(),
         cursor,
         ...response
       }
     },
-    async (args) => publicToolResult("svn_log", await svnLog(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_cat", args, extra.signal, () => svnCat(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_blame",
+    {
+      description: "Return bounded line attribution for one file.",
+      inputSchema: {
+        cwd,
+        path: filesystemPath,
+        revision,
+        maxLines: z.number().int().min(1).max(500).optional(),
+        cursor,
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_blame", args, extra.signal, () => svnBlame(compactArgs(args)))
   );
 
   server.registerTool(
@@ -164,7 +226,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("eol_check", await eolCheck(compactArgs(args)), args)
+    async (args, extra) => handleTool("eol_check", args, extra.signal, () => eolCheck(compactArgs(args)))
   );
 
   server.registerTool(
@@ -183,7 +245,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_propget", await svnPropget(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_propget", args, extra.signal, () => svnPropget(compactArgs(args)))
   );
 
   server.registerTool(
@@ -199,7 +261,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_precommit", await svnPrecommit(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_precommit", args, extra.signal, () => svnPrecommit(compactArgs(args)))
   );
 
   server.registerTool(
@@ -216,7 +278,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("eol_fix_verified", await eolFixVerified(compactArgs(args)), args)
+    async (args, extra) => handleTool("eol_fix_verified", args, extra.signal, () => eolFixVerified(compactArgs(args)))
   );
 
   server.registerTool(
@@ -225,7 +287,7 @@ export function createServer(): McpServer {
       description: "Guarded add for explicit paths.",
       inputSchema: { cwd, paths, allowRecursive: z.boolean().optional(), ...response }
     },
-    async (args) => publicToolResult("svn_add", await svnAdd(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_add", args, extra.signal, () => svnAdd(compactArgs(args)))
   );
 
   server.registerTool(
@@ -237,10 +299,11 @@ export function createServer(): McpServer {
         paths,
         message: commitMessage,
         riskAck: z.boolean().optional(),
+        allowRoot: z.boolean().optional(),
         ...response
       }
     },
-    async (args) => publicToolResult("svn_commit", await svnCommit(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_commit", args, extra.signal, () => svnCommit(compactArgs(args)))
   );
 
   server.registerTool(
@@ -249,7 +312,7 @@ export function createServer(): McpServer {
       description: "Guarded working-copy move.",
       inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
-    async (args) => publicToolResult("svn_move", await svnMove(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_move", args, extra.signal, () => svnMove(compactArgs(args)))
   );
 
   server.registerTool(
@@ -258,7 +321,7 @@ export function createServer(): McpServer {
       description: "Alias for guarded working-copy move.",
       inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
-    async (args) => publicToolResult("svn_rename", await svnRename(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_rename", args, extra.signal, () => svnRename(compactArgs(args)))
   );
 
   server.registerTool(
@@ -267,7 +330,7 @@ export function createServer(): McpServer {
       description: "Guarded working-copy copy.",
       inputSchema: { cwd, src: filesystemPath, dest: filesystemPath, ...response }
     },
-    async (args) => publicToolResult("svn_copy", await svnCopy(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_copy", args, extra.signal, () => svnCopy(compactArgs(args)))
   );
 
   server.registerTool(
@@ -276,7 +339,7 @@ export function createServer(): McpServer {
       description: "Guarded update with conflicts postponed.",
       inputSchema: { cwd, paths: optionalPaths, updateAll: z.boolean().optional(), ...response }
     },
-    async (args) => publicToolResult("svn_update", await svnUpdate(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_update", args, extra.signal, () => svnUpdate(compactArgs(args)))
   );
 
   server.registerTool(
@@ -291,11 +354,27 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_revert", await svnRevert(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_revert", args, extra.signal, () => svnRevert(compactArgs(args)))
   );
 
   server.registerTool(
-    "svn_resolved",
+    "svn_delete",
+    {
+      description: "Preview or schedule guarded deletion of explicit paths.",
+      inputSchema: {
+        cwd,
+        paths,
+        allowRecursive: z.boolean().optional(),
+        dryRun: z.boolean().optional(),
+        riskAck: z.boolean().optional(),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_delete", args, extra.signal, () => svnDelete(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_resolve",
     {
       description: "Resolve one conflict with an explicit mode.",
       inputSchema: {
@@ -305,7 +384,21 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_resolved", await svnResolved(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_resolve", args, extra.signal, () => svnResolve(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_resolved",
+    {
+      description: "Deprecated alias for svn_resolve.",
+      inputSchema: {
+        cwd,
+        path: filesystemPath,
+        accept: z.enum(["working", "mine-full", "theirs-full", "base"]),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_resolved", args, extra.signal, () => svnResolved(compactArgs(args)))
   );
 
   server.registerTool(
@@ -314,7 +407,7 @@ export function createServer(): McpServer {
       description: "Run non-destructive WC cleanup.",
       inputSchema: { cwd, path: filesystemPath.optional(), ...response }
     },
-    async (args) => publicToolResult("svn_cleanup", await svnCleanup(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_cleanup", args, extra.signal, () => svnCleanup(compactArgs(args)))
   );
 
   server.registerTool(
@@ -328,7 +421,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_propset_eol_style", await svnPropsetEolStyle(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_propset_eol_style", args, extra.signal, () => svnPropsetEolStyle(compactArgs(args)))
   );
 
   server.registerTool(
@@ -339,12 +432,12 @@ export function createServer(): McpServer {
         cwd,
         paths,
         name: propertyName,
-        value: z.string().max(16000),
+        value: z.string().max(16000).regex(noNul, "must not contain NUL"),
         riskAck: z.boolean().optional(),
         ...response
       }
     },
-    async (args) => publicToolResult("svn_propset", await svnPropset(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_propset", args, extra.signal, () => svnPropset(compactArgs(args)))
   );
 
   server.registerTool(
@@ -360,7 +453,7 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_export", await svnExport(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_export", args, extra.signal, () => svnExport(compactArgs(args)))
   );
 
   server.registerTool(
@@ -375,10 +468,19 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args) => publicToolResult("svn_import", await svnImport(compactArgs(args)), args)
+    async (args, extra) => handleTool("svn_import", args, extra.signal, () => svnImport(compactArgs(args)))
   );
 
   return server;
+}
+
+async function handleTool(
+  tool: string,
+  request: Record<string, unknown>,
+  signal: AbortSignal,
+  operation: () => Promise<ToolEnvelope>
+) {
+  return withRequestCancellation(signal, async () => publicToolResult(tool, await operation(), request));
 }
 
 function publicToolResult(tool: string, payload: ToolEnvelope, request: Record<string, unknown>) {

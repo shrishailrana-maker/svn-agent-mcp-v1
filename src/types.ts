@@ -43,6 +43,7 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled?: boolean | undefined;
   timeoutMs?: number | undefined;
   errorCode?: string | undefined;
   truncated?: boolean | undefined;

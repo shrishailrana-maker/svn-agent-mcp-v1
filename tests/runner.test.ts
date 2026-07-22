@@ -11,7 +11,8 @@ import {
   runSvn,
   svnAdminExecutable,
   svnExecutable,
-  svnVersionExecutable
+  svnVersionExecutable,
+  withRequestCancellation
 } from "../src/runner.js";
 
 describe("runner executable resolution", () => {
@@ -151,6 +152,37 @@ describe("runner executable resolution", () => {
     expect(run.stdout).toBe("+é");
   });
 
+  it("contains NUL-byte launch failures as failed run results instead of throwing", async () => {
+    const buffered = await runExecutable(process.execPath, ["-e", "bad\x00arg"], { cwd: process.cwd() });
+    expect(buffered.exitCode).toBe(1);
+    expect(buffered.errorCode).toBeDefined();
+    expect(buffered.stderr.length).toBeGreaterThan(0);
+
+    const streamed = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "bad\x00arg"],
+      { cwd: process.cwd() },
+      () => undefined
+    );
+    expect(streamed.exitCode).toBe(1);
+    expect(streamed.errorCode).toBeDefined();
+  });
+
+  it("caps total captured stdout while still streaming every line to the callback", async () => {
+    const lines: string[] = [];
+    const run = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "for (let i = 0; i < 5; i += 1) process.stdout.write('x'.repeat(10) + '\\n')"],
+      { cwd: process.cwd(), stdoutMaxCaptureBytes: 25 },
+      (line) => lines.push(line)
+    );
+
+    expect(run.exitCode).toBe(0);
+    expect(lines).toHaveLength(5);
+    expect(run.stdout).toBe(`${"x".repeat(10)}\n${"x".repeat(10)}`);
+    expect(run.truncated).toBe(true);
+  });
+
   it("settles streaming calls on timeout", async () => {
     const started = Date.now();
     const run = await runExecutableStreamingLines(
@@ -163,6 +195,41 @@ describe("runner executable resolution", () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(run.timedOut).toBe(true);
     expect(run.exitCode).toBeNull();
+  });
+
+  it("cancels buffered child processes through an AbortSignal", async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = withRequestCancellation(controller.signal, () => runExecutable(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { cwd: process.cwd() }
+    ));
+    setTimeout(() => controller.abort(), 50);
+
+    const run = await pending;
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(run.cancelled).toBe(true);
+    expect(run.timedOut).toBe(false);
+  });
+
+  it("cancels streaming child processes through an AbortSignal", async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { cwd: process.cwd(), signal: controller.signal },
+      () => undefined
+    );
+    setTimeout(() => controller.abort(), 50);
+
+    const run = await pending;
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(run.cancelled).toBe(true);
+    expect(run.timedOut).toBe(false);
   });
 });
 

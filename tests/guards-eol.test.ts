@@ -2,7 +2,8 @@ import { describe, expect, it } from "@jest/globals";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals } from "../src/guards.js";
+import { isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals } from "../src/guards.js";
+import { svnImport } from "../src/tools/mutating.js";
 import { sniffEol } from "../src/eol.js";
 
 describe("guards and EOL sniffing", () => {
@@ -142,6 +143,48 @@ describe("guards and EOL sniffing", () => {
       expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toContain("regular file");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps sensitive ancestor directories visible when guarding from the filesystem root", () => {
+    const home = os.homedir();
+    const driveRoot = path.parse(home).root;
+
+    expect(neverCommitHit(path.join(home, ".ssh", "id_ed25519"), driveRoot)).toBe("**/.ssh/**");
+    expect(neverCommitHit(path.join(home, ".ssh", "config"), driveRoot)).toBe("**/.ssh/**");
+    expect(neverCommitHit(path.join(home, "project", ".git", "config"), driveRoot)).toBe("**/.git/**");
+    expect(neverCommitHit(path.join(home, "project", "node_modules", "pkg", "index.js"), driveRoot)).toBe("**/node_modules/**");
+  });
+
+  it("blocks direct-file imports from sensitive directories", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-import-guard-"));
+    try {
+      for (const segment of [".ssh", ".git", ".svn"]) {
+        fs.mkdirSync(path.join(dir, segment), { recursive: true });
+        fs.writeFileSync(path.join(dir, segment, "config"), "sensitive", "utf8");
+
+        const result = await svnImport({
+          cwd: dir,
+          src: `${segment}/config`,
+          url: "file:///unused/repo",
+          message: "Import attempt\n\n- must be blocked"
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.note).toContain("never-commit path matches");
+        expect(result.note).toContain(segment);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allowlists genuinely committable statuses and rejects conflict states", () => {
+    for (const code of ["A", "M", "D", "R", "_M"]) {
+      expect(isCommittableStatus(code)).toBe(true);
+    }
+    for (const code of ["C", "~", "X", "?", "!", "I", "", "Z", undefined]) {
+      expect(isCommittableStatus(code)).toBe(false);
     }
   });
 

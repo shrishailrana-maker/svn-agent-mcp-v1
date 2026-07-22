@@ -4,6 +4,7 @@ import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../e
 import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, sniffEol } from "../eol.js";
 import {
   assertExistingTargets,
+  isCommittableStatus,
   neverCommitHit,
   neverCommitNote,
   pathIdentityKey,
@@ -22,8 +23,46 @@ import {
   getWcContext,
   normalizeStatusLookup,
   scopedStatusMap,
-  svnDiff
+  svnDiff,
+  svnInfo,
+  svnStatus
 } from "./readonly.js";
+
+export async function svnSnapshot(input: {
+  cwd?: string;
+  paths?: string[];
+  includeIgnored?: boolean;
+  hideNoise?: boolean;
+}): Promise<ToolEnvelope> {
+  const [status, info] = await Promise.all([
+    svnStatus(input),
+    svnInfo({
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.paths === undefined ? {} : { paths: input.paths })
+    })
+  ]);
+  const ok = status.ok && info.ok;
+  return {
+    ...createEnvelope({
+      ok,
+      command: "svn snapshot",
+      cwd: status.cwd,
+      revision: info.revision,
+      changed_paths: status.changed_paths,
+      conflicts: status.conflicts,
+      note: ok ? "" : [status.note, info.note].filter(Boolean).join("; "),
+      truncated: status.truncated || info.truncated
+    }),
+    wc_root: info.wc_root,
+    mixed_revision: info.mixed_revision,
+    revision_range: info.revision_range,
+    local_modifications: info.local_modifications,
+    switched: info.switched,
+    partial: info.partial,
+    remote_head_revision: info.remote_head_revision,
+    stale_base: info.stale_base
+  };
+}
 
 export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineLimit?: number }): Promise<ToolEnvelope> {
   const explicitError = requireExplicitPaths(input.paths);
@@ -82,6 +121,9 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
     ((eol.files as Array<{ path: string }> | undefined) ?? []).map((file) => [pathIdentityKey(file.path), file])
   );
   const diffFiles = new Map(diff.per_file.map((file) => [pathIdentityKey(path.resolve(context.cwd, file.path)), file]));
+  const conflictedTargets = new Set(
+    status.envelope.conflicts.map((conflict) => pathIdentityKey(path.resolve(context.cwd, conflict.path)))
+  );
   const riskSignals = dryRiskSignals(resolved.paths, context.wcRoot, status.map);
   const perFile = [];
   const guardNotes: string[] = [];
@@ -108,7 +150,11 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
       ? neverCommitNote(never, target, context.wcRoot)
       : !statusCode || statusCode === "?" || statusCode === "!" || statusCode === "I"
         ? `path is not committable: ${repoRelativePath(target, context.wcRoot)}`
-        : null;
+        : !isCommittableStatus(statusCode)
+          ? `path has non-committable status (${statusCode}): ${repoRelativePath(target, context.wcRoot)}`
+          : conflictedTargets.has(targetKey)
+            ? `path has unresolved conflicts: ${repoRelativePath(target, context.wcRoot)}`
+            : null;
 
     if (guard) {
       guardNotes.push(guard);
@@ -118,7 +164,7 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
     if (eolFile?.mismatch || pureEolChurn) {
       needsEolFix = true;
     }
-    if (statusCode && statusCode !== "?" && statusCode !== "!" && statusCode !== "I" && !pureEolChurn) {
+    if (isCommittableStatus(statusCode) && !conflictedTargets.has(targetKey) && !pureEolChurn) {
       hasRealChange = true;
     }
 

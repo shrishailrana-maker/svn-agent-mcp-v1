@@ -4,6 +4,7 @@ import path from "node:path";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   assertExistingTargets,
+  isCommittableStatus,
   isInsideOrEqual,
   messageFormatWarning,
   neverCommitHit,
@@ -75,10 +76,17 @@ export async function svnCommit(input: {
   paths: string[];
   message: string;
   riskAck?: boolean;
+  allowRoot?: boolean;
 }): Promise<ToolEnvelope> {
   const guard = await mutatingPathGuard("svn commit", input.cwd, input.paths, { requireExisting: false });
   if (!guard.ok) {
     return guard.envelope;
+  }
+  if (!input.message.trim()) {
+    return failEnvelope("svn commit", guard.cwd, "non-empty commit message required");
+  }
+  if (!input.allowRoot && guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
+    return failEnvelope("svn commit", guard.cwd, "working-copy root commit requires allowRoot:true");
   }
 
   for (const target of guard.paths) {
@@ -93,10 +101,19 @@ export async function svnCommit(input: {
     return status.envelope;
   }
 
+  const conflictedTargets = new Set(
+    status.envelope.conflicts.map((conflict) => pathIdentityKey(path.resolve(guard.cwd, conflict.path)))
+  );
   for (const target of guard.paths) {
     const code = status.map.get(pathIdentityKey(target));
     if (!code || code === "?" || code === "!" || code === "I") {
       return failEnvelope("svn commit", guard.cwd, `target not changed or not scheduled: ${repoRelativePath(target, guard.wcRoot)}`);
+    }
+    if (!isCommittableStatus(code)) {
+      return failEnvelope("svn commit", guard.cwd, `target has non-committable status (${code}): ${repoRelativePath(target, guard.wcRoot)}`);
+    }
+    if (conflictedTargets.has(pathIdentityKey(target))) {
+      return failEnvelope("svn commit", guard.cwd, `target has unresolved conflicts: ${repoRelativePath(target, guard.wcRoot)}`);
     }
   }
 
@@ -269,7 +286,76 @@ export async function svnRevert(input: {
   });
 }
 
-export async function svnResolved(input: {
+export async function svnDelete(input: {
+  cwd?: string;
+  paths: string[];
+  allowRecursive?: boolean;
+  dryRun?: boolean;
+  riskAck?: boolean;
+}): Promise<ToolEnvelope> {
+  const dryRun = input.dryRun ?? true;
+  const guard = await mutatingPathGuard("svn delete", input.cwd, input.paths, {
+    requireExisting: true,
+    allowReadonlyForDryRun: dryRun
+  });
+  if (!guard.ok) {
+    return guard.envelope;
+  }
+
+  if (guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
+    return failEnvelope("svn delete", guard.cwd, "refusing to delete working-copy root");
+  }
+
+  const directoryTargets: string[] = [];
+  for (const target of guard.paths) {
+    const stat = statTargetForMutation("svn delete", guard.cwd, target);
+    if (!stat.ok) {
+      return stat.envelope;
+    }
+    if (stat.stat.isDirectory()) {
+      directoryTargets.push(target);
+    }
+  }
+  if (directoryTargets.length > 0 && !input.allowRecursive) {
+    return failEnvelope("svn delete", guard.cwd, "directory delete requires allowRecursive:true");
+  }
+
+  if (dryRun) {
+    return {
+      ...createEnvelope({
+        ok: true,
+        command: "svn delete --dry-run",
+        cwd: guard.cwd,
+        note: "dry run; no paths deleted"
+      }),
+      dry_run: true,
+      targets: guard.paths.map((target) => repoRelativePath(target, guard.wcRoot)),
+      recursive: directoryTargets.length > 0
+    };
+  }
+  if (!input.riskAck) {
+    return failEnvelope("svn delete", guard.cwd, "riskAck required: deletion schedules paths for removal");
+  }
+
+  const run = await runSvn(["delete", "--", ...guard.paths.map(escapeSvnTarget)], guard.cwd);
+  const status = run.exitCode === 0 ? await scopedStatusMap(guard.cwd, guard.wcRoot, guard.paths) : null;
+  const postStatusVerified = status !== null
+    && status.envelope.ok
+    && guard.paths.every((target) => status.map.get(pathIdentityKey(target)) === "D");
+  return {
+    ...envelopeFromRun({
+      run,
+      ok: run.exitCode === 0,
+      changed_paths: status?.envelope.changed_paths ?? [],
+      conflicts: status?.envelope.conflicts ?? [],
+      note: run.exitCode === 0 ? "" : noteFromRun(run)
+    }),
+    operation: "delete",
+    post_status_verified: postStatusVerified
+  };
+}
+
+export async function svnResolve(input: {
   cwd?: string;
   path: string;
   accept: "working" | "mine-full" | "theirs-full" | "base";
@@ -286,6 +372,8 @@ export async function svnResolved(input: {
   const run = await runSvn(["resolve", "--accept", input.accept, "--", escapeSvnTarget(target)], guard.cwd);
   return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
 }
+
+export const svnResolved = svnResolve;
 
 export async function svnCleanup(input: { cwd?: string; path?: string }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
@@ -452,7 +540,10 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
   }
 
   const importSource = path.resolve(cwd, input.src);
-  const importGuardRoot = path.dirname(importSource);
+  // Guard from the filesystem root so ancestor segments stay visible; with a
+  // dirname guard root, importing .ssh\config reduces to "config" and bypasses
+  // the sensitive-directory globs entirely.
+  const importGuardRoot = path.parse(importSource).root;
   const sourceHit = neverCommitHit(importSource, importGuardRoot);
   if (sourceHit) {
     return failEnvelope("svn import", cwd, neverCommitNote(sourceHit, importSource, importGuardRoot));
@@ -733,12 +824,13 @@ function combineRuns(runs: Awaited<ReturnType<typeof runSvn>>[], cwd: string): A
     stdout: runs.map((run) => run.stdout).filter(Boolean).join("\n"),
     stderr: runs.map((run) => run.stderr).filter(Boolean).join("\n"),
     timedOut: runs.some((run) => run.timedOut),
+    cancelled: runs.some((run) => run.cancelled),
     truncated: runs.some((run) => run.truncated)
   };
 }
 
 function isValidRevision(value: string): boolean {
-  return /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n]+\})$/i.test(value.trim());
+  return /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i.test(value.trim());
 }
 
 function propertyRiskSignals(name: string): string[] {

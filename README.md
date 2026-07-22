@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.1.3`; each source clone can prepare a local runtime under `releases/v1.1.3`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.0`; each source clone can prepare a local runtime under `releases/v1.2.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -29,7 +29,8 @@ Resolve the executable with the platform command lookup: where.exe svn-agent-mcp
 On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
 Ensure the MCP client entry is named "svn" and uses command "svn-agent-mcp", never a source checkout, junction, current pointer, or dist path. Do not add --readonly.
 Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
-After restarting, run svn_self_check and report the installed version, executable path, runtime layout, and MCP health. The expected latest release is 1.1.3; report the installed version instead of relying on a remembered version.
+Query the registry version with: npm view svn-agent-mcp version
+After restarting, run svn_self_check and compare its installed version with the registry version. Report the installed version, executable path, runtime layout, and MCP health instead of relying on a remembered version.
 ```
 
 ## Agent Setup From GitHub
@@ -145,6 +146,8 @@ mixed-revision checks, and commit verification run unchanged.
 | `npm run check:runtime` | Verify the supported Node 24 LTS and minimum npm version |
 | `npm run typecheck` | Check TypeScript without emitting build output |
 | `npm run build` | Compile `src/` into `dist/` |
+| `npm run generate:api-contract` | Generate `docs/MCP_API.json` from the registered MCP tools |
+| `npm run check:api-contract` | Fail when the generated MCP API contract is stale |
 | `npm test` | Run the Jest test suite |
 | `npm run test:package` | Pack, install, and self-check the real npm artifact in isolation |
 | `npm run benchmark:responses` | Compare compact MCP, full MCP, and equivalent raw SVN output sizes |
@@ -155,6 +158,8 @@ mixed-revision checks, and commit verification run unchanged.
 ## Operator Diagnostics
 
 Use `svn_self_check` to verify the MCP package, runtime layout, resolved native or bundled tools, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
+
+Use `svn_snapshot` for a one-call status and revision summary. `svn_log` and `svn_diff` accept exact or ranged revision selectors, while bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete` and canonical `svn_resolve`; the older `svn_resolved` name remains as a deprecated compatibility alias.
 
 For SVN property work, use `svn_propget` and guarded `svn_propset` instead of raw `svn propget`/`svn propset`. `svn_propset_eol_style` remains the safer shortcut for `svn:eol-style` normalization.
 
@@ -174,7 +179,7 @@ Release history is maintained in `CHANGELOG.md`.
 | `bin/` | Versioned Windows SVN and EOL converter runtime binaries |
 | `third_party_licenses/` | License and notice texts shipped with the bundled runtime |
 | `THIRD_PARTY_NOTICES.md` | Notices for bundled binary payloads |
-| `docs/` | Spec, local rules, and decisions |
+| `docs/` | Spec, generated MCP API contract, local rules, and decisions |
 | `releases/` | Generated versioned runtime release payloads, ignored by Git |
 
 ## Usage Model

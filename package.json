@@ -1,6 +1,6 @@
 {
   "name": "svn-agent-mcp",
-  "version": "1.1.3",
+  "version": "1.2.0",
   "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
   "type": "module",
   "main": "dist/index.js",
@@ -20,6 +20,8 @@
     "bin/",
     "dist/",
     "third_party_licenses/",
+    "docs/SPEC.md",
+    "docs/MCP_API.json",
     "CHANGELOG.md",
     "README.md",
     "SECURITY.md",
@@ -30,14 +32,16 @@
     "check:runtime": "node scripts/check-runtime.mjs",
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "prepack": "npm run build",
+    "generate:api-contract": "node scripts/generate-api-contract.mjs",
+    "check:api-contract": "node scripts/generate-api-contract.mjs --check",
+    "prepack": "npm run build && npm run generate:api-contract",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --passWithNoTests",
     "test:client": "node scripts/smoke-mcp-client.mjs",
     "test:package": "node scripts/smoke-packed-install.mjs",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "benchmark:responses": "node scripts/benchmark-responses.mjs",
-    "prepare:local": "npm run build && npm run release:prepare",
+    "prepare:local": "npm run build && npm run generate:api-contract && npm run release:prepare",
     "release:prepare": "node scripts/prepare-release.mjs",
     "clean": "node scripts/clean.mjs"
   },
@@ -64,6 +68,9 @@
     "ts-jest": "^29.4.11",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,

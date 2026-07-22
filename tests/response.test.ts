@@ -251,6 +251,57 @@ describe("public MCP response shaping", () => {
     expect(boundedEntry?.changedPathsTruncated).toBe(true);
   });
 
+  it("keeps the requested revision-range floor when paginating svn_log", () => {
+    const entries = Array.from({ length: 11 }, (_, index) => ({
+      rev: 200 - index,
+      author: "developer",
+      date: "2026-07-22T00:00:00.000Z",
+      msg: `Change ${index}`,
+      changed_paths: []
+    }));
+    const payload = {
+      ...createEnvelope({ ok: true, command: "svn log --xml", cwd: "E:\\dev\\example" }),
+      entries,
+      has_more: true,
+      target_mode: "repository-url"
+    };
+
+    const ranged = toToolResult("svn_log", payload, {
+      responseMode: "compact",
+      request: { limit: 10, revision: "200:150" }
+    }).structuredContent as Record<string, unknown>;
+    expect(ranged.truncated).toBe(true);
+    expect(ranged.nextCursor).toBe("190:150");
+
+    const cursorContinued = toToolResult("svn_log", payload, {
+      responseMode: "compact",
+      request: { limit: 10, cursor: "200:150" }
+    }).structuredContent as Record<string, unknown>;
+    expect(cursorContinued.nextCursor).toBe("190:150");
+
+    const singleRevision = toToolResult("svn_log", payload, {
+      responseMode: "compact",
+      request: { limit: 10, revision: "HEAD" }
+    }).structuredContent as Record<string, unknown>;
+    expect(singleRevision.truncated).toBe(true);
+    expect(singleRevision).not.toHaveProperty("nextCursor");
+
+    const ascendingRange = toToolResult("svn_log", payload, {
+      responseMode: "compact",
+      request: { limit: 10, revision: "150:200" }
+    }).structuredContent as Record<string, unknown>;
+    expect(ascendingRange).not.toHaveProperty("nextCursor");
+
+    const exhaustedRange = toToolResult("svn_log", {
+      ...payload,
+      entries: [{ rev: 150, author: "developer", date: "2026-07-22T00:00:00.000Z", msg: "Floor", changed_paths: [] }]
+    }, {
+      responseMode: "compact",
+      request: { limit: 10, revision: "200:150" }
+    }).structuredContent as Record<string, unknown>;
+    expect(exhaustedRange).not.toHaveProperty("nextCursor");
+  });
+
   it("returns summary-only or bounded diff output and always marks continuation", () => {
     const excerpt = [
       "Index: src/example.ts",
@@ -563,6 +614,27 @@ describe("public MCP response shaping", () => {
     }).structuredContent;
     expect(revertPreview).toEqual({ ok: true, action: "revert", dryRun: true, counts: { modified: 1 } });
 
+    const defaultRevertPreview = toToolResult("svn_revert", createEnvelope({
+      ok: true,
+      command: "svn revert --dry-run",
+      cwd: "E:\\dev\\example",
+      changed_paths: [{ status: "M", path: "src/a.ts" }]
+    }), {
+      responseMode: "compact",
+      request: { paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(defaultRevertPreview).toEqual({ ok: true, action: "revert", dryRun: true, counts: { modified: 1 } });
+
+    const defaultDeletePreview = toToolResult("svn_delete", createEnvelope({
+      ok: true,
+      command: "svn delete --dry-run",
+      cwd: "E:\\dev\\example"
+    }), {
+      responseMode: "compact",
+      request: { paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(defaultDeletePreview).toEqual({ ok: true, action: "delete", dryRun: true, pathCount: 1 });
+
     const commitWithResidue = toToolResult("svn_commit", {
       ...createEnvelope({
         ok: true,
@@ -692,6 +764,59 @@ describe("public MCP response shaping", () => {
     expect(propertyPage.counts).toEqual({ found: 300, missing: 0 });
     expect(propertyPage.truncated).toBe(true);
     expect(propertyPage.nextCursor).toBe("20");
+  });
+
+  it("returns compact snapshot, cat, and blame payloads", () => {
+    const snapshot = toToolResult("svn_snapshot", {
+      ...createEnvelope({
+        ok: true,
+        command: "svn snapshot",
+        cwd: "E:\\dev\\example",
+        revision: 42,
+        changed_paths: [{ status: "M", path: "E:\\dev\\example\\src\\a.ts" }]
+      }),
+      mixed_revision: false,
+      local_modifications: true,
+      remote_head_revision: 43,
+      stale_base: true
+    }, { responseMode: "compact", request: {} }).structuredContent;
+    expect(snapshot).toEqual({
+      ok: true,
+      revision: 42,
+      mixedRevision: false,
+      localModifications: true,
+      remoteHeadRevision: 43,
+      staleBase: true,
+      counts: { modified: 1 },
+      items: [{ path: "src/a.ts", status: "modified" }]
+    });
+
+    const cat = toToolResult("svn_cat", {
+      ...createEnvelope({ ok: true, command: "svn cat", cwd: "E:\\dev\\example" }),
+      content: "one\ntwo\n",
+      page_offset: 0,
+      has_more: true,
+      next_cursor: "8"
+    }, { responseMode: "compact", request: { path: "src/a.ts" } }).structuredContent;
+    expect(cat).toEqual({
+      ok: true,
+      path: "src/a.ts",
+      content: "one\ntwo\n",
+      hasMore: true,
+      nextCursor: "8"
+    });
+
+    const blame = toToolResult("svn_blame", {
+      ...createEnvelope({ ok: true, command: "svn blame", cwd: "E:\\dev\\example" }),
+      lines: [{ line: 1, revision: 40, author: "dev", text: "one" }],
+      has_more: false
+    }, { responseMode: "compact", request: { path: "src/a.ts" } }).structuredContent;
+    expect(blame).toEqual({
+      ok: true,
+      path: "src/a.ts",
+      lines: [{ line: 1, revision: 40, author: "dev", text: "one" }],
+      hasMore: false
+    });
   });
 
   it("compacts healthy and failed diagnostics without command echoes", () => {

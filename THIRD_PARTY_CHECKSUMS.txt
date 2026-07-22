@@ -1,6 +1,6 @@
 # SHA256 checksums for bundled third-party binaries
 #
-# Generated from the files under bin/ for release v1.1.3.
+# Generated from the files under bin/ for release v1.2.0.
 
 213cdeffc15c734e42565c90512491113652de9e52694ae335131d0e24f91df7  bin/api-ms-win-core-console-l1-1-0.dll
 45a155e9b60f068fbc3ea8dd73552905afeae49270bea6bbccb4aad0aa696f2d  bin/api-ms-win-core-console-l1-2-0.dll

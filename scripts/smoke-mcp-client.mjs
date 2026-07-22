@@ -29,7 +29,10 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert(tools.tools.length === 23, `expected 23 tools, received ${tools.tools.length}`);
+    assert(tools.tools.length === 28, `expected 28 tools, received ${tools.tools.length}`);
+    for (const name of ["svn_delete", "svn_resolve", "svn_resolved", "svn_snapshot", "svn_cat", "svn_blame"]) {
+      assert(tools.tools.some((tool) => tool.name === name), `missing public tool: ${name}`);
+    }
     passed.push("handshake");
 
     const statusTool = tools.tools.find((tool) => tool.name === "svn_status");
@@ -60,6 +63,26 @@ try {
     assert(Number.isInteger(committed.revision), "commit omitted its revision");
     passed.push("commit");
 
+    const exactLog = await callOk(client, "svn_log", {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      revision: String(committed.revision)
+    });
+    assert(exactLog.entries.length === 1 && exactLog.entries[0]?.revision === committed.revision, "exact revision log failed");
+    const historical = await callOk(client, "svn_cat", {
+      cwd: workingCopy,
+      path: "client-smoke.txt",
+      revision: String(committed.revision)
+    });
+    assert(historical.content === "one\r\n", "historical cat returned unexpected content");
+    const blame = await callOk(client, "svn_blame", {
+      cwd: workingCopy,
+      path: "client-smoke.txt",
+      revision: String(committed.revision)
+    });
+    assert(blame.lines[0]?.revision === committed.revision, "blame omitted the committed revision");
+    passed.push("revision-read");
+
     fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");
     const diff = await callOk(client, "svn_diff", { cwd: workingCopy, paths: ["client-smoke.txt"] });
     assert(
@@ -67,6 +90,12 @@ try {
       `diff summary was incorrect: ${JSON.stringify(diff)}`
     );
     passed.push("diff");
+
+    const snapshot = await callOk(client, "svn_snapshot", { cwd: workingCopy, paths: ["client-smoke.txt"] });
+    assert(snapshot.counts.modified === 1, "snapshot omitted the modified file");
+    const deletePreview = await callOk(client, "svn_delete", { cwd: workingCopy, paths: ["client-smoke.txt"] });
+    assert(deletePreview.dryRun === true, "delete did not default to a dry-run preview");
+    passed.push("snapshot-delete-preview");
 
     await callOk(client, "svn_propset", {
       cwd: workingCopy,

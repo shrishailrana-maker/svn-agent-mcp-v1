@@ -12,7 +12,11 @@ export function parseDiffText(text: string, lineLimit: number): DiffSummary {
   return accumulator.summary();
 }
 
-export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLimit = 20000): {
+// The excerpt character budget must stay above the runner's per-line byte cap
+// so the first excerpt line always fits and cursor pagination always advances.
+const DEFAULT_EXCERPT_CHAR_LIMIT = 2_000_000;
+
+export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLimit = 20000, excerptCharLimit = DEFAULT_EXCERPT_CHAR_LIMIT): {
   pushLine: (line: string) => void;
   summary: () => DiffSummary;
 } {
@@ -20,6 +24,8 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
   let current: DiffFileSummary | null = null;
   const excerptLines: string[] = [];
   let totalLines = 0;
+  let excerptChars = 0;
+  let excerptCharsTruncated = false;
   let inPropertyChanges = false;
   let perFileTruncated = false;
 
@@ -41,8 +47,13 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
   return {
     pushLine(line: string): void {
       totalLines += 1;
-      if (totalLines > lineOffset && excerptLines.length < lineLimit) {
-        excerptLines.push(line);
+      if (totalLines > lineOffset && excerptLines.length < lineLimit && !excerptCharsTruncated) {
+        if (excerptChars + line.length <= excerptCharLimit) {
+          excerptLines.push(line);
+          excerptChars += line.length + 1;
+        } else {
+          excerptCharsTruncated = true;
+        }
       }
 
       const indexMatch = /^Index: (.+)$/.exec(line);
@@ -83,7 +94,7 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
         per_file: [...perFile.values()],
         per_file_truncated: perFileTruncated,
         diff_excerpt: excerptLines.join("\n"),
-        truncated: totalLines > lineOffset + lineLimit
+        truncated: totalLines > lineOffset + lineLimit || excerptCharsTruncated
       };
     }
   };

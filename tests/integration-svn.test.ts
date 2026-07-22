@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
-import { eolFixVerified, svnPrecommit } from "../src/tools/composite.js";
+import { eolFixVerified, svnPrecommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { svnAdd, svnCommit, svnCopy, svnExport, svnImport, svnMove, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
-import { eolCheck, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
+import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
 
@@ -97,6 +97,45 @@ describe("SVN tool integration against a temp repository", () => {
       expect(typeof committed.revision).toBe("number");
       expect(committed.post_status_clean).toBe(true);
       expect((await svnStatus({ cwd: fixture.wc })).changed_paths).toEqual([]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks precommit and commit for conflicted paths", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "conflict.txt");
+      fs.writeFileSync(file, "base\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["conflict.txt"] })).ok).toBe(true);
+      const first = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["conflict.txt"],
+        message: commitMessage("Add conflict fixture")
+      });
+      expect(first.ok).toBe(true);
+      const baseRevision = Number(first.revision);
+
+      fs.writeFileSync(file, "theirs\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "conflicting change", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["update", "-r", String(baseRevision), "--accept", "postpone", file], { cwd: fixture.wc });
+      fs.writeFileSync(file, "mine\r\n", "utf8");
+      execFileSync(svnExecutable(), ["update", "--accept", "postpone", file], { cwd: fixture.wc });
+
+      const status = await svnStatus({ cwd: fixture.wc, paths: ["conflict.txt"] });
+      expect(status.conflicts.length).toBeGreaterThan(0);
+
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["conflict.txt"] });
+      expect(precommit.verdict).toBe("GUARD_BLOCKED");
+      expect(String(precommit.note)).toMatch(/non-committable status \(C\)|unresolved conflicts/);
+
+      const commit = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["conflict.txt"],
+        message: commitMessage("Attempt conflicted commit")
+      });
+      expect(commit.ok).toBe(false);
+      expect(String(commit.note)).toMatch(/non-committable status \(C\)|unresolved conflicts/);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1010,6 +1049,142 @@ describe("SVN tool integration against a temp repository", () => {
       expect(reverted.command).toContain("--depth infinity --");
       expect(fs.readFileSync(path.join(fixture.wc, "dir", "nested.txt"), "utf8")).toBe("one\r\n");
       expect(fs.readFileSync(path.join(fixture.wc, "file.txt"), "utf8")).toBe("one\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("previews and performs guarded file and directory deletes", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.mkdirSync(path.join(fixture.wc, "delete-dir"));
+      fs.writeFileSync(path.join(fixture.wc, "delete-file.txt"), "one\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "delete-dir", "nested.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({
+        cwd: fixture.wc,
+        paths: ["delete-file.txt", "delete-dir/nested.txt"]
+      })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["delete-file.txt", "delete-dir/nested.txt"],
+        message: commitMessage("Add delete fixtures")
+      })).ok).toBe(true);
+
+      const preview = await svnDelete({ cwd: fixture.wc, paths: ["delete-file.txt"] });
+      expect(preview).toMatchObject({ ok: true, dry_run: true });
+      expect(fs.existsSync(path.join(fixture.wc, "delete-file.txt"))).toBe(true);
+
+      const missingAck = await svnDelete({ cwd: fixture.wc, paths: ["delete-file.txt"], dryRun: false });
+      expect(missingAck).toMatchObject({ ok: false });
+      expect(missingAck.note).toContain("riskAck required");
+
+      const missingRecursiveAck = await svnDelete({
+        cwd: fixture.wc,
+        paths: ["delete-dir"],
+        dryRun: false,
+        riskAck: true
+      });
+      expect(missingRecursiveAck).toMatchObject({ ok: false });
+      expect(missingRecursiveAck.note).toContain("allowRecursive:true");
+
+      const rootRefusal = await svnDelete({
+        cwd: fixture.wc,
+        paths: ["."],
+        dryRun: false,
+        allowRecursive: true,
+        riskAck: true
+      });
+      expect(rootRefusal).toMatchObject({ ok: false });
+      expect(rootRefusal.note).toContain("working-copy root");
+
+      const deletedFile = await svnDelete({
+        cwd: fixture.wc,
+        paths: ["delete-file.txt"],
+        dryRun: false,
+        riskAck: true
+      });
+      expect(deletedFile).toMatchObject({ ok: true, post_status_verified: true });
+      expect(statusByPath(deletedFile.changed_paths, fixture.wc).get("delete-file.txt")).toBe("D");
+
+      const deletedDirectory = await svnDelete({
+        cwd: fixture.wc,
+        paths: ["delete-dir"],
+        dryRun: false,
+        allowRecursive: true,
+        riskAck: true
+      });
+      expect(deletedDirectory).toMatchObject({ ok: true, post_status_verified: true });
+      expect(statusByPath(deletedDirectory.changed_paths, fixture.wc).get("delete-dir")).toBe("D");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("supports bounded revision inspection, snapshots, and commit root guards", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "history.txt");
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["history.txt"] })).ok).toBe(true);
+      const firstCommit = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        message: commitMessage("Add history fixture")
+      });
+      expect(firstCommit.ok).toBe(true);
+
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      const blankMessage = await svnCommit({ cwd: fixture.wc, paths: ["history.txt"], message: "   " });
+      expect(blankMessage).toMatchObject({ ok: false });
+      expect(blankMessage.note).toContain("non-empty commit message");
+
+      const secondCommit = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        message: commitMessage("Extend history fixture")
+      });
+      expect(secondCommit.ok).toBe(true);
+      const firstRevision = String(firstCommit.revision);
+      const secondRevision = String(secondCommit.revision);
+
+      const exactLog = await svnLog({ cwd: fixture.wc, paths: ["history.txt"], revision: firstRevision });
+      expect(exactLog.ok).toBe(true);
+      expect(exactLog.entries).toHaveLength(1);
+      expect((exactLog.entries as Array<{ rev: number }>)[0]?.rev).toBe(firstCommit.revision);
+
+      const revisionDiff = await svnDiff({ cwd: fixture.wc, paths: ["history.txt"], revision: secondRevision });
+      expect(revisionDiff.ok).toBe(true);
+      expect(revisionDiff.per_file).toEqual([
+        expect.objectContaining({ path: expect.stringContaining("history.txt"), added: 1, removed: 0 })
+      ]);
+
+      const historicalFile = await svnCat({ cwd: fixture.wc, path: "history.txt", revision: firstRevision });
+      expect(historicalFile).toMatchObject({ ok: true, content: "one\r\n", has_more: false });
+
+      const blame = await svnBlame({ cwd: fixture.wc, path: "history.txt", revision: secondRevision, maxLines: 1 });
+      expect(blame).toMatchObject({ ok: true, has_more: true, next_cursor: "1" });
+      expect(blame.lines).toEqual([
+        expect.objectContaining({ line: 1, revision: firstCommit.revision })
+      ]);
+
+      fs.writeFileSync(file, "one\r\ntwo\r\nthree\r\n", "utf8");
+      const snapshot = await svnSnapshot({ cwd: fixture.wc, paths: ["history.txt"] });
+      expect(snapshot).toMatchObject({ ok: true, revision: secondCommit.revision, local_modifications: true });
+      expect(statusByPath(snapshot.changed_paths, fixture.wc).get("history.txt")).toBe("M");
+
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: ["."],
+        name: "custom:root",
+        value: "changed"
+      })).ok).toBe(true);
+      const blockedRoot = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["."],
+        message: commitMessage("Change root property")
+      });
+      expect(blockedRoot).toMatchObject({ ok: false });
+      expect(blockedRoot.note).toContain("allowRoot:true");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

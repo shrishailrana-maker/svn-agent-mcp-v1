@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.20 — public implementation contract. Single source of truth.**
+**Spec version 1.22 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-07-20.
+hostnames, or product-specific role assignments. Date: 2026-07-22.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -160,10 +160,10 @@ no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
       commitText.ts   # /Committed revision (\d+)\./
     eol.ts            # byte sniffing (EOL kind, BOM, binary), dos2unix/unix2dos invocation
     tools\
-      readonly.ts     # svn_status, svn_info, svn_diff, svn_log, eol_check, svn_propget
+      readonly.ts     # status/info, diff/log/cat/blame, EOL, properties
       composite.ts    # svn_precommit, eol_fix_verified
       mutating.ts     # svn_add, svn_commit, svn_move, svn_rename, svn_copy,
-                      # svn_update, svn_revert, svn_resolved, svn_cleanup,
+                      # svn_update, svn_revert, svn_delete, svn_resolve, svn_cleanup,
                       # svn_propset_eol_style, svn_propset, svn_export, svn_import
   tests\              # jest: unit + integration (temp file:// repo)
   bin\                # versioned full Windows SVN and dos2unix runtime payloads
@@ -280,7 +280,7 @@ missing).
   allow exception cannot bypass a stricter project-specific deny or the immutable credential-file guards.
 - **G5 must-be-changed:** `svn_commit` verifies every listed path is actually modified/added/deleted per scoped status; unknown/clean path → refusal naming the path.
 - **G6 risky-slice ack:** `svn_commit` requires `riskAck:true` when any mechanical signal is present: a delete-scheduled path (status `D`), **more than 8 paths**, `version.ver` among the paths, or a build-system file among the paths (`*.sln`, `*.csproj`, `Directory.Build.props`, `Directory.Build.targets`, `*.props`, `*.targets`, `packages.config`). Refusal lists the triggered signals. Schema-changing / security-sensitive / scope-unclear risk is **not detectable** — the calling client's responsibility (§5.4).
-- **G7 no dangerous flags:** `--force` is never emitted. `svn_update` always gets `--accept postpone`. `svn_cleanup` never gets `--remove-unversioned`/`--remove-ignored`/`--vacuum-pristines`. `svn_resolved` requires an explicit `accept` value from the caller.
+- **G7 no dangerous flags:** `--force` is never emitted. `svn_update` always gets `--accept postpone`. `svn_cleanup` never gets `--remove-unversioned`/`--remove-ignored`/`--vacuum-pristines`. `svn_resolve` requires an explicit `accept` value from the caller.
 
 ## 8. Tool contracts
 
@@ -311,7 +311,7 @@ in `note`. The MCP also returns `svnversion`, `revision_range:{min,max}`, `local
 mixed-revision working copy from dirty local edits. Compact callers may project the corresponding
 camel-case fields instead of receiving every metadata field.
 
-**`svn_diff`** — `{ cwd?, paths: string[], ignoreEol?: boolean = true, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
+**`svn_diff`** — `{ cwd?, paths: string[], revision?: RevisionSelector, ignoreEol?: boolean = true, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
 argv (default): `svn diff --internal-diff -x --ignore-eol-style -- <paths…>` — the generic
 commit-prep standard. `ignoreEol:false` → `svn diff --internal-diff -- <paths…>` (raw, for EOL
 diagnosis). Extra fields: `per_file: [{path, added, removed, binary}]` (parsed from unified
@@ -322,8 +322,10 @@ summary-only output or bounded hunks, with a 3,000-character default. `cursor` p
 excerpt; `fileCursor` pages file summaries independently. Complete per-file counts are computed
 before public response shaping, up to 20,000 file summaries. `per_file_truncated:true` reports
 when that internal cap is reached. A single streamed line is capped at 1 MiB and visibly marked.
+An exact `revision` uses `svn diff -c`; a `start:end` selector uses `svn diff -r`, preserving the
+same bounded summary/excerpt behavior for committed revisions.
 
-**`svn_log`** — `{ cwd?, paths?: string[], limit?: number = 10, verbose?: boolean = false, fullMessage?, changedPaths?, maxMessageChars?, maxChangedPaths?, cursor? }`
+**`svn_log`** — `{ cwd?, paths?: string[], revision?: RevisionSelector, limit?: number = 10, verbose?: boolean = false, fullMessage?, changedPaths?, maxMessageChars?, maxChangedPaths?, cursor? }`
 argv: `svn log --xml -l <limit+1> [-v] [targets…]`; the extra entry determines whether a
 continuation exists and is not returned. For working-copy targets, the MCP
 resolves target URLs and queries repository URLs at HEAD when possible. This avoids the common
@@ -333,6 +335,15 @@ working-copy paths. Extra: `entries: [{rev, author, date, msg, changed_paths}]`,
 `target_mode: "repository-url"|"working-copy-path"`. Compact entries contain revision, author,
 date, and the first message line. Full messages and changed paths require explicit flags and remain
 bounded; truncation is marked per entry. `nextCursor` continues from an older revision.
+An exact or ranged `revision` performs a direct lookup; `revision` and `cursor` are mutually exclusive.
+
+**`svn_cat`** — `{ cwd?, path: string, revision?: Revision, maxChars?: number = 16000, cursor? }`
+Returns one character-bounded page of one contained working-copy file at an optional revision.
+`hasMore` and `nextCursor` make truncation explicit; binary content is identified and omitted.
+
+**`svn_blame`** — `{ cwd?, path: string, revision?: Revision, maxLines?: number = 100, cursor? }`
+Runs XML blame for one contained path and returns bounded `{line, revision, author, date}` entries.
+It omits file text by design; callers use `svn_cat` only for the file page they actually need.
 
 **`eol_check`** — `{ cwd?, paths: string[], includePassing?: boolean = false, countOnly?, maxItems?, cursor? }`
 Pure read: batched `svn propget svn:eol-style --xml` + async byte sniff (cap 5 MB, larger →
@@ -380,6 +391,10 @@ credentials.
 ### 8.2 (reserved)
 
 ### 8.3 Composite tools (the P1 killers)
+
+**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor? }`
+Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
+items in one response. It performs no mutation and is available under READONLY.
 
 **`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
@@ -433,7 +448,7 @@ scheduled as needed without recursively adding siblings. A directory path requir
 `allowRecursive:true` (then `--parents --depth infinity`). G4 enforced — can't add what may never be committed
 (`scratch/**` is reserved for local scratch files; never add).
 
-**`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false }`
+**`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false, allowRoot?: boolean = false }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → warning appended to `note`, not refusal) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -444,6 +459,8 @@ those scheduled-added ancestors plus the explicit path, so the caller does not n
 directories manually.
 Extra: `{ revision, post_status_clean: boolean, risk_signals: string[] }`. Mixed-revision WC →
 warning in `note`, commit proceeds (D3).
+Whitespace-only messages are refused. Naming the working-copy root is refused unless
+`allowRoot:true`; explicit child paths remain the normal scoped workflow.
 
 **`svn_move`** — `{ cwd?, src: string, dest: string }`
 argv: `svn move --parents <src> <dest>`. Working-copy path → working-copy path only; repository
@@ -476,9 +493,16 @@ requirement in §5.2 remains the caller's responsibility). argv:
 separate `svn revert --depth infinity <directory paths…>` for directories; a directory or `.`
 requires `allowRecursive:true`. Reverting the WC root path is refused unconditionally.
 
-**`svn_resolved`** — `{ cwd?, path: string, accept: "working"|"mine-full"|"theirs-full"|"base" }`
+**`svn_delete`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true, riskAck?: boolean = false }`
+The default returns the exact contained targets without changing the working copy. Execution
+requires `dryRun:false` and `riskAck:true`; directories additionally require
+`allowRecursive:true`. The working-copy root is always refused, `--force` is never emitted, and a
+successful schedule-delete is followed by scoped status verification for `D` entries.
+
+**`svn_resolve`** — `{ cwd?, path: string, accept: "working"|"mine-full"|"theirs-full"|"base" }`
 argv: `svn resolve --accept <accept> <path>`. Single path; `accept` has **no default** — the
 caller must state the resolution. Intended only after an operator asked for conflict resolution.
+`svn_resolved` remains registered as a deprecated compatibility alias.
 
 **`svn_cleanup`** — `{ cwd?, path?: string }`
 argv: `svn cleanup [path]` — releases stale WC locks (the `E155004` remedy). **Never** passes
@@ -486,10 +510,11 @@ argv: `svn cleanup [path]` — releases stale WC locks (the `E155004` remedy). *
 (refused under READONLY) because it rewrites WC metadata.
 
 **`svn_propset_eol_style`** — `{ cwd?, paths: string[], style?: "native"|"LF"|"CRLF" = "native" }`
-argv: `svn propset -- svn:eol-style <style> <paths…>`. Guard: each target must currently be
-**missing or mismatched** on the prop (checked via propget first) — mass re-propset of
-already-correct files is refused (preserve-existing rule, §5.6). Never-commit guards apply to every
-target. Rarely needed once §10.2 lands.
+argv: `svn propset -- svn:eol-style <style> <paths…>`. Guard: the prop is checked via propget
+first and **already-correct targets are skipped** — only missing or mismatched targets are
+written; when every target already matches, the call succeeds as a no-op with an
+"already <style> on all paths" note (preserve-existing rule, §5.6). Never-commit guards apply to
+every target. Rarely needed once §10.2 lands.
 
 **`svn_propset`** — `{ cwd?, paths: string[], name: string, value: string, riskAck?: boolean = false }`
 argv: `svn propset -- <name> <value> <paths…>`. Guard: explicit existing paths inside one working
@@ -635,14 +660,21 @@ Gate: one full sample commit slice executed end-to-end through the MCP (precommi
 
 ## 13. Out of scope / future
 
-Branch, switch, merge, relocate, delete (v0.2+ candidates, each with its own guard
-design); blame/annotate; lock/unlock; changelist support; any Git interop; any mass
+Branch, switch, merge, relocate (future candidates, each with its own guard design);
+lock/unlock; changelist support; any Git interop; any mass
 reformatting, ever. Project build/test time can dominate total slice time, but it is not SVN
 housekeeping — separate initiative.
 
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.22 / v1.2.0 (unreleased) — 2026-07-22
+
+- Adds guarded delete, canonical conflict resolution naming, MCP request cancellation, compact
+  snapshots, exact/range history and diff queries, and bounded historical cat/blame tools.
+- Requires explicit acknowledgement for root commits and rejects whitespace-only messages.
+- Ships the specification and generated MCP API contract in npm artifacts.
 
 ### Spec 1.21 / v1.1.3 — 2026-07-20
 

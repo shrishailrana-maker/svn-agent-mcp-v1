@@ -17,6 +17,7 @@ import {
   validatePropertyName,
   wcRootFromInfo
 } from "../guards.js";
+import { parseBlameXml } from "../parse/blameXml.js";
 import { createDiffAccumulator } from "../parse/diffText.js";
 import { parseInfoXml } from "../parse/infoXml.js";
 import { parseLogXml } from "../parse/logXml.js";
@@ -205,12 +206,24 @@ export async function svnDiff(input: {
   ignoreEol?: boolean;
   lineLimit?: number;
   cursor?: string;
+  revision?: string;
 }): Promise<ToolEnvelope & DiffSummary> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
   if (explicitError) {
     return {
       ...failEnvelope("svn diff", cwd, explicitError),
+      per_file: [],
+      per_file_truncated: false,
+      diff_excerpt: "",
+      truncated: false
+    };
+  }
+
+  const revisionError = revisionSelectorError(input.revision);
+  if (revisionError) {
+    return {
+      ...failEnvelope("svn diff", cwd, revisionError),
       per_file: [],
       per_file_truncated: false,
       diff_excerpt: "",
@@ -243,9 +256,12 @@ export async function svnDiff(input: {
   const lineLimit = input.lineLimit ?? defaultDiffLineLimit();
   const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
   const ignoreEol = input.ignoreEol ?? true;
+  const revisionArgs = input.revision
+    ? [isRevisionRange(input.revision) ? "-r" : "-c", input.revision]
+    : [];
   const args = ignoreEol
-    ? ["diff", "--internal-diff", "-x", "--ignore-eol-style", "--", ...resolved.paths]
-    : ["diff", "--internal-diff", "--", ...resolved.paths];
+    ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...resolved.paths]
+    : ["diff", ...revisionArgs, "--internal-diff", "--", ...resolved.paths];
   const diffAccumulator = createDiffAccumulator(lineLimit, lineOffset);
   const run = await runSvnStreamingLines(args, context.cwd, diffAccumulator.pushLine, { stdoutLineLimit: lineLimit });
   const rawDiff = run.exitCode === 0
@@ -268,7 +284,7 @@ export async function svnDiff(input: {
     }),
     ...diff,
     page_offset: lineOffset,
-    ...(diff.truncated ? { next_cursor: String(lineOffset + lineLimit) } : {}),
+    ...(diff.truncated ? { next_cursor: String(lineOffset + excerptLineCount(diff.diff_excerpt)) } : {}),
     ignore_eol: ignoreEol,
     ...(eolDiagnostic
       ? {
@@ -286,7 +302,20 @@ export async function svnLog(input: {
   verbose?: boolean;
   changedPaths?: boolean;
   cursor?: string;
+  revision?: string;
 }): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  const revisionError = revisionSelectorError(input.revision);
+  if (revisionError) {
+    return failEnvelope("svn log", cwd, revisionError);
+  }
+  if (input.revision && input.cursor) {
+    return failEnvelope("svn log", cwd, "revision and cursor cannot be combined");
+  }
+  if (input.cursor && !/^\d+(?::\d+)?$/.test(input.cursor)) {
+    return failEnvelope("svn log", cwd, "invalid cursor");
+  }
+
   const context = await getWcContext(input.cwd, input.paths ?? []);
   if (!context.ok) {
     return context.envelope;
@@ -305,7 +334,11 @@ export async function svnLog(input: {
     args.push("-v");
   }
   if (input.cursor) {
-    args.push("-r", `${input.cursor}:0`);
+    // A range-aware cursor ("next:floor") keeps the lower bound of the
+    // originally requested revision range across pages.
+    args.push("-r", input.cursor.includes(":") ? input.cursor : `${input.cursor}:0`);
+  } else if (input.revision) {
+    args.push("-r", input.revision);
   }
   args.push("--", ...logTargets.targets.map(escapeSvnTarget));
 
@@ -322,6 +355,127 @@ export async function svnLog(input: {
     entries,
     has_more: parsedEntries.length > entries.length,
     target_mode: logTargets.mode
+  };
+}
+
+export async function svnCat(input: {
+  cwd?: string;
+  path: string;
+  revision?: string;
+  maxChars?: number;
+  cursor?: string;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (!input.path.trim()) {
+    return failEnvelope("svn cat", cwd, "explicit path required");
+  }
+  const revisionError = revisionSelectorError(input.revision, false);
+  if (revisionError) {
+    return failEnvelope("svn cat", cwd, revisionError);
+  }
+
+  const context = await getWcContext(input.cwd, [input.path]);
+  if (!context.ok) {
+    return context.envelope;
+  }
+  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, [input.path]);
+  if (!resolved.ok) {
+    return failEnvelope("svn cat", context.cwd, resolved.note);
+  }
+  const target = resolved.paths[0];
+  if (!target) {
+    return failEnvelope("svn cat", context.cwd, "explicit path required");
+  }
+
+  const run = await runSvn([
+    "cat",
+    ...(input.revision ? ["-r", input.revision] : []),
+    "--",
+    escapeSvnTarget(target)
+  ], context.cwd);
+  if (run.exitCode !== 0) {
+    return envelopeFromRun({ run, ok: false, note: noteFromRun(run) });
+  }
+
+  const binary = run.stdout.includes("\0");
+  const offset = cursorValue(input.cursor);
+  const maxChars = boundedInteger(input.maxChars, 16000, 256, 64000);
+  const content = binary ? "" : run.stdout.slice(offset, offset + maxChars);
+  const hasMore = !binary && offset + content.length < run.stdout.length;
+  return {
+    ...createEnvelope({
+      ok: true,
+      command: run.command,
+      cwd: context.cwd,
+      note: binary ? "binary content omitted" : "",
+      truncated: hasMore
+    }),
+    path: repoRelativePath(target, context.wcRoot),
+    content,
+    binary,
+    page_offset: offset,
+    has_more: hasMore,
+    ...(hasMore ? { next_cursor: String(offset + content.length) } : {})
+  };
+}
+
+export async function svnBlame(input: {
+  cwd?: string;
+  path: string;
+  revision?: string;
+  maxLines?: number;
+  cursor?: string;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (!input.path.trim()) {
+    return failEnvelope("svn blame", cwd, "explicit path required");
+  }
+  const revisionError = revisionSelectorError(input.revision, false);
+  if (revisionError) {
+    return failEnvelope("svn blame", cwd, revisionError);
+  }
+
+  const context = await getWcContext(input.cwd, [input.path]);
+  if (!context.ok) {
+    return context.envelope;
+  }
+  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, [input.path]);
+  if (!resolved.ok) {
+    return failEnvelope("svn blame", context.cwd, resolved.note);
+  }
+  const target = resolved.paths[0];
+  if (!target) {
+    return failEnvelope("svn blame", context.cwd, "explicit path required");
+  }
+
+  const run = await runSvn([
+    "blame",
+    "--xml",
+    ...(input.revision ? ["-r", input.revision] : []),
+    "--",
+    escapeSvnTarget(target)
+  ], context.cwd);
+  if (run.exitCode !== 0) {
+    return envelopeFromRun({ run, ok: false, note: noteFromRun(run) });
+  }
+
+  let allLines;
+  try {
+    allLines = parseBlameXml(run.stdout);
+  } catch {
+    return failEnvelope("svn blame --xml", context.cwd, "invalid SVN blame XML");
+  }
+  const offset = cursorValue(input.cursor);
+  const maxLines = boundedInteger(input.maxLines, 100, 1, 500);
+  const lines = allLines.slice(offset, offset + maxLines);
+  const hasMore = offset + lines.length < allLines.length;
+  return {
+    ...createEnvelope({ ok: true, command: run.command, cwd: context.cwd, truncated: hasMore }),
+    path: repoRelativePath(target, context.wcRoot),
+    lines,
+    page_offset: offset,
+    has_more: hasMore,
+    ...(hasMore ? { next_cursor: String(offset + lines.length) } : {})
   };
 }
 
@@ -489,6 +643,33 @@ export function dryRiskSignals(absPaths: string[], wcRoot: string, statusByPath?
 export function defaultDiffLineLimit(): number {
   const parsed = Number.parseInt(process.env.SVN_AGENT_MAX_DIFF_LINES ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 2000) : 200;
+}
+
+function revisionSelectorError(value: string | undefined, allowRange = true): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  const revision = "(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})";
+  const selector = new RegExp(allowRange ? `^${revision}(?::${revision})?$` : `^${revision}$`, "i");
+  return selector.test(value) ? null : "invalid revision selector";
+}
+
+export function isRevisionRange(value: string): boolean {
+  // A ':' inside a {date} selector is not a range separator.
+  return value.replace(/\{[^}]*\}/g, "").includes(":");
+}
+
+function excerptLineCount(excerpt: string): number {
+  return excerpt ? excerpt.split("\n").length : 0;
+}
+
+function cursorValue(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "0", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value ?? fallback));
 }
 
 export function normalizeStatusLookup(statuses: Map<string, string>, target: string): string | undefined {

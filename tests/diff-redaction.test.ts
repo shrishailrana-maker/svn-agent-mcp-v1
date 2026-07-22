@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { createEnvelope, noteFromRun, redactArgv, redactText, summarizeText } from "../src/envelope.js";
 import { createDiffAccumulator, parseDiffText } from "../src/parse/diffText.js";
-import { defaultDiffLineLimit } from "../src/tools/readonly.js";
+import { defaultDiffLineLimit, isRevisionRange } from "../src/tools/readonly.js";
 import type { RunResult } from "../src/types.js";
 
 describe("diff parsing and command redaction", () => {
@@ -59,6 +59,28 @@ describe("diff parsing and command redaction", () => {
 
     expect(diff.summary().per_file).toHaveLength(2);
     expect(diff.summary().per_file_truncated).toBe(true);
+  });
+
+  it("treats colons inside date selectors as part of one revision, not a range", () => {
+    expect(isRevisionRange("42")).toBe(false);
+    expect(isRevisionRange("HEAD")).toBe(false);
+    expect(isRevisionRange("{2026-07-22T12:00:00Z}")).toBe(false);
+    expect(isRevisionRange("{2026-07-22 12:00}")).toBe(false);
+    expect(isRevisionRange("41:42")).toBe(true);
+    expect(isRevisionRange("HEAD:BASE")).toBe(true);
+    expect(isRevisionRange("{2026-07-01}:{2026-07-22T12:00:00Z}")).toBe(true);
+  });
+
+  it("caps the diff excerpt by total characters while keeping complete per-file counts", () => {
+    const diff = createDiffAccumulator(10, 0, 20000, 40);
+    for (const line of ["Index: big.txt", `+${"a".repeat(30)}`, "+short", "-old"]) {
+      diff.pushLine(line);
+    }
+
+    const summary = diff.summary();
+    expect(summary.truncated).toBe(true);
+    expect(summary.diff_excerpt).toBe("Index: big.txt");
+    expect(summary.per_file).toEqual([{ path: "big.txt", added: 2, removed: 1, binary: false }]);
   });
 
   it("marks property changes without counting property values as source lines", () => {
@@ -181,6 +203,10 @@ describe("diff parsing and command redaction", () => {
 
   it("includes the configured duration in timeout diagnostics", () => {
     expect(noteFromRun({ ...fakeRun(""), timedOut: true, timeoutMs: 60000 })).toBe("svn timed out after 60000 ms");
+  });
+
+  it("distinguishes request cancellation from a timeout", () => {
+    expect(noteFromRun({ ...fakeRun(""), cancelled: true })).toBe("svn request cancelled");
   });
 
   it("points agents at the CLI failsafe when the svn executable cannot launch", () => {

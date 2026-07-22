@@ -4,6 +4,30 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Added guarded `svn_delete` with dry-run-by-default behavior, explicit paths, root refusal,
+  recursive acknowledgement, `riskAck`, and post-delete status verification.
+- Added canonical `svn_resolve` while retaining `svn_resolved` as a deprecated compatibility alias.
+- Added `svn_snapshot`, bounded `svn_cat`, and paginated `svn_blame` for common audit workflows.
+- Added exact/range revision selectors to `svn_log` and `svn_diff`.
+- Added request-cancellation propagation from MCP calls to buffered and streaming SVN processes.
+
+### Changed
+
+- Working-copy-root commits now require `allowRoot:true`, and whitespace-only commit messages are
+  refused before SVN runs.
+- Agent install instructions now compare the installed version with `npm view` instead of pinning a
+  remembered latest version.
+
+### Fixed
+
+- Compact revert receipts now identify the default dry-run behavior even when `dryRun` is omitted.
+
+### Packaging
+
+- npm artifacts now include `docs/SPEC.md` and a generated `docs/MCP_API.json` tool contract.
+
 ## [1.1.3] - 2026-07-20
 
 ### Security
