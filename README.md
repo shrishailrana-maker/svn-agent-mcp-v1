@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.0`; each source clone can prepare a local runtime under `releases/v1.2.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.1`; each source clone can prepare a local runtime under `releases/v1.2.1`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -130,7 +130,10 @@ hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
 
 High-volume reads are bounded by default. Log messages and changed paths are capped and opt-in
 where appropriate. Diff collection defaults to 200 lines, compact excerpts are capped at 3,000
-characters, and large file/property/status/EOL collections expose explicit continuation cursors.
+characters, and compact diff results retain transport headroom below a 32 KiB JSON-RPC record.
+`maxChars` and `maxFiles` are upper requests: the response may return less with independent
+`nextCursor` and `nextFileCursor` values. Large file/property/status/EOL collections expose
+explicit continuation cursors.
 Buffered SVN commands fail with a scoped diagnostic above 20 MB. Streamed diff lines are capped at
 1 MiB each, and per-file diff summaries are capped at 20,000 entries; either truncation is reported.
 Public path arrays accept at most 500 entries, and individual filesystem paths are capped at 4,096

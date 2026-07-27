@@ -4,6 +4,16 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-27
+
+### Fixed
+
+- Bounded compact `svn_diff` JSON-RPC results even when callers request `diffMode:"full"` and
+  large `maxChars`/`maxFiles` values. Oversized excerpts and file summaries now expose independent
+  continuation cursors instead of producing multi-megabyte stdio records.
+- Updated the test-only coverage/glob dependency chain to patched releases after new registry
+  advisories affected the Jest development graph.
+
 ## [1.2.0] - 2026-07-22
 
 ### Added

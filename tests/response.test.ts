@@ -379,6 +379,70 @@ describe("public MCP response shaping", () => {
     expect(manyFiles.nextFileCursor).toBe("20");
   });
 
+  it("keeps compact full-diff JSON-RPC records within the transport budget", () => {
+    const longDirectory = "nested/".repeat(40);
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn diff",
+        cwd: "E:\\dev\\example"
+      }),
+      per_file: Array.from({ length: 500 }, (_, index) => ({
+        path: `src/${longDirectory}file-${index}.ts`,
+        added: 1,
+        removed: 1,
+        binary: false
+      })),
+      per_file_truncated: false,
+      diff_excerpt: Array.from(
+        { length: 4_000 },
+        (_, index) => `@@ -${index + 1},1 +${index + 1},1 @@\n+${"x".repeat(400)}`
+      ).join("\n"),
+      truncated: false,
+      page_offset: 0,
+      ignore_eol: true
+    };
+
+    const result = toToolResult("svn_diff", payload, {
+      responseMode: "compact",
+      request: {
+        diffMode: "full",
+        maxChars: 64_000,
+        maxFiles: 500
+      }
+    });
+    const structured = result.structuredContent as Record<string, unknown>;
+    const jsonRpcRecord = `${JSON.stringify({ jsonrpc: "2.0", id: 1, result })}\n`;
+
+    expect(Buffer.byteLength(jsonRpcRecord, "utf8")).toBeLessThanOrEqual(32 * 1024);
+    expect(jsonRpcRecord.slice(0, -1)).not.toContain("\n");
+    expect(structured.truncated).toBe(true);
+    expect(structured.nextCursor).toMatch(/^\d+$/);
+    expect(structured.filesTruncated).toBe(true);
+    expect(structured.nextFileCursor).toMatch(/^\d+$/);
+
+    const escapedPayload = {
+      ...payload,
+      per_file: [{
+        path: `src/${"\u0001".repeat(4_000)}`,
+        added: 1,
+        removed: 1,
+        binary: false
+      }],
+      diff_excerpt: `+${"\u0002".repeat(64_000)}`
+    };
+    const escapedResult = toToolResult("svn_diff", escapedPayload, {
+      responseMode: "compact",
+      request: {
+        diffMode: "full",
+        maxChars: 64_000,
+        maxFiles: 500
+      }
+    });
+    const escapedRecord = `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: escapedResult })}\n`;
+    expect(Buffer.byteLength(escapedRecord, "utf8")).toBeLessThanOrEqual(32 * 1024);
+  });
+
   it("returns only EOL failures unless passing files are requested", () => {
     const payload = {
       ...createEnvelope({ ok: true, command: "eol_check", cwd: "E:\\dev\\example" }),

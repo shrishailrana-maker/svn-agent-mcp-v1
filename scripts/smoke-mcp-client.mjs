@@ -91,6 +91,22 @@ try {
     );
     passed.push("diff");
 
+    fs.appendFileSync(
+      path.join(workingCopy, "client-smoke.txt"),
+      Array.from({ length: 400 }, (_, index) => `large diff line ${index} ${"x".repeat(300)}\r\n`).join(""),
+      "utf8"
+    );
+    const largeDiff = await callOk(client, "svn_diff", {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      diffMode: "full",
+      maxChars: 64_000,
+      maxFiles: 500
+    });
+    assert(String(largeDiff.excerpt).length <= 8_000, "compact full diff exceeded its excerpt cap");
+    assert(largeDiff.truncated === true && /^\d+$/.test(largeDiff.nextCursor), "large diff omitted continuation");
+    passed.push("large-diff");
+
     const snapshot = await callOk(client, "svn_snapshot", { cwd: workingCopy, paths: ["client-smoke.txt"] });
     assert(snapshot.counts.modified === 1, "snapshot omitted the modified file");
     const deletePreview = await callOk(client, "svn_delete", { cwd: workingCopy, paths: ["client-smoke.txt"] });

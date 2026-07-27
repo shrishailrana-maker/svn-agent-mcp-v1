@@ -32,6 +32,9 @@ Please do not publish exploit details until a fix or mitigation is available.
 - Buffered SVN output is limited to 20 MB. Streamed diff lines are limited to 1 MiB, and diff file
   summaries are limited to 20,000 entries. Truncation and over-limit failures are reported rather
   than silently discarded.
+- Compact diff results enforce a separate serialized-size budget and return continuation cursors
+  for omitted excerpts and file summaries. Stdio clients must still buffer the byte stream through
+  its newline-delimited JSON-RPC record boundary instead of parsing arbitrary read chunks.
 - Response redaction covers credential-bearing URLs and common secret query parameters, but it is
   not a substitute for keeping credentials out of versioned file content and commit messages.
 - Commit/import messages and generic property values are passed through mode-0600 temporary files

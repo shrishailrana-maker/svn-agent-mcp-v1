@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.22 — public implementation contract. Single source of truth.**
+**Spec version 1.23 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-07-22.
+hostnames, or product-specific role assignments. Date: 2026-07-27.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -320,10 +320,13 @@ diagnosis). Extra fields: `per_file: [{path, added, removed, binary}]` (parsed f
 diff; `binary:true` when svn prints "Cannot display"), `diff_excerpt` (first `lineLimit`
 lines), `truncated`, `ignore_eol:boolean`. Property-only changes set `property_changed:true` and
 do not inflate source line counts. `lineLimit` is capped at 2,000. Compact response mode supports
-summary-only output or bounded hunks, with a 3,000-character default. `cursor` pages the streamed
-excerpt; `fileCursor` pages file summaries independently. Complete per-file counts are computed
-before public response shaping, up to 20,000 file summaries. `per_file_truncated:true` reports
-when that internal cap is reached. A single streamed line is capped at 1 MiB and visibly marked.
+summary-only output or bounded hunks, with a 3,000-character default. Compact `svn_diff` shaping
+also enforces a 28 KiB structured-result budget, leaving JSON-RPC framing headroom below 32 KiB;
+`maxChars` and `maxFiles` are upper requests rather than guarantees. `cursor` pages the streamed
+excerpt; `fileCursor` pages file summaries independently, including when the transport budget
+reduces either requested page. Complete per-file counts are computed before public response
+shaping, up to 20,000 file summaries. `per_file_truncated:true` reports when that internal cap is
+reached. A single streamed line is capped at 1 MiB and visibly marked.
 An exact `revision` uses `svn diff -c`; a `start:end` selector uses `svn diff -r`, preserving the
 same bounded summary/excerpt behavior for committed revisions.
 
@@ -672,6 +675,14 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.23 / v1.2.1 — 2026-07-27
+
+- Bounds compact full-diff JSON-RPC results independently of the internal streamed excerpt cap.
+- Returns independent excerpt and file-summary cursors when the transport budget reduces a
+  requested diff page.
+- Clarifies that stdio clients must buffer newline-delimited JSON-RPC records rather than treating
+  arbitrary pipe read chunks as complete messages.
 
 ### Spec 1.22 / v1.2.0 — 2026-07-22
 

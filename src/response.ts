@@ -47,6 +47,12 @@ const MUTATION_STATUS: Record<string, string> = {
   svn_update: "updated"
 };
 
+// Keep compact diff results comfortably below common client/relay message
+// thresholds. Stdio is a byte stream, so clients must still buffer through the
+// newline delimiter; this bound limits the damage from clients that do not.
+const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
+const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
+
 export function defaultResponseMode(
   env: Readonly<Record<string, string | undefined>> = process.env
 ): ResponseMode {
@@ -416,65 +422,69 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   const sourceFiles = recordArray(payload.per_file);
   const fileSummaryTruncated = payload.per_file_truncated === true;
   const fileOffset = cursorOffset(request.fileCursor);
-  const maxFiles = boundedInteger(request.maxFiles, 100, 1, 500);
-  const files = sourceFiles.slice(fileOffset, fileOffset + maxFiles).map((file) => ({
+  const requestedFileCount = boundedInteger(request.maxFiles, 100, 1, 500);
+  const requestedFiles = sourceFiles.slice(fileOffset, fileOffset + requestedFileCount).map((file) => ({
     path: redactText(relativePath(payload.cwd, stringValue(file.path))).slice(0, 4096),
     added: file.added,
     removed: file.removed,
     binary: file.binary,
     ...(file.property_changed === true ? { propertyChanged: true } : {})
   }));
-  const nextFileOffset = fileOffset + files.length;
-  const filesTruncated = nextFileOffset < sourceFiles.length;
-  const pagedFiles = fileOffset > 0 || filesTruncated;
   const excerpt = stringValue(payload.diff_excerpt);
   const offset = numberValue(payload.page_offset);
-  const base = {
-    ok: true,
-    files,
-    ...(fileSummaryTruncated ? { fileSummaryTruncated: true } : {}),
-    ...(pagedFiles
-      ? {
-          totalFiles: sourceFiles.length,
-          filesTruncated,
-          ...(filesTruncated ? { nextFileCursor: String(nextFileOffset) } : {})
-        }
-      : {}),
-    ...(payload.ignore_eol === false ? { ignoreEol: false } : {})
-  };
-
-  if (mode === "summary") {
-    return {
-      ...base,
-      truncated: fileSummaryTruncated
-    };
-  }
-
-  if (mode === "full") {
-    return {
-      ...base,
-      excerpt,
-      truncated: Boolean(payload.truncated) || fileSummaryTruncated,
-      ...(payload.truncated ? { nextCursor: String(offset + lineCount(excerpt)) } : {})
-    };
-  }
-
-  const page = boundedDiffExcerpt(
-    excerpt,
-    0,
-    boundedInteger(request.maxChars, 3000, 256, 64000),
-    boundedInteger(request.maxHunksPerFile, 3, 1, 20)
+  const requestedExcerptCharLimit = Math.min(
+    boundedInteger(request.maxChars, mode === "full" ? COMPACT_DIFF_EXCERPT_CHAR_LIMIT : 3000, 256, 64000),
+    COMPACT_DIFF_EXCERPT_CHAR_LIMIT
   );
-  const hasContinuation = page.nextOffset < lineCount(excerpt) || Boolean(payload.truncated);
-  const truncated = hasContinuation || page.lineTruncated || fileSummaryTruncated;
+  const maxHunksPerFile = mode === "full"
+    ? Number.MAX_SAFE_INTEGER
+    : boundedInteger(request.maxHunksPerFile, 3, 1, 20);
 
-  return {
-    ...base,
-    excerpt: page.text,
-    truncated,
-    ...(page.lineTruncated ? { lineTruncated: true } : {}),
-    ...(hasContinuation ? { nextCursor: String(offset + page.nextOffset) } : {})
+  const buildResult = (fileCount: number, excerptCharLimit: number): Record<string, unknown> => {
+    const files = requestedFiles.slice(0, fileCount);
+    const nextFileOffset = fileOffset + files.length;
+    const filesTruncated = nextFileOffset < sourceFiles.length;
+    const pagedFiles = fileOffset > 0 || filesTruncated;
+    const base = {
+      ok: true,
+      files,
+      ...(fileSummaryTruncated ? { fileSummaryTruncated: true } : {}),
+      ...(pagedFiles
+        ? {
+            totalFiles: sourceFiles.length,
+            filesTruncated,
+            ...(filesTruncated ? { nextFileCursor: String(nextFileOffset) } : {})
+          }
+        : {}),
+      ...(payload.ignore_eol === false ? { ignoreEol: false } : {})
+    };
+
+    if (mode === "summary") {
+      return {
+        ...base,
+        truncated: fileSummaryTruncated || filesTruncated
+      };
+    }
+
+    const page = boundedDiffExcerpt(excerpt, 0, excerptCharLimit, maxHunksPerFile);
+    const hasContinuation = page.nextOffset < lineCount(excerpt) || Boolean(payload.truncated);
+    return {
+      ...base,
+      excerpt: page.text,
+      truncated: hasContinuation || page.lineTruncated || fileSummaryTruncated || filesTruncated,
+      ...(page.lineTruncated ? { lineTruncated: true } : {}),
+      ...(hasContinuation ? { nextCursor: String(offset + page.nextOffset) } : {})
+    };
   };
+
+  const minimumFileCount = requestedFiles.length > 0 ? 1 : 0;
+  const excerptCharLimit = mode === "summary"
+    ? requestedExcerptCharLimit
+    : largestFittingInteger(1, requestedExcerptCharLimit, (candidateLimit) =>
+        serializedByteLength(buildResult(minimumFileCount, candidateLimit)) <= COMPACT_DIFF_RESULT_BUDGET_BYTES);
+  const fileCount = largestFittingInteger(minimumFileCount, requestedFiles.length, (candidateCount) =>
+    serializedByteLength(buildResult(candidateCount, excerptCharLimit)) <= COMPACT_DIFF_RESULT_BUDGET_BYTES);
+  return buildResult(fileCount, excerptCharLimit);
 }
 
 function compactEolCheck(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
@@ -797,6 +807,26 @@ function boundedInteger(value: unknown, fallback: number, minimum: number, maxim
     return fallback;
   }
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function serializedByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function largestFittingInteger(minimum: number, maximum: number, fits: (candidate: number) => boolean): number {
+  let low = minimum;
+  let high = maximum;
+  let best = minimum;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    if (fits(candidate)) {
+      best = candidate;
+      low = candidate + 1;
+    } else {
+      high = candidate - 1;
+    }
+  }
+  return best;
 }
 
 function boundedDiffExcerpt(text: string, offset: number, maxChars: number, maxHunksPerFile: number): {
