@@ -4,6 +4,16 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-28
+
+### Fixed
+
+- Refuse existing directory targets in `svn_precommit` and `svn_commit` unless
+  `allowDirectoryTargets:true` explicitly acknowledges node-only `--depth empty` behavior and
+  excluded descendants; precommit now also mirrors the commit root acknowledgement.
+- Document that the spawning MCP client controls Windows process-window visibility, and add a
+  regression test proving startup diagnostics use stderr while stdout remains protocol-only.
+
 ## [1.2.1] - 2026-07-27
 
 ### Fixed

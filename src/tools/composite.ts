@@ -4,6 +4,7 @@ import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../e
 import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, sniffEol } from "../eol.js";
 import {
   assertExistingTargets,
+  findExistingDirectoryTarget,
   isCommittableStatus,
   neverCommitHit,
   neverCommitNote,
@@ -64,50 +65,46 @@ export async function svnSnapshot(input: {
   };
 }
 
-export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineLimit?: number }): Promise<ToolEnvelope> {
+export async function svnPrecommit(input: {
+  cwd?: string;
+  paths: string[];
+  lineLimit?: number;
+  allowRoot?: boolean;
+  allowDirectoryTargets?: boolean;
+}): Promise<ToolEnvelope> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
   if (explicitError) {
-    return {
-      ...failEnvelope("svn_precommit", cwd, explicitError),
-      verdict: "GUARD_BLOCKED",
-      per_file: [],
-      risk_signals: [],
-      diff_excerpt: ""
-    };
+    return blockedPrecommit(failEnvelope("svn_precommit", cwd, explicitError));
   }
 
   const context = await getWcContext(input.cwd, input.paths);
   if (!context.ok) {
-    return {
-      ...context.envelope,
-      verdict: "GUARD_BLOCKED",
-      per_file: [],
-      risk_signals: [],
-      diff_excerpt: ""
-    };
+    return blockedPrecommit(context.envelope);
   }
 
   const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.paths);
   if (!resolved.ok) {
-    return {
-      ...failEnvelope("svn_precommit", context.cwd, resolved.note),
-      verdict: "GUARD_BLOCKED",
-      per_file: [],
-      risk_signals: [],
-      diff_excerpt: ""
-    };
+    return blockedPrecommit(failEnvelope("svn_precommit", context.cwd, resolved.note));
+  }
+  if (!input.allowRoot && resolved.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(context.wcRoot))) {
+    return blockedPrecommit(failEnvelope("svn_precommit", context.cwd, "working-copy root commit requires allowRoot:true"));
+  }
+  const directoryTarget = findExistingDirectoryTarget(resolved.paths);
+  if (!directoryTarget.ok) {
+    return blockedPrecommit(failEnvelope("svn_precommit", context.cwd, directoryTarget.note));
+  }
+  if (directoryTarget.target && !input.allowDirectoryTargets) {
+    return blockedPrecommit(failEnvelope(
+      "svn_precommit",
+      context.cwd,
+      `directory commit target requires allowDirectoryTargets:true because --depth empty excludes descendants: ${repoRelativePath(directoryTarget.target, context.wcRoot)}`
+    ));
   }
 
   const status = await scopedStatusMap(context.cwd, context.wcRoot, input.paths);
   if (!status.envelope.ok) {
-    return {
-      ...status.envelope,
-      verdict: "GUARD_BLOCKED",
-      per_file: [],
-      risk_signals: [],
-      diff_excerpt: ""
-    };
+    return blockedPrecommit(status.envelope);
   }
 
   const diff = await svnDiff({
@@ -219,6 +216,16 @@ export async function svnPrecommit(input: { cwd?: string; paths: string[]; lineL
     mixed_revision: mixedRevision,
     diff_excerpt: diff.diff_excerpt,
     truncated: diff.truncated
+  };
+}
+
+function blockedPrecommit(envelope: ToolEnvelope): ToolEnvelope {
+  return {
+    ...envelope,
+    verdict: "GUARD_BLOCKED",
+    per_file: [],
+    risk_signals: [],
+    diff_excerpt: ""
   };
 }
 

@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.23 — public implementation contract. Single source of truth.**
+**Spec version 1.24 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-07-27.
+hostnames, or product-specific role assignments. Date: 2026-07-28.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -252,6 +252,9 @@ overridden, compatible bundled, or `PATH` SVN (`--version --quiet`) and dos2unix
 (`--version`), then detect READONLY. Failures don't kill the server — the affected
 tools return `ok:false` with an explanatory `note` (e.g. `eol_*` unavailable when dos2unix
 missing).
+The server reserves stdout for newline-delimited MCP JSON-RPC and writes startup diagnostics to
+stderr. On Windows, the spawning MCP client controls process-window visibility and should use its
+hidden/no-window process option.
 
 ### 6.6 Error taxonomy (svn stderr → structured notes)
 
@@ -401,7 +404,7 @@ credentials.
 Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
 items in one response. It performs no mutation and is available under READONLY.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false }` *(read-only; allowed under READONLY)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
@@ -429,6 +432,9 @@ Compact mode returns one authoritative receipt: path count, status counts, diff 
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
 `includeDiff:true` is requested. An early setup/status failure returns a compact diagnostic instead
 of implying that diff or EOL checks passed.
+Working-copy-root and existing-directory targets use the same `allowRoot` and
+`allowDirectoryTargets` acknowledgements as `svn_commit`, so `READY` does not contradict those
+target-scope guards for the same requested slice.
 
 **`eol_fix_verified`** — `{ cwd?, path: string, target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false }` *(mutating; refused under READONLY)*
 One call = read `svn:eol-style`, infer the target (`native` → platform native, `LF` → lf,
@@ -453,7 +459,7 @@ scheduled as needed without recursively adding siblings. A directory path requir
 `allowRecursive:true` (then `--parents --depth infinity`). G4 enforced — can't add what may never be committed
 (`scratch/**` is reserved for local scratch files; never add).
 
-**`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false, allowRoot?: boolean = false }`
+**`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → warning appended to `note`, not refusal) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -465,7 +471,10 @@ directories manually.
 Extra: `{ revision, post_status_clean: boolean, risk_signals: string[] }`. Mixed-revision WC →
 warning in `note`, commit proceeds (D3).
 Whitespace-only messages are refused. Naming the working-copy root is refused unless
-`allowRoot:true`; explicit child paths remain the normal scoped workflow.
+`allowRoot:true`. Existing directory targets are refused unless `allowDirectoryTargets:true`
+explicitly acknowledges that `--depth empty` commits only the directory node and excludes changed
+descendants. Explicit child paths remain the normal scoped workflow; any descendants left changed
+are reported by the post-status residue.
 
 **`svn_move`** — `{ cwd?, src: string, dest: string }`
 argv: `svn move --parents <src> <dest>`. Working-copy path → working-copy path only; repository
@@ -675,6 +684,13 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.24 / v1.2.2 — 2026-07-28
+
+- Refuses existing directory targets unless precommit and commit receive the same explicit
+  directory-node acknowledgement.
+- Applies matching working-copy-root acknowledgement checks during precommit and commit.
+- Records the stdio diagnostic and Windows process-window ownership boundaries.
 
 ### Spec 1.23 / v1.2.1 — 2026-07-27
 

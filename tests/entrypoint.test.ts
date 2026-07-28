@@ -36,33 +36,34 @@ describe("server entrypoint launch detection", () => {
     const junction = path.join(tmp, "current");
     try {
       fs.symlinkSync(path.resolve("dist"), junction, "junction");
-      const banner = await startupBanner(path.join(junction, "index.js"));
-      expect(banner).toContain("running on stdio");
+      const streams = await startupStreams(path.join(junction, "index.js"));
+      expect(streams.stderr).toContain("running on stdio");
+      expect(streams.stdout).toBe("");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }, 20000);
 });
 
-function startupBanner(entry: string): Promise<string> {
+function startupStreams(entry: string): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [entry], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
     let stderr = "";
-    const finish = () => {
-      child.kill();
-      resolve(stderr);
-    };
-    const timer = setTimeout(finish, 15000);
+    const timer = setTimeout(() => child.kill(), 15000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
       if (stderr.includes("running on stdio")) {
         clearTimeout(timer);
-        finish();
+        child.kill();
       }
     });
-    child.on("exit", () => {
+    child.on("close", () => {
       clearTimeout(timer);
-      resolve(stderr);
+      resolve({ stdout, stderr });
     });
   });
 }

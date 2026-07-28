@@ -50,6 +50,10 @@ export function createServer(): McpServer {
   const cwd = filesystemPath.optional().describe("Absolute WC directory; required for relative paths.");
   const paths = z.array(filesystemPath).min(1).max(500).describe("Explicit paths inside one WC.");
   const optionalPaths = z.array(filesystemPath).max(500).optional().describe("Optional paths inside one WC.");
+  const allowRootCommit = z.boolean().optional().describe("Acknowledge a working-copy-root commit target.");
+  const allowDirectoryTargets = z.boolean().optional().describe(
+    "Acknowledge that an existing directory target commits only the directory node; descendants require explicit paths."
+  );
   const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i).optional();
   const revisionSelector = z.string().max(257).regex(
     /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})(?::(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\}))?$/i
@@ -259,6 +263,8 @@ export function createServer(): McpServer {
         lineLimit: z.number().int().min(1).max(2000).optional(),
         includeDiff: z.boolean().optional(),
         maxChars: z.number().int().min(256).max(64000).optional(),
+        allowRoot: allowRootCommit,
+        allowDirectoryTargets,
         ...response
       }
     },
@@ -300,7 +306,8 @@ export function createServer(): McpServer {
         paths,
         message: commitMessage,
         riskAck: z.boolean().optional(),
-        allowRoot: z.boolean().optional(),
+        allowRoot: allowRootCommit,
+        allowDirectoryTargets,
         ...response
       }
     },

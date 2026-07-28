@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.2.1"
+    "version": "1.2.2"
   },
   "tools": [
     {
@@ -713,6 +713,14 @@
             "minimum": 256,
             "maximum": 64000
           },
+          "allowRoot": {
+            "description": "Acknowledge a working-copy-root commit target.",
+            "type": "boolean"
+          },
+          "allowDirectoryTargets": {
+            "description": "Acknowledge that an existing directory target commits only the directory node; descendants require explicit paths.",
+            "type": "boolean"
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -865,6 +873,11 @@
             "type": "boolean"
           },
           "allowRoot": {
+            "description": "Acknowledge a working-copy-root commit target.",
+            "type": "boolean"
+          },
+          "allowDirectoryTargets": {
+            "description": "Acknowledge that an existing directory target commits only the directory node; descendants require explicit paths.",
             "type": "boolean"
           },
           "responseMode": {

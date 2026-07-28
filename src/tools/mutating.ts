@@ -4,6 +4,7 @@ import path from "node:path";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   assertExistingTargets,
+  findExistingDirectoryTarget,
   isCommittableStatus,
   isInsideOrEqual,
   messageFormatWarning,
@@ -77,6 +78,7 @@ export async function svnCommit(input: {
   message: string;
   riskAck?: boolean;
   allowRoot?: boolean;
+  allowDirectoryTargets?: boolean;
 }): Promise<ToolEnvelope> {
   const guard = await mutatingPathGuard("svn commit", input.cwd, input.paths, { requireExisting: false });
   if (!guard.ok) {
@@ -87,6 +89,17 @@ export async function svnCommit(input: {
   }
   if (!input.allowRoot && guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
     return failEnvelope("svn commit", guard.cwd, "working-copy root commit requires allowRoot:true");
+  }
+  const directoryTarget = findExistingDirectoryTarget(guard.paths);
+  if (!directoryTarget.ok) {
+    return failEnvelope("svn commit", guard.cwd, directoryTarget.note);
+  }
+  if (directoryTarget.target && !input.allowDirectoryTargets) {
+    return failEnvelope(
+      "svn commit",
+      guard.cwd,
+      `directory commit target requires allowDirectoryTargets:true because --depth empty excludes descendants: ${repoRelativePath(directoryTarget.target, guard.wcRoot)}`
+    );
   }
 
   for (const target of guard.paths) {

@@ -1122,6 +1122,63 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("refuses directory commit targets that would exclude changed descendants", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const directory = path.join(fixture.wc, "commit-dir");
+      const child = path.join(directory, "child.txt");
+      fs.mkdirSync(directory);
+      fs.writeFileSync(child, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["commit-dir/child.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["commit-dir/child.txt"],
+        message: commitMessage("Add directory commit fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(child, "two\r\n", "utf8");
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: ["commit-dir"],
+        name: "custom:directory",
+        value: "changed"
+      })).ok).toBe(true);
+
+      const precommitRefused = await svnPrecommit({ cwd: fixture.wc, paths: ["commit-dir"] });
+      expect(precommitRefused).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED" });
+      expect(precommitRefused.note).toContain("allowDirectoryTargets:true");
+      const precommitAcknowledged = await svnPrecommit({
+        cwd: fixture.wc,
+        paths: ["commit-dir"],
+        allowDirectoryTargets: true
+      });
+      expect(precommitAcknowledged).toMatchObject({ ok: true, verdict: "READY" });
+
+      const refused = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["commit-dir"],
+        message: commitMessage("Attempt directory-only commit")
+      });
+      expect(refused).toMatchObject({ ok: false });
+      expect(refused.note).toContain("allowDirectoryTargets:true");
+      const remaining = await svnStatus({ cwd: fixture.wc, paths: ["commit-dir/child.txt"] });
+      expect(statusByPath(remaining.changed_paths, fixture.wc).get("commit-dir/child.txt")).toBe("M");
+
+      const acknowledged = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["commit-dir"],
+        message: commitMessage("Commit directory property only"),
+        allowDirectoryTargets: true
+      });
+      expect(acknowledged).toMatchObject({ ok: true, post_status_clean: false });
+      expect(acknowledged.command).toContain("--depth empty");
+      const descendantAfterCommit = await svnStatus({ cwd: fixture.wc, paths: ["commit-dir/child.txt"] });
+      expect(statusByPath(descendantAfterCommit.changed_paths, fixture.wc).get("commit-dir/child.txt")).toBe("M");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("supports bounded revision inspection, snapshots, and commit root guards", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -1180,6 +1237,16 @@ describe("SVN tool integration against a temp repository", () => {
         name: "custom:root",
         value: "changed"
       })).ok).toBe(true);
+      const precommitRoot = await svnPrecommit({ cwd: fixture.wc, paths: ["."] });
+      expect(precommitRoot).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED" });
+      expect(precommitRoot.note).toContain("allowRoot:true");
+      const precommitRootAcknowledged = await svnPrecommit({
+        cwd: fixture.wc,
+        paths: ["."],
+        allowRoot: true,
+        allowDirectoryTargets: true
+      });
+      expect(precommitRootAcknowledged).toMatchObject({ ok: true, verdict: "READY" });
       const blockedRoot = await svnCommit({
         cwd: fixture.wc,
         paths: ["."],

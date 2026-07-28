@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.1`; each source clone can prepare a local runtime under `releases/v1.2.1`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.2`; each source clone can prepare a local runtime under `releases/v1.2.2`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -27,7 +27,8 @@ Install or update the SVN MCP globally with: npm install -g svn-agent-mcp@latest
 Verify the package with: npm list -g svn-agent-mcp --depth=0
 Resolve the executable with the platform command lookup: where.exe svn-agent-mcp on Windows, or command -v svn-agent-mcp on macOS/Linux.
 On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
-Ensure the MCP client entry is named "svn" and uses command "svn-agent-mcp", never a source checkout, junction, current pointer, or dist path. Do not add --readonly.
+Ensure the MCP client entry is named "svn". Use command "svn-agent-mcp" when the client can launch it without a visible window; never use a source checkout, junction, or current pointer. Do not add --readonly.
+On Windows, enable the client's hidden/no-window process option. If the npm command shim still opens a console, resolve the global module root with `npm root -g`, then use command "node" with args `["<global-module-root>\\svn-agent-mcp\\dist\\index.js"]`; the server cannot choose its parent process creation flags.
 Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
 Query the registry version with: npm view svn-agent-mcp version
 After restarting, run svn_self_check and compare its installed version with the registry version. Report the installed version, executable path, runtime layout, and MCP health instead of relying on a remembered version.
@@ -81,6 +82,10 @@ startup_timeout_sec = 120
 ```
 
 Restart the MCP client after changing the config.
+
+On Windows, process-window visibility is controlled by the MCP client that spawns the server.
+Clients should use a hidden/no-window process option such as Node's `windowsHide:true`. The server
+reserves stdout for newline-delimited MCP JSON-RPC and sends startup diagnostics only to stderr.
 
 ## Start The MCP
 
@@ -140,6 +145,13 @@ Public path arrays accept at most 500 entries, and individual filesystem paths a
 characters.
 Compact mode changes response size only; path containment, mutation guards, EOL checks,
 mixed-revision checks, and commit verification run unchanged.
+
+`svn_commit` refuses existing directory targets by default because its deliberate `--depth empty`
+behavior commits only the directory node and excludes changed descendants. Prefer explicit file
+paths. Set `allowDirectoryTargets:true` only when intentionally committing directory properties
+or another directory-node-only change; remaining descendants are reported as post-commit residue.
+`svn_precommit` accepts the same `allowDirectoryTargets` and `allowRoot` acknowledgements so its
+readiness verdict matches those target-scope guards.
 
 ## Commands
 

@@ -63,6 +63,59 @@ try {
     assert(Number.isInteger(committed.revision), "commit omitted its revision");
     passed.push("commit");
 
+    const guardedDirectory = path.join(workingCopy, "guarded-directory");
+    const guardedChild = path.join(guardedDirectory, "child.txt");
+    fs.mkdirSync(guardedDirectory);
+    fs.writeFileSync(guardedChild, "one\r\n", "utf8");
+    await callOk(client, "svn_add", { cwd: workingCopy, paths: ["guarded-directory/child.txt"] });
+    await callOk(client, "svn_commit", {
+      cwd: workingCopy,
+      paths: ["guarded-directory/child.txt"],
+      message: "Add directory guard fixture\n\n- Exercise directory commit guards\n- Verify public MCP behavior\n"
+    });
+    fs.writeFileSync(guardedChild, "two\r\n", "utf8");
+    await callOk(client, "svn_propset", {
+      cwd: workingCopy,
+      paths: ["guarded-directory"],
+      name: "custom:directory",
+      value: "changed"
+    });
+    const precommitDirectoryRefusal = await call(client, "svn_precommit", {
+      cwd: workingCopy,
+      paths: ["guarded-directory"]
+    });
+    assert(
+      precommitDirectoryRefusal.ok === false && String(precommitDirectoryRefusal.note).includes("allowDirectoryTargets:true"),
+      "precommit accepted an unacknowledged directory target"
+    );
+    const commitDirectoryRefusal = await call(client, "svn_commit", {
+      cwd: workingCopy,
+      paths: ["guarded-directory"],
+      message: "Attempt directory commit\n\n- Exercise directory commit guards\n- Verify public MCP behavior\n"
+    });
+    assert(
+      commitDirectoryRefusal.ok === false && String(commitDirectoryRefusal.note).includes("allowDirectoryTargets:true"),
+      "commit accepted an unacknowledged directory target"
+    );
+    const precommitDirectory = await callOk(client, "svn_precommit", {
+      cwd: workingCopy,
+      paths: ["guarded-directory"],
+      allowDirectoryTargets: true
+    });
+    assert(precommitDirectory.ready === true, "acknowledged directory precommit was not ready");
+    const directoryCommit = await callOk(client, "svn_commit", {
+      cwd: workingCopy,
+      paths: ["guarded-directory"],
+      message: "Commit directory property\n\n- Exercise directory commit guards\n- Verify descendant residue\n",
+      allowDirectoryTargets: true
+    });
+    assert(
+      directoryCommit.postStatusClean === false
+        && directoryCommit.residue.some((item) => item.path === "guarded-directory/child.txt" && item.status === "modified"),
+      "acknowledged directory commit did not report descendant residue"
+    );
+    passed.push("directory-commit-guard");
+
     const exactLog = await callOk(client, "svn_log", {
       cwd: workingCopy,
       paths: ["client-smoke.txt"],

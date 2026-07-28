@@ -133,6 +133,24 @@ export function assertExistingTargets(paths: string[]): string | null {
   return null;
 }
 
+export function findExistingDirectoryTarget(
+  paths: string[]
+): { ok: true; target: string | null } | { ok: false; note: string } {
+  for (const target of paths) {
+    if (!fs.existsSync(target)) {
+      continue;
+    }
+    try {
+      if (fs.statSync(target).isDirectory()) {
+        return { ok: true, target };
+      }
+    } catch {
+      return { ok: false, note: `path stat failed before svn command: ${target}` };
+    }
+  }
+  return { ok: true, target: null };
+}
+
 export function isInsideOrEqual(candidate: string, root: string): boolean {
   const normalizedRoot = pathIdentityKey(root);
   const normalizedCandidate = pathIdentityKey(candidate);
