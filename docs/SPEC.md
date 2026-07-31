@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.24 — public implementation contract. Single source of truth.**
+**Spec version 1.25 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-07-28.
+hostnames, or product-specific role assignments. Date: 2026-07-31.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -98,7 +98,7 @@ workflow).
 | D7 | Env overrides win; use compatible bundled tools next and native `PATH` tools otherwise | Windows stays self-contained while macOS/Linux use their normal package-managed toolchain |
 | D8 | Commit message format checked, **warn not refuse** | Format is policy but judgment; a hard block would fight legitimate cases |
 | D9 | Commit message via temp **`-F` file outside the WC**, never `-m` | Encodes the shared SVN policy |
-| D10 | `svn_update` needs explicit `paths[]` or `updateAll:true`; always `--accept postpone` | Update is operator-gated; conflicts must surface, never auto-resolve |
+| D10 | `svn_update` needs explicit `paths[]` or `updateAll:true`; optional exact `revision`; always `--accept postpone` | Update is operator-gated and can be release-pinned; conflicts must surface, never auto-resolve |
 | D11 | XML output (`--xml`) for status/info/log parsing with finite entity-expansion limits; regex only where svn has no XML (diff, update, commit) | Locale-proof, stable parsing without unbounded entity expansion |
 | D12 | ESM TypeScript, strict mode; deps only `@modelcontextprotocol/sdk`, `zod`, `fast-xml-parser` | Small, auditable |
 | D13 | Server registered under the name **`svn`**; tools named `svn_*` / `eol_*` | Short, unambiguous |
@@ -306,6 +306,10 @@ from `changed_paths` while reporting filtered paths in `filtered_paths`. Parses 
 property conflicts into `{type:"prop"}`, and tree/text conflicts into `conflicts`. Compact output
 returns status counts plus bounded working-copy-relative items; `truncated` and `nextCursor`
 identify continuation without silently dropping entries.
+Successful SVN warnings remain visible. With `includeIgnored:true`, an exact existing path hidden
+below an ignored directory is recovered from `W155010` by checking its contained parent chain; the
+result is status `I` with `covered_by_ignored_ancestor:true` and the working-copy-relative
+`ignored_ancestor`. Missing and ordinary unversioned paths are not synthesized as ignored.
 
 **`svn_info`** — `{ cwd?, paths?: string[], fields?: InfoField[] }`
 argv: `svn info --xml [paths…]`. Extra fields: `url`, `repo_root`, `wc_root`.
@@ -344,6 +348,9 @@ working-copy paths. Extra: `entries: [{rev, author, date, msg, changed_paths}]`,
 date, and the first message line. Full messages and changed paths require explicit flags and remain
 bounded; truncation is marked per entry. `nextCursor` continues from an older revision.
 An exact or ranged `revision` performs a direct lookup; `revision` and `cursor` are mutually exclusive.
+One returned entry keeps the top-level numeric `revision`. Multiple returned entries instead use
+`revision:null`, `revision_range:{min,max}`, and `entry_count`; changed paths remain bounded within
+their entries and are not aggregated at the top level.
 
 **`svn_cat`** — `{ cwd?, path: string, revision?: Revision, maxChars?: number = 16000, cursor? }`
 Returns one character-bounded page of one contained working-copy file at an optional revision.
@@ -382,7 +389,10 @@ probe results for bundled tools, whether the bundled SVN/EOL toolchain is health
 release/clean scripts use the Node-based paths. Compact output normally returns only version,
 availability, and short diagnostics; `detailed:true` includes paths, counts, and capabilities.
 Prepared source clones use `current -> releases/v<version>`; npm installations are valid with
-package-root `dist/` and `bin/` and no generated junction. Unprepared source trees remain invalid.
+package-root `dist/` and `bin/` and no generated junction. For npm-package layouts,
+`current_pointer_applicable:false` and `current_matches_package:null`; pointer state does not reduce
+health. Prepared-release layouts continue to require a matching, complete `current` target.
+Unprepared source trees remain invalid.
 The live toolchain probe remains authoritative: Windows normally resolves bundled executables,
 while macOS and Linux resolve native commands from `PATH`. Purpose: avoid manual checks for ignored
 `current` drift, npm layout false alarms, and noisy release payload adds.
@@ -404,13 +414,13 @@ credentials.
 Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
 items in one response. It performs no mutation and is available under READONLY.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false }` *(read-only; allowed under READONLY)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, requireUniformRevision?: boolean = false }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
 ```jsonc
 {
-  "verdict": "READY" | "EOL_FIX_NEEDED" | "GUARD_BLOCKED" | "NOTHING_TO_COMMIT" | "DIFF_FAILED",
+  "verdict": "READY" | "EOL_FIX_NEEDED" | "GUARD_BLOCKED" | "NOTHING_TO_COMMIT" | "DIFF_FAILED" | "REVISION_NORMALIZATION_NEEDED",
   "per_file": [{ "path": "...", "status": "M", "added": 12, "removed": 3,
                  "binary": false, "property_changed": false,
                  "eol": "crlf", "eol_style": "native", "bom": false,
@@ -425,6 +435,10 @@ named in `guard`); `svn_diff` failure with `recovery_tool:"eol_fix_verified"` �
 `EOL_FIX_NEEDED`; other `svn_diff` failure → `DIFF_FAILED`; any text file with `mismatch` or
 `pure_eol_churn` → `EOL_FIX_NEEDED`; no path with a real change → `NOTHING_TO_COMMIT`; else
 `READY`. `pure_eol_churn` = file shows as modified in status but its ignore-EOL diff is empty.
+When `requireUniformRevision:true`, an otherwise ready mixed-revision working copy returns
+`REVISION_NORMALIZATION_NEEDED`, `ok:false`, its revision range, and remediation to run a pinned
+`svn_update` from the working-copy root before repeating precommit. The default remains
+non-blocking for compatibility.
 Intended flow: **precommit → (review summary; fetch full per-file diff only if a count looks
 wrong) → commit.** Two round trips.
 
@@ -495,11 +509,17 @@ URL forms are refused. `src` must exist and both paths must be inside the workin
 Intermediate destination directories are created/scheduled by SVN. G4 enforced on both `src` and
 `dest`. Extra: `{ operation:"copy", src, dest }` plus scoped `changed_paths`.
 
-**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false }`
+**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
 requirement in §5.2 remains the caller's responsibility). argv:
-`svn update --accept postpone [paths…]`. Parses multi-column update output + "Summary of conflicts" →
-`changed_paths` + `conflicts`; any conflict ⇒ prominent `note`. Never auto-resolves.
+`svn update [-r <revision>] --accept postpone [paths…]`. Revision ranges are refused. An optional
+`expectedRemoteHead` requires a numeric `revision` and refuses before mutation unless current
+repository HEAD still matches the caller's value; the numeric `-r` keeps the operation pinned even
+if HEAD advances after the check. Parses multi-column update output + "Summary of conflicts" →
+`changed_paths` + `conflicts`; any conflict ⇒ prominent `note`. Returns `requested_revision`,
+`resulting_revision` (null for a mixed WC), `revision_range`, and `mixed_revision`. Never auto-resolves.
+Compact receipts include up to 100 working-copy-relative `changedPaths`; larger updates return
+`changedPathCount` and `changedPathsTruncated:true` rather than silently dropping the remainder.
 
 **`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true }`
 `dryRun:true` (default) = preview: returns scoped status + per-file ± counts of what would be
@@ -684,6 +704,14 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.25 / v1.3.0 — 2026-07-31
+
+- Adds exact pinned updates, optional remote-HEAD guarding, resulting revision metadata, and an
+  opt-in uniform-revision precommit gate for release workflows.
+- Recovers exact ignored descendants from successful `W155010` status warnings and preserves those
+  warnings without duplicating raw status output.
+- Makes multi-entry log envelopes explicit and marks npm-package `current` pointers inapplicable.
 
 ### Spec 1.24 / v1.2.2 — 2026-07-28
 
@@ -1093,9 +1121,9 @@ work grounded in practical workflow friction, not abstract SVN theory.
 
 | # | Pain point | How the MCP helps now | Pending / still human or future-tooling work |
 |---:|---|---|---|
-| 1 | Mixed-revision confusion: a working-copy root can be at an older BASE revision while children are newer. | `svn_info` reports parsed revision ranges, local modification flags, remote HEAD, and stale-base state; `svn_log` queries repository URLs at HEAD when possible. | Callers must still understand whether mixed revision is acceptable for the task. |
+| 1 | Mixed-revision confusion: a working-copy root can be at an older BASE revision while children are newer. | `svn_info` reports parsed revision ranges, local modification flags, remote HEAD, and stale-base state; release workflows can set `svn_precommit requireUniformRevision:true`. | Ordinary workflows still decide whether mixed revision is acceptable. |
 | 2 | `svn log <wc-root>` can stop at the root node's old peg revision and hide newer commits. | v0.1.7 resolves working-copy targets to repository URLs and returns `target_mode:"repository-url"`. | URL fallback can fail if `svn info` cannot resolve a URL; then the MCP returns `working-copy-path` mode. |
-| 3 | Concurrent-client overlap: another actor may commit while local work exists; update can merge `G` files silently. | `svn_update` requires explicit paths or `updateAll:true` and always uses `--accept postpone`; status/conflicts are structured. | Semantic overlap still needs review by the operator or caller. |
+| 3 | Concurrent-client overlap: another actor may commit while local work exists; update can merge `G` files silently. | `svn_update` requires explicit paths or `updateAll:true`, supports a numeric pinned revision plus optional expected-HEAD guard, and always uses `--accept postpone`; status/conflicts are structured. | Semantic overlap still needs review by the operator or caller. |
 | 4 | Unversioned files are easy to miss; `svn commit` does not include them automatically. | `svn_status` exposes `?` paths; `svn_precommit` blocks uncommittable paths; `svn_add` is explicit. | Caller must decide which unversioned files belong to the current slice. |
 | 5 | SVN cannot add a child file under a brand-new unversioned parent directory without adding parents first. | `svn_add` uses `--parents --depth empty` for files and schedules needed parent dirs without adding siblings. | Recursive directory adds still require `allowRecursive:true`. |
 | 6 | Commit scope ambiguity: no Git-style staging area; broad commits can include unrelated WIP. | Mutating tools require explicit paths; `svn_commit` verifies each path is changed/scheduled. | "Commit everything" remains unsafe unless the caller intentionally scopes all paths. |
@@ -1113,7 +1141,7 @@ work grounded in practical workflow friction, not abstract SVN theory.
 | 18 | SVN history lookup is clunkier than modern Git workflows. | `svn_log` returns structured XML-parsed entries and now avoids mixed-root log gaps. | Higher-level "what changed between these revisions" summaries are future tooling. |
 | 19 | Versioned generated/test artifacts can become permanent repository weight if added accidentally. | Never-commit guards now block `dist/**`, `node_modules/**`, `coverage/**`, `.cache/**`, `*.tsbuildinfo`, secrets, and other risky paths. | Project-specific generated paths may need additional local guard rules later. |
 | 20 | Adding bundled binary release payloads is noisy and easy to miscount. | `npm run release:prepare` validates release `dist` and `bin` counts before repointing `current`; `svn_self_check` reports counts. | SVN add output is still verbose for binary payloads. |
-| 21 | Local `current` junction is intentionally ignored, so a clean SVN status does not prove the local runtime pointer is correct. | `svn_self_check` reports `current` target and whether it matches the package version. | None for normal use. |
+| 21 | Local `current` junction is intentionally ignored, so a clean SVN status does not prove the local runtime pointer is correct. | `svn_self_check` validates prepared-release pointers and explicitly marks the pointer inapplicable for direct npm installs. | None for normal use. |
 | 22 | PowerShell wildcard/copy/junction command differences caused release-packaging hiccups. | `npm run release:prepare` and `npm run clean` are Node scripts with path containment checks. | None for MCP release/clean paths. |
 | 23 | Message quoting and shell command construction are fragile for commits/imports. | `svn_commit` and `svn_import` use temporary UTF-8 `-F` message files and `execFile`, not shell strings. | Human-written raw SVN commits can still bypass this discipline. |
 | 24 | Root-clean does not mean conceptually clean: a clean status can still represent mixed concerns in the last commit. | Post-commit scoped status proves no local residue; risk signals and explicit paths reduce mixed slices. | Conceptual scope review remains a human or caller responsibility. |

@@ -20,9 +20,12 @@ const STATUS_NAMES: Record<string, string> = {
   A: "added",
   C: "conflicted",
   D: "deleted",
+  E: "existed",
+  G: "merged",
   I: "ignored",
   M: "modified",
   R: "replaced",
+  U: "updated",
   X: "external",
   _M: "property-modified",
   "~": "obstructed"
@@ -68,7 +71,8 @@ export function toToolResult<T extends ToolEnvelope>(
   const mode = options.responseMode ?? defaultResponseMode();
   const safePayload = redactStructuredValue(payload) as T;
   const shaped = shapePayload(tool, safePayload, mode, options.request ?? {});
-  const warning = mode === "compact" && safePayload.ok ? safePayload.stderr_summary.slice(0, 2000) : "";
+  const candidateWarning = mode === "compact" && safePayload.ok ? safePayload.stderr_summary.slice(0, 2000) : "";
+  const warning = candidateWarning && shaped.note !== candidateWarning ? candidateWarning : "";
   const structured = warning
     ? {
         ...shaped,
@@ -174,6 +178,8 @@ function compactError(payload: ToolEnvelope): Record<string, unknown> {
       : {}),
     ...(payload.truncated ? { truncated: true } : {}),
     ...(payload.recovery_tool ? { recoveryTool: payload.recovery_tool } : {}),
+    ...(payload.expected_remote_head !== undefined ? { expectedRemoteHead: payload.expected_remote_head } : {}),
+    ...(payload.observed_remote_head !== undefined ? { observedRemoteHead: payload.observed_remote_head } : {}),
     ...(riskSignals.length > 0 ? { riskSignals } : {})
   };
 }
@@ -374,6 +380,8 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
     };
   });
   const lastRevision = entries.at(-1)?.revision;
+  const entryCount = numberValue(payload.entry_count) || sourceEntries.length;
+  const revisionRange = payload.revision_range ?? revisionRangeFromLogEntries(sourceEntries);
   const truncated = payload.has_more === true || sourceEntries.length > entries.length;
   const continuationFloor = logContinuationFloor(request);
   const nextRevision = typeof lastRevision === "number" ? lastRevision - 1 : null;
@@ -385,11 +393,25 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
 
   return {
     ok: true,
+    ...(entryCount > 1
+      ? {
+          revision: null,
+          revisionRange,
+          entryCount
+        }
+      : {}),
     entries,
     ...(payload.target_mode === "working-copy-path" ? { targetMode: payload.target_mode } : {}),
     truncated,
     ...(nextCursor !== null ? { nextCursor } : {})
   };
+}
+
+function revisionRangeFromLogEntries(entries: Array<Record<string, unknown>>): { min: number; max: number } | null {
+  const revisions = entries
+    .map((entry) => entry.rev)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return revisions.length > 1 ? { min: Math.min(...revisions), max: Math.max(...revisions) } : null;
 }
 
 // Lower bound a paginated svn_log continuation must not cross. Null means no
@@ -585,6 +607,8 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
         : {})
     },
     mixedRevision,
+    ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
+    ...(payload.remediation ? { remediation: payload.remediation } : {}),
     ...(guardFailures.length > 0 ? { guardFailures } : {}),
     ...(allGuardFailures.length > guardFailures.length
       ? { guardFailureCount: allGuardFailures.length, guardFailuresTruncated: true }
@@ -620,6 +644,7 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   }
 
   const result = MUTATION_STATUS[tool];
+  const receiptRoot = typeof payload.wc_root === "string" ? payload.wc_root : payload.cwd;
   const verified = (tool === "svn_move" || tool === "svn_rename" || tool === "svn_copy")
     ? payload.changed_paths.length > 0
     : tool === "svn_delete"
@@ -638,13 +663,13 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     ...(source !== undefined ? { source } : {}),
     ...(target !== undefined ? { target } : {}),
     ...(targetPath !== undefined ? { path: targetPath } : {}),
-    ...(payload.revision !== null ? { revision: payload.revision } : {}),
+    ...(tool !== "svn_update" && payload.revision !== null ? { revision: payload.revision } : {}),
     ...(verified ? { verifiedStatus: result } : { status: result })
   };
 
   if (payload.conflicts.length > 0) {
     receipt.conflicts = payload.conflicts.slice(0, 100).map((conflict) => ({
-      path: relativePath(payload.cwd, conflict.path),
+      path: workingCopyRelativePath(conflict.path, payload.cwd, receiptRoot),
       type: conflict.type
     }));
     if (payload.conflicts.length > 100) {
@@ -656,10 +681,25 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     receipt.postStatusClean = payload.post_status_clean;
   }
   if (tool === "svn_commit" && payload.post_status_clean === false && payload.changed_paths.length > 0) {
-    receipt.residue = payload.changed_paths.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd));
+    receipt.residue = payload.changed_paths.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
   }
   if (tool === "svn_update" && payload.changed_paths.length > 0) {
     receipt.counts = countByStatus(payload.changed_paths.map((item) => ({ status: normalizeStatus(item.status) })));
+    receipt.changedPaths = payload.changed_paths.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
+    if (payload.changed_paths.length > 100) {
+      receipt.changedPathCount = payload.changed_paths.length;
+      receipt.changedPathsTruncated = true;
+    }
+  }
+  if (tool === "svn_update") {
+    receipt.requestedRevision = payload.requested_revision;
+    receipt.resultingRevision = payload.resulting_revision;
+    receipt.revisionRange = payload.revision_range;
+    receipt.mixedRevision = payload.mixed_revision === true;
+    if (payload.expected_remote_head !== undefined) {
+      receipt.expectedRemoteHead = payload.expected_remote_head;
+      receipt.observedRemoteHead = payload.observed_remote_head;
+    }
   }
   return receipt;
 }
@@ -690,14 +730,15 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
 }
 
 function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
-  const root = payload.cwd;
+  const cwd = payload.cwd;
+  const root = typeof payload.wc_root === "string" ? payload.wc_root : cwd;
   const includeUnversioned = request.includeUnversioned !== false;
   const requestedStatuses = stringArray(request.statuses);
   const allowedStatuses = requestedStatuses.length > 0
     ? new Set(requestedStatuses.map((value) => normalizeStatus(value)))
     : null;
   const changed = payload.changed_paths
-    .map((item) => compactStatusItem(item, root))
+    .map((item) => compactStatusItem(item, cwd, root))
     .filter((item) => includeUnversioned || item.status !== "unversioned")
     .filter((item) => !allowedStatuses || allowedStatuses.has(item.status));
   const counts = countByStatus(changed);
@@ -727,11 +768,24 @@ function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>):
   };
 }
 
-function compactStatusItem(item: ChangedPath, root: string): { path: string; status: string } {
+function compactStatusItem(item: ChangedPath, cwd: string, wcRoot = cwd): {
+  path: string;
+  status: string;
+  coveredByIgnoredAncestor?: true;
+  ignoredAncestor?: string;
+} {
   return {
-    path: relativePath(root, item.path),
-    status: normalizeStatus(item.status)
+    path: workingCopyRelativePath(item.path, cwd, wcRoot),
+    status: normalizeStatus(item.status),
+    ...(item.covered_by_ignored_ancestor === true ? { coveredByIgnoredAncestor: true } : {}),
+    ...(item.ignored_ancestor ? { ignoredAncestor: item.ignored_ancestor } : {})
   };
+}
+
+function workingCopyRelativePath(value: string, cwd: string, wcRoot: string): string {
+  const pathApi = pathImplementationFor(cwd, wcRoot);
+  const absolute = pathApi.isAbsolute(value) ? value : pathApi.resolve(cwd, value);
+  return relativePath(wcRoot, absolute);
 }
 
 function normalizeStatus(value: string): string {
@@ -885,13 +939,18 @@ function relativePath(root: string, candidate: string): string {
   if (!candidate) {
     return candidate;
   }
-  const windowsAbsolute = /^[A-Za-z]:[\\/]/;
-  const relative = windowsAbsolute.test(root) && windowsAbsolute.test(candidate)
-    ? path.win32.relative(root, candidate)
-    : path.posix.isAbsolute(root) && path.posix.isAbsolute(candidate)
-      ? path.posix.relative(root, candidate)
-      : candidate;
+  const pathApi = pathImplementationFor(root, candidate);
+  const relative = pathApi.isAbsolute(root) && pathApi.isAbsolute(candidate)
+    ? pathApi.relative(root, candidate)
+    : candidate;
   return (relative || ".").replace(/\\/g, "/");
+}
+
+function pathImplementationFor(...values: string[]): typeof path.win32 {
+  const hasWindowsAbsolutePath = values.some(
+    (value) => path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)
+  );
+  return hasWindowsAbsolutePath ? path.win32 : path.posix;
 }
 
 function firstLine(value: string): string {

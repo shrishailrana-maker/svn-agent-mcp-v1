@@ -53,6 +53,9 @@ try {
   if (!check.ok || check.runtime_layout !== "npm-package" || check.runtime_layout_ok !== true) {
     throw new Error(`installed package self-check failed: ${JSON.stringify(check)}`);
   }
+  if (check.current_pointer_applicable !== false || check.current_matches_package !== null) {
+    throw new Error(`installed package reported an applicable current pointer: ${JSON.stringify(check)}`);
+  }
   if (check.release_prepare_available !== false) {
     throw new Error("installed package incorrectly reports source-only release preparation as available");
   }

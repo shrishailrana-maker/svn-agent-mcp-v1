@@ -3,6 +3,8 @@ export type SvnStatusCode = "M" | "A" | "D" | "R" | "C" | "?" | "!" | "~" | "G" 
 export interface ChangedPath {
   status: string;
   path: string;
+  covered_by_ignored_ancestor?: boolean;
+  ignored_ancestor?: string;
 }
 
 export interface Conflict {

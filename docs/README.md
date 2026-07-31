@@ -8,10 +8,10 @@
   compact MCP responses, the bundled Windows runtime, and the external SVN MCP comparison decision.
 - `../CHANGELOG.md` records release history.
 
-The current source release is `1.2.2`; query `npm view svn-agent-mcp version` for the registry
+The current source release is `1.3.0`; query `npm view svn-agent-mcp version` for the registry
 release. Release history is recorded in `../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the
 local ignored `current` release pointer, then use `svn_self_check` to verify it and the bundled
 runtime. Global npm installations use package-root `dist/` and `bin/` directly and do not require
-`current`. Windows uses the bundled VisualSVN Apache Subversion and dos2unix toolchain; macOS and Linux resolve native SVN and dos2unix
+`current`; self-check marks the pointer as not applicable for that layout. Windows uses the bundled VisualSVN Apache Subversion and dos2unix toolchain; macOS and Linux resolve native SVN and dos2unix
 commands from `PATH`. Use `svn_diagnose` for read-only SVN working-copy health checks.

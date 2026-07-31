@@ -1258,6 +1258,184 @@ describe("SVN tool integration against a temp repository", () => {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
   });
+
+  it("keeps exact ignored descendants visible without misreporting missing paths", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      execFileSync(svnExecutable(), ["propset", "svn:ignore", "waste space", "--", fixture.wc], { cwd: fixture.wc });
+      const ignoredDirectory = path.join(fixture.wc, "waste space");
+      const ignoredChild = path.join(ignoredDirectory, "nested", "report.txt");
+      fs.mkdirSync(path.dirname(ignoredChild), { recursive: true });
+      fs.writeFileSync(ignoredChild, "ignored\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "unversioned file.txt"), "new\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "versioned file.txt"), "tracked\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["versioned file.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["versioned file.txt"],
+        message: commitMessage("Add status fixture")
+      })).ok).toBe(true);
+
+      const childStatus = await svnStatus({
+        cwd: fixture.wc,
+        paths: ["waste space/nested/report.txt"],
+        includeIgnored: true
+      });
+      expect(childStatus.ok).toBe(true);
+      expect(childStatus.note).toContain("W155010");
+      expect(childStatus.stderr_summary).toContain("W155010");
+      expect(childStatus.changed_paths).toEqual([
+        expect.objectContaining({
+          status: "I",
+          path: ignoredChild,
+          covered_by_ignored_ancestor: true,
+          ignored_ancestor: "waste space"
+        })
+      ]);
+
+      const directoryStatus = await svnStatus({ cwd: fixture.wc, paths: ["waste space"], includeIgnored: true });
+      expect(statusByPath(directoryStatus.changed_paths, fixture.wc).get("waste space")).toBe("I");
+
+      const missingStatus = await svnStatus({ cwd: fixture.wc, paths: ["missing file.txt"], includeIgnored: true });
+      expect(missingStatus).toMatchObject({ ok: true, changed_paths: [] });
+
+      const unversionedStatus = await svnStatus({ cwd: fixture.wc, paths: ["unversioned file.txt"], includeIgnored: true });
+      expect(statusByPath(unversionedStatus.changed_paths, fixture.wc).get("unversioned file.txt")).toBe("?");
+
+      const versionedStatus = await svnStatus({ cwd: fixture.wc, paths: ["versioned file.txt"], includeIgnored: true });
+      expect(versionedStatus).toMatchObject({ ok: true, changed_paths: [], note: "" });
+      expect(versionedStatus.stderr_summary).toBe("");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("pins updates when remote HEAD advances and keeps conflicts postponed", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "peer working copy");
+    try {
+      const relativePath = "release notes.txt";
+      const localFile = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(localFile, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add release fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      const peerFile = path.join(peer, relativePath);
+      fs.writeFileSync(peerFile, "two\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote revision two", "--", peerFile], { cwd: peer });
+
+      const initialProbe = await svnInfo({ cwd: fixture.wc, paths: [relativePath] });
+      const probedHead = Number(initialProbe.remote_head_revision);
+      expect(probedHead).toBeGreaterThan(0);
+
+      fs.writeFileSync(peerFile, "three\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote revision three", "--", peerFile], { cwd: peer });
+      const advancedHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+      expect(advancedHead).toBeGreaterThan(probedHead);
+
+      const unpinnedGuard = await svnUpdate({ cwd: fixture.wc, updateAll: true, expectedRemoteHead: advancedHead });
+      expect(unpinnedGuard).toMatchObject({ ok: false });
+      expect(unpinnedGuard.note).toContain("numeric revision");
+
+      const staleGuard = await svnUpdate({
+        cwd: fixture.wc,
+        updateAll: true,
+        revision: String(probedHead),
+        expectedRemoteHead: probedHead
+      });
+      expect(staleGuard).toMatchObject({ ok: false, expected_remote_head: probedHead, observed_remote_head: advancedHead });
+      expect(staleGuard.note).toContain("remote HEAD changed");
+
+      const invalidRange = await svnUpdate({ cwd: fixture.wc, updateAll: true, revision: `${probedHead}:${advancedHead}` });
+      expect(invalidRange).toMatchObject({ ok: false, note: "invalid revision selector" });
+
+      const pinned = await svnUpdate({
+        cwd: fixture.wc,
+        updateAll: true,
+        revision: String(probedHead),
+        expectedRemoteHead: advancedHead
+      });
+      expect(pinned).toMatchObject({
+        ok: true,
+        requested_revision: String(probedHead),
+        resulting_revision: probedHead,
+        revision_range: { min: probedHead, max: probedHead },
+        mixed_revision: false,
+        expected_remote_head: advancedHead,
+        observed_remote_head: advancedHead
+      });
+      expectSvnArgs(pinned.command, `update -r ${probedHead} --accept postpone`);
+      expect(fs.readFileSync(localFile, "utf8")).toBe("two\r\n");
+
+      const rangeLog = await svnLog({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        revision: `${advancedHead}:${probedHead}`,
+        changedPaths: true
+      });
+      expect(rangeLog).toMatchObject({
+        ok: true,
+        revision: null,
+        entry_count: 2,
+        revision_range: { min: probedHead, max: advancedHead }
+      });
+      expect(rangeLog.changed_paths).toEqual([]);
+      expect((rangeLog.entries as Array<{ changed_paths: unknown[] }>).every((entry) => entry.changed_paths.length > 0)).toBe(true);
+
+      const exactLog = await svnLog({ cwd: fixture.wc, paths: [relativePath], revision: String(probedHead) });
+      expect(exactLog).toMatchObject({ revision: probedHead, entry_count: 1 });
+
+      fs.writeFileSync(localFile, "mine\r\n", "utf8");
+      const conflicted = await svnUpdate({ cwd: fixture.wc, paths: [relativePath], revision: String(advancedHead) });
+      expect(conflicted.ok).toBe(true);
+      expectSvnArgs(conflicted.command, `update -r ${advancedHead} --accept postpone --`);
+      expect(conflicted.conflicts.length).toBeGreaterThan(0);
+      expect(conflicted.note).toContain("conflicts present");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("optionally blocks precommit until the working copy is pinned to one revision", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "mixed revision.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add mixed revision fixture")
+      });
+      expect(committed.ok).toBe(true);
+      fs.writeFileSync(file, "two\r\n", "utf8");
+
+      const compatible = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+      expect(compatible).toMatchObject({ ok: true, verdict: "READY", mixed_revision: true });
+
+      const strict = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath], requireUniformRevision: true });
+      expect(strict).toMatchObject({
+        ok: false,
+        verdict: "REVISION_NORMALIZATION_NEEDED",
+        mixed_revision: true
+      });
+      expect(strict.note).toContain("svn_update");
+      expect(strict.remediation).toContain("revision:<pinned-revision>");
+
+      const normalized = await svnUpdate({ cwd: fixture.wc, updateAll: true, revision: String(committed.revision) });
+      expect(normalized).toMatchObject({ ok: true, mixed_revision: false });
+      const ready = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath], requireUniformRevision: true });
+      expect(ready).toMatchObject({ ok: true, verdict: "READY", mixed_revision: false });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
 });
 
 function createTempWorkingCopy(): { root: string; repo: string; wc: string } {

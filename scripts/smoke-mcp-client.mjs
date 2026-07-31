@@ -37,6 +37,11 @@ try {
 
     const statusTool = tools.tools.find((tool) => tool.name === "svn_status");
     assert(statusTool?.inputSchema?.properties?.paths?.maxItems === 500, "status paths are not publicly bounded");
+    const updateTool = tools.tools.find((tool) => tool.name === "svn_update");
+    assert(updateTool?.inputSchema?.properties?.revision, "svn_update revision selector is missing");
+    assert(updateTool?.inputSchema?.properties?.expectedRemoteHead, "svn_update expectedRemoteHead guard is missing");
+    const precommitTool = tools.tools.find((tool) => tool.name === "svn_precommit");
+    assert(precommitTool?.inputSchema?.properties?.requireUniformRevision, "precommit uniform-revision gate is missing");
     passed.push("input-bounds");
 
     const selfCheck = await call(client, "svn_self_check", { cwd: workingCopy, responseMode: "compact" });

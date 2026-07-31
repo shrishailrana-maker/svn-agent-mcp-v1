@@ -59,6 +59,36 @@ describe("public MCP response shaping", () => {
       ]
     }, { responseMode: "compact" }).structuredContent;
     expect(uncommonStatuses.counts).toEqual({ "property-modified": 1, ignored: 1 });
+
+    const ignoredDescendant = toToolResult("svn_status", {
+      ...payload,
+      note: "svn: warning: W155010: node was not found",
+      stderr_summary: "svn: warning: W155010: node was not found",
+      changed_paths: [{
+        status: "I",
+        path: `${root}\\waste space\\nested\\report.txt`,
+        covered_by_ignored_ancestor: true,
+        ignored_ancestor: "waste space"
+      }]
+    }, { responseMode: "compact", request: { cwd: root } });
+    expect(ignoredDescendant.structuredContent.items).toEqual([{
+      path: "waste space/nested/report.txt",
+      status: "ignored",
+      coveredByIgnoredAncestor: true,
+      ignoredAncestor: "waste space"
+    }]);
+    expect(JSON.stringify(ignoredDescendant).match(/W155010/g)).toHaveLength(1);
+
+    const subdirectoryStatus = toToolResult("svn_status", {
+      ...createEnvelope({
+        ok: true,
+        command: "svn status --xml",
+        cwd: `${root}\\src`,
+        changed_paths: [{ status: "M", path: "nested\\file.ts" }]
+      }),
+      wc_root: root
+    }, { responseMode: "compact", request: { cwd: `${root}\\src` } }).structuredContent;
+    expect(subdirectoryStatus.items).toEqual([{ path: "src/nested/file.ts", status: "modified" }]);
   });
 
   it("keeps bounded diagnostics without the empty legacy envelope on compact failures", () => {
@@ -124,15 +154,52 @@ describe("public MCP response shaping", () => {
     expect(precommit.guardFailureCount).toBe(150);
     expect(precommit.guardFailuresTruncated).toBe(true);
 
-    const update = toToolResult("svn_update", createEnvelope({
-      ok: true,
-      command: "svn update",
-      cwd: root,
-      conflicts
-    }), { responseMode: "compact" }).structuredContent;
+    const updateCwd = `${root}\\src`;
+    const update = toToolResult("svn_update", {
+      ...createEnvelope({
+        ok: true,
+        command: "svn update",
+        cwd: updateCwd,
+        revision: 42,
+        changed_paths: Array.from({ length: 150 }, (_, index) => ({
+          status: "U",
+          path: `updated-${index}.ts`
+        })),
+        conflicts
+      }),
+      wc_root: root,
+      requested_revision: "42",
+      resulting_revision: 42,
+      revision_range: { min: 42, max: 42 },
+      mixed_revision: false,
+      expected_remote_head: 42,
+      observed_remote_head: 42
+    }, { responseMode: "compact" }).structuredContent;
     expect(update.conflicts as unknown[]).toHaveLength(100);
     expect(update.conflictCount).toBe(150);
     expect(update.conflictsTruncated).toBe(true);
+    expect(update.changedPaths as unknown[]).toHaveLength(100);
+    expect((update.changedPaths as Array<Record<string, unknown>>)[0]).toEqual({
+      path: "src/updated-0.ts",
+      status: "updated"
+    });
+    expect(update.changedPathCount).toBe(150);
+    expect(update.changedPathsTruncated).toBe(true);
+    expect(update).toMatchObject({
+      requestedRevision: "42",
+      resultingRevision: 42,
+      revisionRange: { min: 42, max: 42 },
+      mixedRevision: false,
+      expectedRemoteHead: 42,
+      observedRemoteHead: 42
+    });
+
+    const staleUpdate = toToolResult("svn_update", {
+      ...createEnvelope({ ok: false, command: "svn update", cwd: root, note: "remote HEAD changed" }),
+      expected_remote_head: 42,
+      observed_remote_head: 43
+    }, { responseMode: "compact" }).structuredContent;
+    expect(staleUpdate).toMatchObject({ ok: false, expectedRemoteHead: 42, observedRemoteHead: 43 });
   });
 
   it("preserves the legacy full response only when full mode is requested", () => {
@@ -226,6 +293,16 @@ describe("public MCP response shaping", () => {
     expect(JSON.stringify(result)).not.toContain("Long message body");
     expect(JSON.stringify(result)).not.toContain("changed_paths");
     expect(structured).not.toHaveProperty("targetMode");
+
+    const ranged = toToolResult("svn_log", {
+      ...payload,
+      revision: null,
+      revision_range: { min: 191, max: 200 },
+      entry_count: 10,
+      entries: entries.slice(0, 10),
+      has_more: false
+    }, { responseMode: "compact", request: { limit: 10, revision: "200:191" } }).structuredContent;
+    expect(ranged).toMatchObject({ revision: null, revisionRange: { min: 191, max: 200 }, entryCount: 10 });
 
     const exactPage = toToolResult("svn_log", { ...payload, entries: entries.slice(0, 10), has_more: false }, {
       responseMode: "compact",

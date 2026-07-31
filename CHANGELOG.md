@@ -4,6 +4,26 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-31
+
+### Added
+
+- Added exact revision pinning and an optional `expectedRemoteHead` guard to `svn_update`, with
+  resulting revision/range metadata, bounded changed-path receipts, and the existing explicit-scope
+  and conflict-postpone safety.
+- Added opt-in `requireUniformRevision:true` release gating to `svn_precommit`; ordinary precommit
+  calls remain backward compatible and continue to report mixed revisions without blocking.
+
+### Fixed
+
+- Preserved successful SVN warnings and recovered exact existing paths beneath ignored directories
+  as ignored entries with their covering ancestor instead of returning an empty status for
+  VisualSVN/Subversion `W155010`.
+- Made multi-entry `svn_log` envelopes unambiguous with `revision:null`, `revision_range`, and
+  `entry_count`, while retaining per-entry changed paths and single-revision behavior.
+- Marked the prepared-release `current` pointer as inapplicable for direct npm-package layouts;
+  healthy npm self-checks now return `current_matches_package:null` without reducing health.
+
 ## [1.2.2] - 2026-07-28
 
 ### Fixed

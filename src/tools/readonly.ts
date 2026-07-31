@@ -24,7 +24,7 @@ import { parseLogXml } from "../parse/logXml.js";
 import { parseStatusXml } from "../parse/statusXml.js";
 import { svnXmlEntityLimits } from "../parse/xmlOptions.js";
 import { escapeSvnTarget, runSvn, runSvnStreamingLines, runSvnVersion } from "../runner.js";
-import type { DiffSummary, EolCheckResult, Envelope, ToolEnvelope, WcInfo } from "../types.js";
+import type { ChangedPath, DiffSummary, EolCheckResult, Envelope, ToolEnvelope, WcInfo } from "../types.js";
 
 export interface ToolInputWithCwd {
   cwd?: string;
@@ -110,6 +110,23 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
   ];
   const run = await runSvn(args, context.cwd);
   const parsed = run.exitCode === 0 ? parseStatusXml(run.stdout) : { changed_paths: [], conflicts: [] };
+  if (run.exitCode === 0 && input.includeIgnored && /W155010/.test(`${run.stderr}\n${run.stdout}`)) {
+    const knownPaths = new Set(parsed.changed_paths.map((entry) => pathIdentityKey(path.resolve(context.cwd, entry.path))));
+    for (const target of resolved.paths) {
+      if (knownPaths.has(pathIdentityKey(target)) || !fs.existsSync(target)) {
+        continue;
+      }
+      const ignoredAncestor = await findIgnoredAncestor(context.cwd, context.wcRoot, target);
+      if (ignoredAncestor) {
+        parsed.changed_paths.push({
+          status: "I",
+          path: target,
+          covered_by_ignored_ancestor: true,
+          ignored_ancestor: repoRelativePath(ignoredAncestor, context.wcRoot)
+        });
+      }
+    }
+  }
   const filtered = input.hideNoise ? filterNoisePaths(parsed.changed_paths, context.cwd, context.wcRoot) : {
     changed_paths: parsed.changed_paths,
     filtered_paths: []
@@ -120,8 +137,9 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
       ok: run.exitCode === 0,
       changed_paths: filtered.changed_paths,
       conflicts: parsed.conflicts,
-      note: run.exitCode === 0 ? "" : noteFromRun(run)
+      note: run.exitCode === 0 ? successfulRunWarning(run.stderr) : noteFromRun(run)
     }),
+    wc_root: context.wcRoot,
     filtered_paths: filtered.filtered_paths
   };
 }
@@ -345,14 +363,20 @@ export async function svnLog(input: {
   const run = await runSvn(args, context.cwd);
   const parsedEntries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
   const entries = parsedEntries.slice(0, limit);
+  const revisions = entries.map((entry) => entry.rev);
+  const revisionRange = revisions.length > 1
+    ? { min: Math.min(...revisions), max: Math.max(...revisions) }
+    : null;
   return {
     ...envelopeFromRun({
       run,
       ok: run.exitCode === 0,
-      revision: entries[0]?.rev ?? null,
+      revision: entries.length === 1 ? entries[0]?.rev ?? null : null,
       note: run.exitCode === 0 ? logTargets.note : noteFromRun(run)
     }),
     entries,
+    entry_count: entries.length,
+    revision_range: revisionRange,
     has_more: parsedEntries.length > entries.length,
     target_mode: logTargets.mode
   };
@@ -645,7 +669,7 @@ export function defaultDiffLineLimit(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 2000) : 200;
 }
 
-function revisionSelectorError(value: string | undefined, allowRange = true): string | null {
+export function revisionSelectorError(value: string | undefined, allowRange = true): string | null {
   if (value === undefined) {
     return null;
   }
@@ -676,8 +700,8 @@ export function normalizeStatusLookup(statuses: Map<string, string>, target: str
   return statuses.get(pathIdentityKey(target));
 }
 
-function filterNoisePaths(changedPaths: Array<{ status: string; path: string }>, cwd: string, wcRoot: string): {
-  changed_paths: Array<{ status: string; path: string }>;
+function filterNoisePaths(changedPaths: ChangedPath[], cwd: string, wcRoot: string): {
+  changed_paths: ChangedPath[];
   filtered_paths: string[];
 } {
   const kept = [];
@@ -707,7 +731,7 @@ function isNoisePath(relativePath: string): boolean {
   ].some((value) => normalized === value || normalized.startsWith(`${value}/`));
 }
 
-function parseSvnVersion(value: string): {
+export function parseSvnVersion(value: string): {
   range: { min: number; max: number } | null;
   mixed: boolean;
   modified: boolean;
@@ -744,7 +768,7 @@ function mergeRevisionRange(
   };
 }
 
-async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<number | null> {
+export async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<number | null> {
   let head: number | null = null;
   const run = await runSvn(["info", "--xml", "-r", "HEAD", "--", ...targets.map(escapeSvnTarget)], cwd);
   if (run.exitCode !== 0) {
@@ -757,6 +781,33 @@ async function remoteHeadForTargets(cwd: string, targets: string[]): Promise<num
     head = head === null ? entry.revision : Math.max(head, entry.revision);
   }
   return head;
+}
+
+async function findIgnoredAncestor(cwd: string, wcRoot: string, target: string): Promise<string | null> {
+  let candidate: string;
+  try {
+    candidate = fs.statSync(target).isDirectory() ? target : path.dirname(target);
+  } catch {
+    return null;
+  }
+
+  while (isInsideOrEqual(candidate, wcRoot) && pathIdentityKey(candidate) !== pathIdentityKey(wcRoot)) {
+    const run = await runSvn(["status", "--xml", "--no-ignore", "--", escapeSvnTarget(candidate)], cwd);
+    if (run.exitCode === 0) {
+      const ignored = parseStatusXml(run.stdout).changed_paths.some((entry) =>
+        entry.status === "I" && pathIdentityKey(path.resolve(cwd, entry.path)) === pathIdentityKey(candidate)
+      );
+      if (ignored) {
+        return candidate;
+      }
+    }
+    candidate = path.dirname(candidate);
+  }
+  return null;
+}
+
+function successfulRunWarning(stderr: string): string {
+  return redactText(stderr).replace(/\r\n?/g, "\n").trim().slice(0, 2000);
 }
 
 function parsePropgetEolStyles(xml: string, cwd: string): Map<string, string> {

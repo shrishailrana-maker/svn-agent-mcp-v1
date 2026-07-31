@@ -24,7 +24,15 @@ import { parseCommittedRevision } from "../parse/commitText.js";
 import { parseUpdateText } from "../parse/updateText.js";
 import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
-import { getWcContext, scopedStatusMap, svnDiff, svnStatus } from "./readonly.js";
+import {
+  getWcContext,
+  parseSvnVersion,
+  remoteHeadForTargets,
+  revisionSelectorError,
+  scopedStatusMap,
+  svnDiff,
+  svnStatus
+} from "./readonly.js";
 
 const DESCENDANT_SCAN_LIMIT = 20000;
 const DESCENDANT_SCAN_DEPTH_LIMIT = 256;
@@ -192,13 +200,30 @@ export async function svnCopy(input: { cwd?: string; src: string; dest: string }
   return svnMoveOrCopy("svn copy", "copy", input);
 }
 
-export async function svnUpdate(input: { cwd?: string; paths?: string[]; updateAll?: boolean }): Promise<ToolEnvelope> {
+export async function svnUpdate(input: {
+  cwd?: string;
+  paths?: string[];
+  updateAll?: boolean;
+  revision?: string;
+  expectedRemoteHead?: number;
+}): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
     return failEnvelope("svn update", cwd, "READONLY instance");
   }
   if ((!input.paths || input.paths.length === 0) && !input.updateAll) {
     return failEnvelope("svn update", cwd, "explicit paths required or updateAll:true");
+  }
+  const revisionError = revisionSelectorError(input.revision, false);
+  if (revisionError) {
+    return failEnvelope("svn update", cwd, revisionError);
+  }
+  if (input.expectedRemoteHead !== undefined
+    && (!Number.isSafeInteger(input.expectedRemoteHead) || input.expectedRemoteHead < 0)) {
+    return failEnvelope("svn update", cwd, "expectedRemoteHead must be a non-negative safe integer");
+  }
+  if (input.expectedRemoteHead !== undefined && !/^\d+$/.test(input.revision ?? "")) {
+    return failEnvelope("svn update", cwd, "expectedRemoteHead requires an explicit numeric revision");
   }
 
   const context = await getWcContext(input.cwd, input.paths ?? []);
@@ -215,15 +240,62 @@ export async function svnUpdate(input: { cwd?: string; paths?: string[]; updateA
     targets = resolved.paths;
   }
 
-  const run = await runSvn(["update", "--accept", "postpone", ...(targets.length > 0 ? ["--", ...targets.map(escapeSvnTarget)] : [])], context.cwd);
+  if (input.expectedRemoteHead !== undefined) {
+    const observedRemoteHead = await remoteHeadForTargets(
+      context.cwd,
+      targets.length > 0 ? targets : [context.wcRoot]
+    );
+    if (observedRemoteHead === null) {
+      return {
+        ...failEnvelope("svn update", context.cwd, "could not verify remote HEAD before update"),
+        expected_remote_head: input.expectedRemoteHead,
+        observed_remote_head: null
+      };
+    }
+    if (observedRemoteHead !== input.expectedRemoteHead) {
+      return {
+        ...failEnvelope(
+          "svn update",
+          context.cwd,
+          `remote HEAD changed: expected ${input.expectedRemoteHead}, observed ${observedRemoteHead}`
+        ),
+        expected_remote_head: input.expectedRemoteHead,
+        observed_remote_head: observedRemoteHead
+      };
+    }
+  }
+
+  const run = await runSvn([
+    "update",
+    ...(input.revision ? ["-r", input.revision] : []),
+    "--accept",
+    "postpone",
+    ...(targets.length > 0 ? ["--", ...targets.map(escapeSvnTarget)] : [])
+  ], context.cwd);
   const parsed = parseUpdateText(`${run.stdout}\n${run.stderr}`);
-  return envelopeFromRun({
-    run,
-    ok: run.exitCode === 0,
-    changed_paths: parsed.changed_paths,
-    conflicts: parsed.conflicts,
-    note: parsed.conflicts.length > 0 ? "conflicts present" : run.exitCode === 0 ? "" : noteFromRun(run)
-  });
+  const version = run.exitCode === 0 ? await runSvnVersion(context.wcRoot, context.cwd) : null;
+  const versionState = version?.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
+  const resultingRevision = versionState?.range && versionState.range.min === versionState.range.max
+    ? versionState.range.min
+    : null;
+  return {
+    ...envelopeFromRun({
+      run,
+      ok: run.exitCode === 0,
+      revision: resultingRevision,
+      changed_paths: parsed.changed_paths,
+      conflicts: parsed.conflicts,
+      note: parsed.conflicts.length > 0 ? "conflicts present" : run.exitCode === 0 ? "" : noteFromRun(run)
+    }),
+    requested_revision: input.revision ?? null,
+    resulting_revision: resultingRevision,
+    revision_range: versionState?.range ?? null,
+    mixed_revision: versionState?.mixed ?? false,
+    wc_root: context.wcRoot,
+    ...(input.expectedRemoteHead !== undefined
+      ? { expected_remote_head: input.expectedRemoteHead, observed_remote_head: input.expectedRemoteHead }
+      : {})
+  };
 }
 
 export async function svnRevert(input: {

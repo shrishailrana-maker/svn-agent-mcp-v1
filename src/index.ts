@@ -265,6 +265,9 @@ export function createServer(): McpServer {
         maxChars: z.number().int().min(256).max(64000).optional(),
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
+        requireUniformRevision: z.boolean().optional().describe(
+          "Refuse READY while the working copy spans more than one revision; intended for release handoffs."
+        ),
         ...response
       }
     },
@@ -345,7 +348,16 @@ export function createServer(): McpServer {
     "svn_update",
     {
       description: "Guarded update with conflicts postponed.",
-      inputSchema: { cwd, paths: optionalPaths, updateAll: z.boolean().optional(), ...response }
+      inputSchema: {
+        cwd,
+        paths: optionalPaths,
+        updateAll: z.boolean().optional(),
+        revision: revision.describe("Exact revision to update to; ranges are refused."),
+        expectedRemoteHead: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe(
+          "With a numeric revision, refuse before updating unless repository HEAD still equals this revision."
+        ),
+        ...response
+      }
     },
     async (args, extra) => handleTool("svn_update", args, extra.signal, () => svnUpdate(compactArgs(args)))
   );

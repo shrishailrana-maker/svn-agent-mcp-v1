@@ -45,6 +45,7 @@ export async function svnSelfCheck(input: { cwd?: string }, runningServerVersion
     runtime_layout: layout.runtimeLayout,
     runtime_root: layout.runtimeRoot,
     runtime_layout_ok: layout.layoutOk,
+    current_pointer_applicable: layout.currentPointerApplicable,
     current_path: layout.currentPath,
     current_target: layout.currentTarget,
     current_release: layout.currentRelease,
@@ -67,11 +68,13 @@ export async function inspectRuntimeLayout(root: string, version: string, platfo
   const currentMatchesPackage = currentRelease === `v${version}`;
   const releaseBinFileCount = await countFiles(path.join(releaseRoot, "bin"));
   const releaseDistFileCount = await countFiles(path.join(releaseRoot, "dist"));
-  const common = { currentPath, currentTarget, currentRelease, currentMatchesPackage, releaseRoot };
+  const common = { currentPath, currentTarget, currentRelease, releaseRoot };
 
   if (currentMatchesPackage && await runtimePayloadComplete(releaseRoot, releaseBinFileCount, releaseDistFileCount, platform)) {
     return {
       ...common,
+      currentPointerApplicable: true,
+      currentMatchesPackage,
       runtimeLayout: "prepared-release",
       runtimeRoot: releaseRoot,
       layoutOk: true,
@@ -85,6 +88,8 @@ export async function inspectRuntimeLayout(root: string, version: string, platfo
   if (isNodeModulesPackage(root) && await runtimePayloadComplete(root, directBinFileCount, directDistFileCount, platform)) {
     return {
       ...common,
+      currentPointerApplicable: false,
+      currentMatchesPackage: null,
       runtimeLayout: "npm-package",
       runtimeRoot: root,
       layoutOk: true,
@@ -95,6 +100,8 @@ export async function inspectRuntimeLayout(root: string, version: string, platfo
 
   return {
     ...common,
+    currentPointerApplicable: true,
+    currentMatchesPackage,
     runtimeLayout: "source-tree",
     runtimeRoot: releaseRoot,
     layoutOk: false,

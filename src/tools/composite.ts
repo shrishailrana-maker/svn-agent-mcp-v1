@@ -23,6 +23,7 @@ import {
   eolCheck,
   getWcContext,
   normalizeStatusLookup,
+  parseSvnVersion,
   scopedStatusMap,
   svnDiff,
   svnInfo,
@@ -71,6 +72,7 @@ export async function svnPrecommit(input: {
   lineLimit?: number;
   allowRoot?: boolean;
   allowDirectoryTargets?: boolean;
+  requireUniformRevision?: boolean;
 }): Promise<ToolEnvelope> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
@@ -182,7 +184,8 @@ export async function svnPrecommit(input: {
   }
 
   const version = await runSvnVersion(context.wcRoot, context.cwd);
-  const mixedRevision = version.exitCode === 0 && version.stdout.includes(":");
+  const versionState = version.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
+  const mixedRevision = versionState?.mixed ?? false;
   const verdict = guardNotes.length > 0
     ? "GUARD_BLOCKED"
     : !diff.ok && diff.recovery_tool !== "eol_fix_verified"
@@ -191,18 +194,24 @@ export async function svnPrecommit(input: {
         ? "EOL_FIX_NEEDED"
         : !hasRealChange
           ? "NOTHING_TO_COMMIT"
+          : input.requireUniformRevision && mixedRevision
+            ? "REVISION_NORMALIZATION_NEEDED"
           : "READY";
 
+  const remediation = verdict === "REVISION_NORMALIZATION_NEEDED"
+    ? "run svn_update at the working-copy root with updateAll:true and revision:<pinned-revision>, then rerun svn_precommit"
+    : "";
   const notes = [
     verdict,
     ...guardNotes,
     ...diffNotes,
-    mixedRevision ? "mixed revision working copy" : ""
+    mixedRevision ? "mixed revision working copy" : "",
+    remediation
   ].filter(Boolean);
 
   return {
     ...createEnvelope({
-      ok: verdict !== "GUARD_BLOCKED" && verdict !== "DIFF_FAILED",
+      ok: verdict !== "GUARD_BLOCKED" && verdict !== "DIFF_FAILED" && verdict !== "REVISION_NORMALIZATION_NEEDED",
       command: "svn_precommit",
       cwd: context.cwd,
       changed_paths: status.envelope.changed_paths,
@@ -214,6 +223,8 @@ export async function svnPrecommit(input: {
     per_file: perFile,
     risk_signals: riskSignals,
     mixed_revision: mixedRevision,
+    revision_range: versionState?.range ?? null,
+    ...(remediation ? { remediation } : {}),
     diff_excerpt: diff.diff_excerpt,
     truncated: diff.truncated
   };

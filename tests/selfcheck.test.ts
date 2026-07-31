@@ -15,6 +15,7 @@ describe("svn self-check", () => {
     expect(check.server_version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(check.package_version).toBe(check.server_version);
     expect(check.current_release).toBe(`v${check.server_version}`);
+    expect(check.current_pointer_applicable).toBe(true);
     expect(check.current_matches_package).toBe(true);
     expect(check.bin_file_count).toBe(expectedBinFileCount);
     expect(check.dist_file_count).toBeGreaterThanOrEqual(60);
@@ -50,10 +51,11 @@ describe("svn self-check", () => {
         runtimeLayout: "npm-package",
         runtimeRoot: packageRoot,
         layoutOk: true,
+        currentPointerApplicable: false,
         currentPath: path.join(packageRoot, "current"),
         currentTarget: null,
         currentRelease: null,
-        currentMatchesPackage: false,
+        currentMatchesPackage: null,
         releaseRoot: path.join(packageRoot, "releases", "v1.1.2"),
         binFileCount: 35,
         distFileCount: 60
@@ -91,6 +93,8 @@ describe("svn self-check", () => {
 
       expect(layout.runtimeLayout).toBe("npm-package");
       expect(layout.layoutOk).toBe(true);
+      expect(layout.currentPointerApplicable).toBe(false);
+      expect(layout.currentMatchesPackage).toBeNull();
       expect(layout.binFileCount).toBe(0);
       expect(layout.distFileCount).toBe(60);
     } finally {
@@ -110,6 +114,7 @@ describe("svn self-check", () => {
 
       expect(layout.runtimeLayout).toBe("source-tree");
       expect(layout.layoutOk).toBe(false);
+      expect(layout.currentPointerApplicable).toBe(true);
       expect(layout.binFileCount).toBe(0);
       expect(layout.distFileCount).toBe(0);
     } finally {

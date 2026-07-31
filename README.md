@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.2.2`; each source clone can prepare a local runtime under `releases/v1.2.2`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.3.0`; each source clone can prepare a local runtime under `releases/v1.3.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -153,6 +153,13 @@ or another directory-node-only change; remaining descendants are reported as pos
 `svn_precommit` accepts the same `allowDirectoryTargets` and `allowRoot` acknowledgements so its
 readiness verdict matches those target-scope guards.
 
+Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
+or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
+to refuse if repository HEAD moved since the caller's probe. Use
+`svn_precommit requireUniformRevision:true` when a release handoff must not proceed from a
+mixed-revision working copy. The default remains backward compatible and reports mixed revisions
+without blocking ordinary precommit work.
+
 ## Commands
 
 | Command | Description |
@@ -174,7 +181,7 @@ readiness verdict matches those target-scope guards.
 
 Use `svn_self_check` to verify the MCP package, runtime layout, resolved native or bundled tools, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
 
-Use `svn_snapshot` for a one-call status and revision summary. `svn_log` and `svn_diff` accept exact or ranged revision selectors, while bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete` and canonical `svn_resolve`; the older `svn_resolved` name remains as a deprecated compatibility alias.
+Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete` and canonical `svn_resolve`; the older `svn_resolved` name remains as a deprecated compatibility alias.
 
 For SVN property work, use `svn_propget` and guarded `svn_propset` instead of raw `svn propget`/`svn propset`. `svn_propset_eol_style` remains the safer shortcut for `svn:eol-style` normalization.
 
