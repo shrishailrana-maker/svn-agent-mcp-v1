@@ -917,6 +917,31 @@ describe("public MCP response shaping", () => {
     expect(boundedEntry?.changedPaths as unknown[]).toHaveLength(2);
     expect(boundedEntry?.changedPathsTruncated).toBe(true);
 
+    const worstCase = toToolResult("svn_log", {
+      ...payload,
+      entries: Array.from({ length: 100 }, (_, index) => ({
+        rev: 500 - index,
+        author: "a".repeat(256),
+        date: "2026-07-20T00:00:00.000Z",
+        msg: "m".repeat(8_000),
+        changed_paths: Array.from({ length: 500 }, (__, pathIndex) => ({
+          status: "M",
+          path: `/${"long-directory/".repeat(40)}file-${pathIndex}.ts`
+        }))
+      }))
+    }, {
+      responseMode: "compact",
+      request: {
+        limit: 100,
+        fullMessage: true,
+        changedPaths: true,
+        maxMessageChars: 8_000,
+        maxChangedPaths: 500
+      }
+    }).structuredContent;
+    expect(Buffer.byteLength(JSON.stringify(worstCase), "utf8")).toBeLessThanOrEqual(24 * 1024);
+    expect(worstCase.truncated).toBe(true);
+
     const summarized = toToolResult("svn_log", payload, {
       responseMode: "compact",
       request: { limit: 1, changedPathsSummary: true, maxTopLevelDirectories: 2 }
@@ -928,6 +953,55 @@ describe("public MCP response shaping", () => {
       topLevelDirectories: [{ path: "src", count: 20 }]
     });
     expect(summarizedEntry).not.toHaveProperty("changedPaths");
+
+    const longSummaryPayload = {
+      ...payload,
+      entries: [{
+        ...entries[0],
+        msg: "x".repeat(8_000),
+        changed_paths: Array.from({ length: 50 }, (_, index) => ({
+          status: "M",
+          path: `/${`directory-${index}-`.repeat(300)}?token=private/file.ts`
+        }))
+      }],
+      entry_count: 1
+    };
+    const longSummary = toToolResult("svn_log", longSummaryPayload, {
+      responseMode: "compact",
+      request: {
+        limit: 1,
+        fullMessage: true,
+        maxMessageChars: 8_000,
+        changedPathsSummary: true,
+        maxTopLevelDirectories: 50
+      }
+    }).structuredContent;
+    expect(Buffer.byteLength(JSON.stringify(longSummary), "utf8")).toBeLessThanOrEqual(24 * 1024);
+    expect(JSON.stringify(longSummary)).not.toContain("private");
+  });
+
+  it("does not treat unsafe decimal cursors as valid offsets", () => {
+    const root = "E:\\dev\\example";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn status --xml",
+        cwd: root,
+        changed_paths: [
+          { status: "M", path: `${root}\\first.ts` },
+          { status: "M", path: `${root}\\second.ts` }
+        ]
+      }),
+      wc_root: root
+    };
+
+    const result = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { cursor: "9007199254740992", maxItems: 1 }
+    }).structuredContent;
+
+    expect(result.items).toEqual([{ path: "first.ts", status: "modified" }]);
+    expect(result.nextCursor).toBe("1");
   });
 
   it("keeps the requested revision-range floor when paginating svn_log", () => {

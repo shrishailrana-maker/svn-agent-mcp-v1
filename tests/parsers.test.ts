@@ -136,8 +136,7 @@ describe("SVN text and XML parsers", () => {
     expect(parseCommittedRevision("Committed revision 42.")).toBe(42);
     expect(parseUpdateText("U    src/a.ts\nC    src/b.ts\n   C src/tree.ts\nSummary of conflicts:\n  Tree conflicts: 2\n").conflicts).toEqual([
       { path: "src/b.ts", type: "text" },
-      { path: "src/tree.ts", type: "tree" },
-      { path: "", type: "tree" }
+      { path: "src/tree.ts", type: "tree" }
     ]);
     expect(
       parseLogXml(`<log><logentry revision="9"><author>a</author><date>d</date><msg>m</msg><paths><path action="M">/trunk/a</path></paths></logentry></log>`)
@@ -164,6 +163,10 @@ describe("SVN text and XML parsers", () => {
     );
 
     expect(parsed.changed_paths).toEqual([{ status: "UNKNOWN", path: "future.txt" }]);
+  });
+
+  it("does not invent empty-path tree conflicts from summary text", () => {
+    expect(parseUpdateText("Summary of conflicts:\n  Tree conflicts: 1\n").conflicts).toEqual([]);
   });
 
   it("preserves numeric-looking log text as strings", () => {

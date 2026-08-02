@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sha256File } from "../src/fileHash.js";
+import { mapWithConcurrency, sha256File } from "../src/fileHash.js";
 
 describe("bounded-memory file hashing", () => {
   it("matches SHA-256 across multiple asynchronous read chunks", async () => {
@@ -29,5 +29,24 @@ describe("bounded-memory file hashing", () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("bounds concurrent asynchronous work", async () => {
+    let active = 0;
+    let peak = 0;
+    const results = await mapWithConcurrency(
+      Array.from({ length: 20 }, (_, index) => index),
+      4,
+      async (value) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return value * 2;
+      }
+    );
+
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(results).toEqual(Array.from({ length: 20 }, (_, index) => index * 2));
   });
 });

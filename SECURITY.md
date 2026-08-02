@@ -49,8 +49,8 @@ Please do not publish exploit details until a fix or mitigation is available.
   The physical store path is refused inside an SVN working copy. Terminal and stale orphan files
   are pruned within fixed limits; retained unfinished or unreadable records cause a capacity refusal
   rather than deletion. Live lock owners are preserved, abandoned breaker files are recoverable,
-  and lock acquisition waits for a bounded five seconds. The receipt store is local to one host and must not be treated as a
-  cross-machine lock.
+  and lock acquisition waits asynchronously for a bounded five seconds without blocking unrelated
+  MCP requests. The receipt store is local to one host and must not be treated as a cross-machine lock.
 - Working-copy `cwd` inputs must be absolute. Repository URL inputs containing user information are
   refused; authentication remains the responsibility of the native SVN credential cache or trusted
   operator configuration.
@@ -59,6 +59,12 @@ Please do not publish exploit details until a fix or mitigation is available.
   file content hashes, canonical SVN property hashes, status, base revisions, repository policy, diff identity, and observed
   remote revision; commit rechecks them without weakening any ordinary guard. Detailed workflow
   stages stay in bounded memory and are not persisted with durable mutation receipts.
+- Workflow content hashes use cancellable streams, a bounded worker pool, and a default 1 GiB
+  aggregate explicit-scope ceiling. `SVN_MCP_HASH_CONCURRENCY` and `SVN_MCP_MAX_HASH_BYTES` may
+  tune those limits without weakening path containment.
+- Verified EOL repair applies never-commit guards before mutation. Large opted-in files use
+  streaming verification and disk-backed backups; rollback will not overwrite a file whose content
+  changed after normalization.
 - Precommit evidence is revalidated immediately before invoking `svn commit`. This narrows the
   local check/use interval but cannot freeze files against an unrelated external editor; use one
   writer per working copy and do not share a writable checkout across processes or machines.

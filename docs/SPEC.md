@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.33 — public implementation contract. Single source of truth.**
+**Spec version 1.34 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -260,11 +260,12 @@ Mutation `operationId` values are distinct from process-local read evidence. Upd
 EOL repair, and conflict resolution accept an optional UUID that is bound to normalized request
 inputs and persisted in a bounded host-local store outside every working copy. Identical terminal
 requests replay their compact receipt after process restart. Concurrent reuse, changed inputs,
-unreadable records, and incomplete receipts fail closed. An unfinished stale commit may be recovered
-only from clean scoped status plus matching post-start SVN history; other stale outcomes remain
-explicitly ambiguous and are never re-executed automatically. Unfinished receipts are retained.
-Abandoned receipt-file locks are reclaimed after 30 seconds; live contention returns a typed
-`OPERATION_STORE_FAILED` refusal rather than throwing through the MCP boundary.
+unreadable records, and incomplete receipts fail closed. Every unfinished stale mutation remains
+explicitly ambiguous and is never inferred from similar repository history or re-executed
+automatically. Unfinished receipts are retained for inspection.
+Abandoned receipt-file locks are reclaimed after 30 seconds; live contention waits asynchronously
+for at most five seconds, then returns a typed `OPERATION_STORE_FAILED` refusal without blocking
+unrelated MCP requests or throwing through the MCP boundary.
 The physical receipt directory is refused under any `.svn` working-copy ancestor. Terminal receipts
 and stale orphan lock/temp files are pruned within the configured fixed record, byte, age, and
 per-record caps. In-progress, unreadable, and fresh orphan records are retained; if they exhaust a
@@ -613,7 +614,10 @@ reports `before` + inferred converter/target, touches nothing. Safe-commit mode 
 batch operation only after precommit names explicit EOL failures; ordinary tools never repair
 tracked files implicitly. Missing paths, non-files, binary files,
 and `sniff:"skipped-too-large"` files return structured refusals; oversized files require
-explicit `allowLarge:true`. No PowerShell scripts, byte rewrites, pipes, redirects, or shell
+explicit `allowLarge:true`, then use streaming sniff/hash verification plus a disk-backed backup.
+Never-commit guards run before any conversion. A failed verification restores the backup only when
+the converted file still has the expected identity; a concurrent edit is preserved and reported.
+No PowerShell scripts, byte rewrites, pipes, redirects, or shell
 quoting are involved. `svn_add` may apply the same verified conversion transactionally when the
 repository policy enables `normalizeEol`; existing tracked-file repair remains an explicit call.
 `paths` accepts up to 500 explicit files and returns one aggregate receipt. Passing files are
@@ -629,7 +633,8 @@ scheduled as needed without recursively adding siblings. A directory path requir
 (`scratch/**` is reserved for local scratch files; never add).
 When repository policy sets `normalizeEol:"crlf"` or `"lf"`, new text files in the explicit add
 scope are backed up, converted, and content-hash verified before SVN scheduling. Any failure restores
-all converted files and prevents the add. Binary files and `eolExclude` globs (defaulting to
+converted files that have not changed concurrently and prevents the add; concurrently changed files
+are preserved and reported as rollback-skipped. Binary files and `eolExclude` globs (defaulting to
 `**/*.patch` and `**/*.diff`) are skipped and reported.
 
 **`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
@@ -692,11 +697,12 @@ bounded per-path receipt with baseline revision, local modification before updat
 same-path collision, postponed conflict, and remediation. It does not change SVN's successful
 merge semantics, but prepare and safe modes treat a reported collision as a commit blocker.
 
-**`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true }`
+**`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true, riskAck?: boolean = false }`
 `dryRun:true` (default) = preview: returns scoped status + per-file ± counts of what would be
 **lost**, changes nothing. `dryRun:false` → argv `svn revert <file paths…>` for files and a
 separate `svn revert --depth infinity <directory paths…>` for directories; a directory or `.`
-requires `allowRecursive:true`. Reverting the WC root path is refused unconditionally.
+requires `allowRecursive:true`, and every executing call requires `riskAck:true` after preview.
+Reverting the WC root path is refused unconditionally.
 
 **`svn_delete`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true, riskAck?: boolean = false }`
 The default returns the exact contained targets without changing the working copy. Execution
@@ -735,8 +741,8 @@ is required for high-risk properties that can hide or redirect repository behavi
 argv: `svn export [-r rev] <src> <dest>` / `svn import -F <tmpfile> <src> <url>`. Explicit
 src+dest/url; `svn_export` validates revision strings before invoking SVN, and `svn_import`
 scans the source tree for never-commit descendants before invoking SVN. `svn_import` uses the
-  same secure `-F` tempfile mechanics as commit. Purpose: MCP release packaging. These tools are
-  intentionally support external filesystem paths: export may write to an explicit destination
+same commit-message format validation and secure `-F` tempfile mechanics as commit. Purpose: MCP
+release packaging. These tools intentionally support external filesystem paths: export may write to an explicit destination
   outside a working copy only with `externalDestAck:true`, and import may read an explicit external
   source after its bounded guard scan skips SVN administrative directories. READONLY mode refuses both.
 
@@ -877,6 +883,16 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.34 / Unreleased — 2026-08-02
+
+- Caps compact log serialization at 24 KiB and rejects decimal cursors above JavaScript's safe
+  integer range before paging or constructing SVN revision arguments.
+- Uses bounded-concurrency, aggregate-capped content hashing and asynchronous receipt-lock waits.
+- Makes verified EOL repair streaming and never-commit guarded, preserves concurrent edits during
+  rollback, validates import messages, and requires explicit risk acknowledgement for real reverts.
+- Removes pathless tree-conflict placeholders and documents that stale mutation outcomes always
+  fail closed instead of being inferred from repository history.
 
 ### Spec 1.33 / Unreleased — 2026-08-02
 

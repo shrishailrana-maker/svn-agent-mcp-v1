@@ -25,6 +25,10 @@ All notable changes to the SVN MCP are recorded here.
   bounds.
 - Workflow and commit hashes now use cancellable asynchronous streams, and test runs use isolated
   operation-receipt stores instead of the live user store.
+- Workflow hashing now uses a bounded worker pool plus a configurable aggregate-byte ceiling;
+  receipt-lock retries yield to the MCP event loop instead of blocking every request.
+- Large verified EOL repairs now use streaming sniff/hash verification and disk-backed backups.
+  Rollback refuses to overwrite a file changed by another writer after normalization.
 
 ### Fixed
 
@@ -44,6 +48,9 @@ All notable changes to the SVN MCP are recorded here.
   and explicit buffered-output truncation receipts.
 - Enforced absolute `cwd` values and refused credential-bearing repository URLs at both schema and
   runtime boundaries.
+- Bounded compact log serialization to 24 KiB, rejected unsafe numeric cursors, removed anonymous
+  tree-conflict placeholders, and required `riskAck:true` for destructive revert execution.
+- Applied never-commit guards to verified EOL repair and commit-message validation to `svn_import`.
 
 ## [1.4.0] - 2026-08-02
 

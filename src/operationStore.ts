@@ -95,73 +95,78 @@ export class DurableOperationStore {
     this.#ensureDirectory();
     return this.#withFileLock(path.join(this.directory, ".store.lock"), () => {
       this.#cleanup(operationId);
-      return this.#withLock(operationId, () => {
-      const recordExists = fs.existsSync(this.#recordPath(operationId));
-      const existing = this.#read(operationId);
-      if (recordExists && !existing) {
-        return {
-          status: "conflict" as const,
-          operationId,
-          note: "operation receipt is unreadable; refusing retry"
-        };
-      }
-      if (existing) {
-        if (existing.kind !== input.kind || existing.fingerprint !== input.fingerprint) {
-          return {
-            status: "conflict" as const,
-            operationId,
-            note: "operationId is already bound to different inputs"
-          };
-        }
-        if (existing.state === "completed" || existing.state === "failed") {
-          if (!isToolEnvelope(existing.result)) {
-            return { status: "conflict" as const, operationId, note: "operation receipt is incomplete" };
-          }
-          return { status: "replay" as const, operationId, state: existing.state, result: existing.result };
-        }
-        if (this.#now() - existing.updatedAt > this.#staleAfterMs) {
-          return {
-            status: "stale" as const,
-            operationId,
-            kind: existing.kind,
-            fingerprint: existing.fingerprint,
-            createdAt: existing.createdAt,
-            note: "operation receipt is stale after an interrupted execution"
-          };
-        }
-        return { status: "in_progress" as const, operationId, note: "operation is already in progress" };
-      }
-
-      const now = this.#now();
-      const record: StoredOperation = {
-        schema: 1,
-        operationId,
-        kind: input.kind,
-        fingerprint: input.fingerprint,
-        state: "in_progress",
-        lease: randomUUID(),
-        createdAt: now,
-        updatedAt: now
-      };
-      this.#pruneTerminalForCapacity(1, Math.max(TERMINAL_RECEIPT_RESERVE_BYTES, storedBytes(record)), operationId);
-      if (!this.#hasCapacityFor(record, operationId)) {
-        return {
-          status: "conflict" as const,
-          operationId,
-          note: "operation receipt capacity is exhausted by retained records"
-        };
-      }
-      this.#write(record);
-      return {
-        status: "execute" as const,
-        operationId,
-        kind: input.kind,
-        fingerprint: input.fingerprint,
-        lease: record.lease,
-        createdAt: now
-      };
-      });
+      return this.#withLock(operationId, () => this.#beginLocked(input, operationId));
     });
+  }
+
+  async beginAsync(input: { operationId?: string; kind: string; fingerprint: string }): Promise<OperationStart> {
+    const operationId = input.operationId ?? randomUUID();
+    if (!OPERATION_ID.test(operationId)) {
+      return { status: "conflict", operationId, note: "operationId must be a UUID" };
+    }
+    this.#ensureDirectory();
+    return this.#withFileLockAsync(path.join(this.directory, ".store.lock"), async () => {
+      this.#cleanup(operationId);
+      return this.#withFileLockAsync(
+        path.join(this.directory, `${operationId}.lock`),
+        () => this.#beginLocked(input, operationId)
+      );
+    });
+  }
+
+  #beginLocked(input: { operationId?: string; kind: string; fingerprint: string }, operationId: string): OperationStart {
+    const recordExists = fs.existsSync(this.#recordPath(operationId));
+    const existing = this.#read(operationId);
+    if (recordExists && !existing) {
+      return { status: "conflict", operationId, note: "operation receipt is unreadable; refusing retry" };
+    }
+    if (existing) {
+      if (existing.kind !== input.kind || existing.fingerprint !== input.fingerprint) {
+        return { status: "conflict", operationId, note: "operationId is already bound to different inputs" };
+      }
+      if (existing.state === "completed" || existing.state === "failed") {
+        if (!isToolEnvelope(existing.result)) {
+          return { status: "conflict", operationId, note: "operation receipt is incomplete" };
+        }
+        return { status: "replay", operationId, state: existing.state, result: existing.result };
+      }
+      if (this.#now() - existing.updatedAt > this.#staleAfterMs) {
+        return {
+          status: "stale",
+          operationId,
+          kind: existing.kind,
+          fingerprint: existing.fingerprint,
+          createdAt: existing.createdAt,
+          note: "operation receipt is stale after an interrupted execution"
+        };
+      }
+      return { status: "in_progress", operationId, note: "operation is already in progress" };
+    }
+
+    const now = this.#now();
+    const record: StoredOperation = {
+      schema: 1,
+      operationId,
+      kind: input.kind,
+      fingerprint: input.fingerprint,
+      state: "in_progress",
+      lease: randomUUID(),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.#pruneTerminalForCapacity(1, Math.max(TERMINAL_RECEIPT_RESERVE_BYTES, storedBytes(record)), operationId);
+    if (!this.#hasCapacityFor(record, operationId)) {
+      return { status: "conflict", operationId, note: "operation receipt capacity is exhausted by retained records" };
+    }
+    this.#write(record);
+    return {
+      status: "execute",
+      operationId,
+      kind: input.kind,
+      fingerprint: input.fingerprint,
+      lease: record.lease,
+      createdAt: now
+    };
   }
 
   locationError(): string | null {
@@ -185,6 +190,21 @@ export class DurableOperationStore {
     });
   }
 
+  async settleAsync(execution: OperationExecution, result: ToolEnvelope): Promise<void> {
+    await this.#withFileLockAsync(path.join(this.directory, ".store.lock"), async () => {
+      this.#cleanup(execution.operationId);
+      await this.#withFileLockAsync(path.join(this.directory, `${execution.operationId}.lock`), () => {
+        const existing = this.#read(execution.operationId);
+        if (!existing || existing.state !== "in_progress" || existing.lease !== execution.lease
+            || existing.kind !== execution.kind || existing.fingerprint !== execution.fingerprint) {
+          throw new Error("operation lease no longer owns the receipt");
+        }
+        this.#pruneTerminalForCapacity(0, TERMINAL_RECEIPT_RESERVE_BYTES, execution.operationId);
+        this.#write(this.#terminalRecordWithinCapacity(existing, result));
+      });
+    });
+  }
+
   recover(stale: Extract<OperationStart, { status: "stale" }>, result: ToolEnvelope): void {
     this.#withFileLock(path.join(this.directory, ".store.lock"), () => {
       this.#cleanup(stale.operationId);
@@ -197,6 +217,22 @@ export class DurableOperationStore {
       }
       this.#pruneTerminalForCapacity(0, TERMINAL_RECEIPT_RESERVE_BYTES, stale.operationId);
       this.#write(this.#terminalRecordWithinCapacity(existing, result));
+      });
+    });
+  }
+
+  async recoverAsync(stale: Extract<OperationStart, { status: "stale" }>, result: ToolEnvelope): Promise<void> {
+    await this.#withFileLockAsync(path.join(this.directory, ".store.lock"), async () => {
+      this.#cleanup(stale.operationId);
+      await this.#withFileLockAsync(path.join(this.directory, `${stale.operationId}.lock`), () => {
+        const existing = this.#read(stale.operationId);
+        if (!existing || existing.state !== "in_progress" || existing.kind !== stale.kind
+            || existing.fingerprint !== stale.fingerprint || existing.createdAt !== stale.createdAt
+            || this.#now() - existing.updatedAt <= this.#staleAfterMs) {
+          throw new Error("stale operation receipt changed before recovery");
+        }
+        this.#pruneTerminalForCapacity(0, TERMINAL_RECEIPT_RESERVE_BYTES, stale.operationId);
+        this.#write(this.#terminalRecordWithinCapacity(existing, result));
       });
     });
   }
@@ -261,6 +297,34 @@ export class DurableOperationStore {
     if (descriptor === null) throw new Error("operation receipt lock is busy");
     try {
       return action();
+    } finally {
+      fs.closeSync(descriptor);
+      if (lockTokenMatches(lockPath, lockToken)) {
+        fs.rmSync(lockPath, { force: true });
+      }
+    }
+  }
+
+  async #withFileLockAsync<T>(lockPath: string, action: () => T | Promise<T>): Promise<T> {
+    let descriptor: number | null = null;
+    const lockToken = randomUUID();
+    const deadline = Date.now() + this.#lockWaitMs;
+    while (descriptor === null) {
+      try {
+        descriptor = fs.openSync(lockPath, "wx", 0o600);
+        fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, token: lockToken }), "utf8");
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (this.#breakAbandonedLock(lockPath)) continue;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(10, remaining)));
+      }
+    }
+    if (descriptor === null) throw new Error("operation receipt lock is busy");
+    try {
+      return await action();
     } finally {
       fs.closeSync(descriptor);
       if (lockTokenMatches(lockPath, lockToken)) {
@@ -517,7 +581,7 @@ export async function withDurableOperation(input: {
   }
   let started: OperationStart;
   try {
-    started = store.begin({ operationId: input.operationId, kind: input.kind, fingerprint: input.fingerprint });
+    started = await store.beginAsync({ operationId: input.operationId, kind: input.kind, fingerprint: input.fingerprint });
   } catch (error) {
     return operationFailure(
       input.command,
@@ -554,7 +618,7 @@ export async function withDurableOperation(input: {
       operation_id: started.operationId,
       operation_recovered: true
     };
-    store.recover(started, result);
+    await store.recoverAsync(started, result);
     return result;
   }
   if (started.status !== "execute") {
@@ -574,7 +638,7 @@ export async function withDurableOperation(input: {
     );
   }
   try {
-    store.settle(started, result);
+    await store.settleAsync(started, result);
     return result;
   } catch (error) {
     return {

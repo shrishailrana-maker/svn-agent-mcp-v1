@@ -277,6 +277,34 @@ describe("durable operation receipts", () => {
     }
   });
 
+  it("does not block the event loop while waiting for a receipt lock", async () => {
+    const directory = temporaryDirectory();
+    try {
+      fs.writeFileSync(path.join(directory, `${OPERATION_ID}.lock`), JSON.stringify({
+        pid: process.pid,
+        token: "active"
+      }), "utf8");
+      const store = new DurableOperationStore({ directory, lockWaitMs: 200, lockStaleMs: 60_000 });
+
+      const startedAt = Date.now();
+      const pending = withDurableOperation({
+        operationId: OPERATION_ID,
+        kind: "svn_update",
+        fingerprint: stableOperationFingerprint({ paths: ["a.txt"] }),
+        command: "svn update",
+        cwd: directory,
+        store,
+        execute: async () => createEnvelope({ ok: true, command: "must not run", cwd: directory })
+      });
+      const synchronousElapsed = Date.now() - startedAt;
+
+      expect(synchronousElapsed).toBeLessThan(50);
+      await expect(pending).resolves.toMatchObject({ ok: false, code: "OPERATION_STORE_FAILED" });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a new operation when unfinished receipts consume store capacity", () => {
     const directory = temporaryDirectory();
     try {

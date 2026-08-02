@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { resolveCommitScope } from "../commitScope.js";
@@ -15,7 +16,16 @@ import {
   type WorkflowPathState
 } from "../workflowState.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
-import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, normalizedContentHash, sniffEol } from "../eol.js";
+import {
+  converterForEolTarget,
+  convertEol,
+  isBinaryKind,
+  normalizeEolTarget,
+  normalizedContentHashFile,
+  restoreBackupIfUnchanged,
+  sniffEol
+} from "../eol.js";
+import { sha256File } from "../fileHash.js";
 import {
   assertExistingTargets,
   isCommittableStatus,
@@ -844,6 +854,8 @@ async function executeCanonicalSafeCommit(
       ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
       ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
       ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+      // finalScope was produced and guarded by prepare; internal revalidation
+      // must accept directory nodes introduced by descendant expansion.
       allowDirectoryTargets: true
     });
     stages.push({ stage: "precommit_after_eol", result: precommit });
@@ -861,6 +873,8 @@ async function executeCanonicalSafeCommit(
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     ...(input.riskAck === undefined ? {} : { riskAck: input.riskAck }),
     ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+    // This is the already prepared exact scope, not a fresh caller-provided
+    // directory acknowledgement.
     allowDirectoryTargets: true,
     precommitToken: precommit.precommit_token
   });
@@ -1252,7 +1266,12 @@ async function eolFixOneVerified(input: {
     return failEnvelope("eol_fix_verified", context.cwd, `path is not a file: ${repoRelativePath(filePath, context.wcRoot)}`);
   }
 
-  const before = await sniffEol(filePath);
+  const neverCommit = neverCommitHit(filePath, context.wcRoot);
+  if (neverCommit) {
+    return failEnvelope("eol_fix_verified", context.cwd, neverCommitNote(neverCommit, filePath, context.wcRoot));
+  }
+
+  const before = await sniffEol(filePath, input.allowLarge ? Number.MAX_SAFE_INTEGER : undefined);
   if (isBinaryKind(before.kind)) {
     return {
       ...failEnvelope("eol_fix_verified", context.cwd, "binary file refused"),
@@ -1265,8 +1284,7 @@ async function eolFixOneVerified(input: {
       before
     };
   }
-  const originalBytes = fs.readFileSync(filePath);
-  const normalizedHashBefore = normalizedContentHash(originalBytes);
+  const normalizedHashBefore = await normalizedContentHashFile(filePath);
 
   const prop = await runSvn(["propget", "--", "svn:eol-style", escapeSvnTarget(filePath)], context.cwd);
   const eolStyle = prop.exitCode === 0 ? prop.stdout.trim() || null : null;
@@ -1290,77 +1308,82 @@ async function eolFixOneVerified(input: {
     };
   }
 
-  const conversion = await convertEol({
-    filePath,
-    target,
-    removeBom: input.removeBom ?? true,
-    cwd: context.cwd
-  });
-  if (conversion.exitCode !== 0) {
+  const backupDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "svn-agent-eol-fix-"));
+  const backupFile = path.join(backupDir, "original.bin");
+  try {
+    await fs.promises.copyFile(filePath, backupFile);
+    const conversion = await convertEol({
+      filePath,
+      target,
+      removeBom: input.removeBom ?? true,
+      cwd: context.cwd
+    });
+    if (conversion.exitCode !== 0) {
+      return {
+        ...envelopeFromRun({
+          run: conversion,
+          ok: false,
+          note: noteFromRun(conversion)
+        }),
+        target,
+        eol_style: eolStyle,
+        converter,
+        before
+      };
+    }
+
+    const convertedHash = await sha256File(filePath);
+    const after = await sniffEol(filePath, input.allowLarge ? Number.MAX_SAFE_INTEGER : undefined);
+    const normalizedHashAfter = await normalizedContentHashFile(filePath);
+    const contentPreserved = normalizedHashAfter === normalizedHashBefore;
+    const targetVerified = (after.kind === target || after.kind === "none") && !after.has_bom;
+    if (!contentPreserved || !targetVerified) {
+      const restore = await restoreBackupIfUnchanged(filePath, backupFile, convertedHash);
+      return {
+        ...failEnvelope(
+          "eol_fix_verified",
+          context.cwd,
+          restore === "restored"
+            ? "normalized content or EOL verification failed; original restored"
+            : restore === "changed"
+              ? "normalized content or EOL verification failed; original not restored because the file changed concurrently"
+              : "normalized content or EOL verification failed; restoring the original also failed"
+        ),
+        before,
+        after,
+        target,
+        eol_style: eolStyle,
+        converter,
+        normalized_content_hash: normalizedHashAfter,
+        pure_eol_churn: false,
+        original_restored: restore === "restored",
+        ...(restore === "changed" ? { concurrent_change_detected: true } : {})
+      };
+    }
+    const diff = await svnDiff({ cwd: context.cwd, paths: [filePath], ignoreEol: true, lineLimit: defaultDiffLineLimit() });
+    const pureEolChurn = diff.ok && !diff.per_file_truncated && diff.per_file.every((file) =>
+      file.added === 0 && file.removed === 0 && !file.binary && !file.property_changed
+    );
+
     return {
       ...envelopeFromRun({
         run: conversion,
-        ok: false,
-        note: noteFromRun(conversion)
+        ok: true,
+        note: pureEolChurn ? "pure EOL churn verified" : "EOL fixed; content diff remains"
       }),
-      target,
-      eol_style: eolStyle,
-      converter,
-      before
-    };
-  }
-
-  const after = await sniffEol(filePath);
-  const normalizedHashAfter = normalizedContentHash(fs.readFileSync(filePath));
-  const contentPreserved = normalizedHashAfter === normalizedHashBefore;
-  const targetVerified = (after.kind === target || after.kind === "none") && !after.has_bom;
-  if (!contentPreserved || !targetVerified) {
-    let restored = false;
-    try {
-      fs.writeFileSync(filePath, originalBytes);
-      restored = true;
-    } catch {
-      restored = false;
-    }
-    return {
-      ...failEnvelope(
-        "eol_fix_verified",
-        context.cwd,
-        restored
-          ? "normalized content or EOL verification failed; original restored"
-          : "normalized content or EOL verification failed; restoring the original also failed"
-      ),
       before,
       after,
       target,
       eol_style: eolStyle,
       converter,
       normalized_content_hash: normalizedHashAfter,
-      pure_eol_churn: false,
-      original_restored: restored
+      verification_command: diff.command,
+      diff_ignored_eol: true,
+      pure_eol_churn: pureEolChurn
     };
+  } finally {
+    fs.rmSync(backupDir, { recursive: true, force: true });
   }
-  const diff = await svnDiff({ cwd: context.cwd, paths: [filePath], ignoreEol: true, lineLimit: defaultDiffLineLimit() });
-  const pureEolChurn = diff.ok && !diff.per_file_truncated && diff.per_file.every((file) =>
-    file.added === 0 && file.removed === 0 && !file.binary && !file.property_changed
-  );
-
-  return {
-    ...envelopeFromRun({
-      run: conversion,
-      ok: true,
-      note: pureEolChurn ? "pure EOL churn verified" : "EOL fixed; content diff remains"
-    }),
-    before,
-    after,
-    target,
-    eol_style: eolStyle,
-    converter,
-    normalized_content_hash: normalizedHashAfter,
-    verification_command: diff.command,
-    diff_ignored_eol: true,
-    pure_eol_churn: pureEolChurn
-  };
 }
 
 function eolKind(value: unknown): unknown {

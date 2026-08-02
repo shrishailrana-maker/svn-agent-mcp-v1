@@ -22,6 +22,15 @@ try {
     server: { name: serverName, version: serverVersion },
     globalResponseControls: {
       humanText: "boolean; default false",
+      responseBudgets: {
+        compactLogBytes: 24576,
+        compactDiffBytes: 28672
+      },
+      runtimeLimits: {
+        hashConcurrency: "SVN_MCP_HASH_CONCURRENCY; default 4; range 1..32",
+        aggregateHashBytes: "SVN_MCP_MAX_HASH_BYTES; default 1073741824; minimum 1048576",
+        receiptLockWait: "asynchronous; default 5000 ms"
+      },
       fieldProjections: fieldProjectionNames,
       advancedInputs: {
         names: advancedInputNames,
@@ -36,9 +45,9 @@ try {
           scanLimit: "1..500",
           maxTopLevelDirectories: "1..50",
           maxItems: "1..500",
-          cursor: "decimal string; max 32 digits",
+          cursor: "decimal string; 0..9007199254740991",
           maxChars: "256..64000",
-          conflictCursor: "decimal string; max 32 digits; conflict pages contain at most 100 items",
+          conflictCursor: "decimal string; 0..9007199254740991; conflict pages contain at most 100 items",
           taskPaths: "1..500 paths; each max 4096 chars"
         }
       }

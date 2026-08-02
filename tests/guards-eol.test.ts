@@ -4,9 +4,32 @@ import os from "node:os";
 import path from "node:path";
 import { isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals, validateCommitMessage } from "../src/guards.js";
 import { svnImport } from "../src/tools/mutating.js";
-import { sniffEol } from "../src/eol.js";
+import { prepareEolNormalization, sniffEol } from "../src/eol.js";
 
 describe("guards and EOL sniffing", () => {
+  it("does not overwrite an edit made after EOL normalization", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-eol-race-"));
+    const file = path.join(directory, "race.txt");
+    try {
+      fs.writeFileSync(file, process.platform === "win32" ? "one\n" : "one\r\n", "utf8");
+      const prepared = await prepareEolNormalization({
+        files: [file],
+        target: process.platform === "win32" ? "crlf" : "lf",
+        cwd: directory,
+        excluded: () => false
+      });
+      expect(prepared.ok).toBe(true);
+
+      fs.writeFileSync(file, "concurrent edit\n", "utf8");
+      const rollback = prepared.rollback();
+
+      expect(rollback).toEqual({ restored: 0, skipped: 1 });
+      expect(fs.readFileSync(file, "utf8")).toBe("concurrent edit\n");
+      prepared.dispose();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("preserves case for POSIX path identities", () => {
     const upper = path.resolve("CaseSensitiveRoot");
     const lower = path.resolve("casesensitiveroot");

@@ -3,7 +3,6 @@ import type { ChangedPath, Conflict } from "../types.js";
 export function parseUpdateText(text: string): { changed_paths: ChangedPath[]; conflicts: Conflict[] } {
   const changed_paths: ChangedPath[] = [];
   const conflicts: Conflict[] = [];
-  let treeConflictSummaryCount = 0;
 
   for (const rawLine of text.replace(/\r\n/g, "\n").split("\n")) {
     const line = rawLine.trimEnd();
@@ -13,7 +12,6 @@ export function parseUpdateText(text: string): { changed_paths: ChangedPath[]; c
 
     const summaryMatch = /^\s*Tree conflicts:\s*(\d+)/i.exec(line);
     if (summaryMatch) {
-      treeConflictSummaryCount = Number.parseInt(summaryMatch[1] ?? "0", 10);
       continue;
     }
 
@@ -41,11 +39,6 @@ export function parseUpdateText(text: string): { changed_paths: ChangedPath[]; c
     if (treeStatus === "C") {
       conflicts.push({ path, type: "tree" });
     }
-  }
-
-  const detailedTreeConflicts = conflicts.filter((conflict) => conflict.type === "tree").length;
-  for (let index = detailedTreeConflicts; index < treeConflictSummaryCount; index += 1) {
-    conflicts.push({ path: "", type: "tree" });
   }
 
   return { changed_paths, conflicts };

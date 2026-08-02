@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { resolveCommitScope } from "../commitScope.js";
-import { sha256File } from "../fileHash.js";
+import {
+  configuredHashConcurrency,
+  mapWithConcurrency,
+  regularFileBytesWithinBudget,
+  sha256File
+} from "../fileHash.js";
 import { prepareEolNormalization, type EolNormalizationResult } from "../eol.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
@@ -119,19 +124,25 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths.map(escapeSvnTarget)];
   try {
     const run = await runSvn(args, guard.cwd);
-    const rolledBack = run.exitCode !== 0;
-    if (rolledBack) {
-      preparedEol?.rollback();
-    }
+    const addFailed = run.exitCode !== 0;
+    const rollback = addFailed ? preparedEol?.rollback() : undefined;
     return {
       ...envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) }),
       ...(preparedEol && eolTarget
         ? {
             eol_normalization: {
               ...summarizeEolNormalization(preparedEol.results, eolTarget),
-              ...(rolledBack ? { converted: 0, verified: 0, rolled_back: true } : {})
+              ...(addFailed
+                ? {
+                    converted: 0,
+                    verified: 0,
+                    rolled_back: (rollback?.skipped ?? 0) === 0,
+                    rollback_restored: rollback?.restored ?? 0,
+                    rollback_skipped: rollback?.skipped ?? 0
+                  }
+                : {})
             },
-            eol_files: rolledBack ? [] : compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
+            eol_files: addFailed ? [] : compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
           }
         : {})
     };
@@ -381,6 +392,9 @@ export async function svnCommit(input: {
     status: status.map.get(pathIdentityKey(target)) ?? "M"
   }));
   const contentHashes = await hashCommitTargets(scopedPaths, guard.wcRoot);
+  if (!contentHashes.ok) {
+    return failEnvelope("svn commit", guard.cwd, contentHashes.note);
+  }
 
   if (input.precommitToken) {
     const binding = await validatePrecommitBinding(
@@ -436,7 +450,7 @@ export async function svnCommit(input: {
       observed_remote_head_before: observedRemoteHeadBefore,
       remote_head_revision: revision ?? observedRemoteHeadBefore,
       eol_verdict: "not_checked",
-      content_hashes: contentHashes,
+      content_hashes: contentHashes.hashes,
       content_hashes_truncated: false,
       post_status: postStatus?.changed_paths ?? [],
       post_status_clean: postStatusClean,
@@ -451,8 +465,18 @@ export async function svnCommit(input: {
   }
 }
 
-async function hashCommitTargets(targets: string[], wcRoot: string): Promise<Array<Record<string, unknown>>> {
-  return Promise.all(targets.map(async (target) => {
+async function hashCommitTargets(
+  targets: string[],
+  wcRoot: string
+): Promise<{ ok: true; hashes: Array<Record<string, unknown>> } | { ok: false; note: string }> {
+  const budget = await regularFileBytesWithinBudget(targets, currentRequestCancellationSignal());
+  if (!budget.ok) {
+    return {
+      ok: false,
+      note: `commit content hashing exceeds ${budget.maxBytes} byte aggregate limit; narrow the explicit path scope or raise SVN_MCP_MAX_HASH_BYTES`
+    };
+  }
+  const hashes = await mapWithConcurrency(targets, configuredHashConcurrency(), async (target) => {
     const relative = repoRelativePath(target, wcRoot);
     try {
       const stat = await fs.promises.stat(target);
@@ -468,7 +492,8 @@ async function hashCommitTargets(targets: string[], wcRoot: string): Promise<Arr
       if (error instanceof Error && error.name === "AbortError") throw error;
       return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "path unavailable" };
     }
-  }));
+  });
+  return { ok: true, hashes };
 }
 
 async function validatePrecommitBinding(
@@ -868,10 +893,17 @@ export async function svnRevert(input: {
   paths: string[];
   allowRecursive?: boolean;
   dryRun?: boolean;
+  riskAck?: boolean;
 }): Promise<ToolEnvelope> {
   const dryRun = input.dryRun ?? true;
   if (!dryRun && readonlyMode()) {
     return failEnvelope("svn revert", resolveCwd(input.cwd), "READONLY instance");
+  }
+  if (!dryRun && !input.riskAck) {
+    return {
+      ...failEnvelope("svn revert", resolveCwd(input.cwd), "destructive revert requires riskAck:true after reviewing the dry-run receipt"),
+      code: "RISK_ACK_REQUIRED"
+    };
   }
 
   const guard = await mutatingPathGuard("svn revert", input.cwd, input.paths, { requireExisting: false, allowReadonlyForDryRun: dryRun });
@@ -1215,6 +1247,16 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
   }
   const credentialError = credentialedUrlError(input.url);
   if (credentialError) return failEnvelope("svn import", cwd, credentialError);
+  const messageValidation = validateCommitMessage(input.message);
+  if (!messageValidation.valid) {
+    return {
+      ...failEnvelope("svn import", cwd, messageValidation.warningDetail),
+      code: messageValidation.warningCode,
+      warning_code: messageValidation.warningCode,
+      failed_rule: messageValidation.failedRule,
+      suggested_message: messageValidation.suggestedMessage
+    };
+  }
 
   const existsError = assertExistingTargets([path.resolve(cwd, input.src)]);
   if (existsError) {
@@ -1255,6 +1297,8 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
 
   const messageTemp = writeMessageTemp("svn-agent-import-", input.message);
   try {
+    // Import source and destination are literal operands. Appending a peg
+    // escape changes valid local paths and repository names containing '@'.
     const run = await runSvn(["import", "-F", messageTemp.file, "--", importSource, input.url], cwd);
     return envelopeFromRun({
       run,
@@ -1444,6 +1488,8 @@ async function svnMoveOrCopy(
     }
   }
 
+  // Local move destinations are literal filesystem operands; only copy accepts
+  // repository peg syntax here. Integration coverage locks this asymmetry down.
   const destinationOperand = svnVerb === "copy" ? escapeSvnTarget(dest) : dest;
   const run = await runSvn([svnVerb, "--parents", "--", escapeSvnTarget(src), destinationOperand], context.cwd);
   const status = run.exitCode === 0 ? await svnStatus({ cwd: context.cwd, paths: [src, dest] }) : null;

@@ -174,9 +174,12 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   const propertyName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   const responseMode = z.enum(["compact", "standard", "full", "receipt", "structured-only"]).optional();
   const response = { responseMode };
-  const cursor = z.string().max(32).regex(/^\d+$/, "cursor must be a decimal offset with at most 32 digits").optional();
+  const safeDecimal = isSafeDecimalString;
+  const cursor = z.string().max(32).regex(/^\d+$/, "cursor must be a decimal offset with at most 32 digits")
+    .refine(safeDecimal, "cursor exceeds the maximum safe integer").optional();
   // svn_log cursors may carry the range floor as "next:floor".
-  const logCursor = z.string().max(65).regex(/^\d+(?::\d+)?$/).optional();
+  const logCursor = z.string().max(65).regex(/^\d+(?::\d+)?$/)
+    .refine((value) => value.split(":").every(safeDecimal), "log cursor exceeds the maximum safe integer").optional();
   const maxItems = boundedIntegerSchema("maxItems", 1, 500, 100).optional();
   const lineLimit = boundedIntegerSchema("lineLimit", 1, 2000, 200).optional();
   const maxChars = boundedIntegerSchema("maxChars", 256, 64000, 3000).optional();
@@ -555,6 +558,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         paths,
         allowRecursive: z.boolean().optional(),
         dryRun: z.boolean().optional(),
+        riskAck: z.boolean().optional().describe("Required with dryRun:false after reviewing the preview receipt."),
         ...response
       }
     },
@@ -779,8 +783,9 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
   }
   if ((name === "svn_status" || name === "svn_snapshot" || name === "svn_update")
       && args.conflictCursor !== undefined) {
-    if (typeof args.conflictCursor !== "string" || !/^\d{1,32}$/.test(args.conflictCursor)) {
-      throw new McpError(ErrorCode.InvalidParams, "conflictCursor must be a decimal offset with at most 32 digits");
+    if (typeof args.conflictCursor !== "string" || !/^\d{1,32}$/.test(args.conflictCursor)
+        || !isSafeDecimalString(args.conflictCursor)) {
+      throw new McpError(ErrorCode.InvalidParams, "conflictCursor must be a decimal offset no greater than 9007199254740991");
     }
     extras.conflictCursor = args.conflictCursor;
   }
@@ -912,6 +917,14 @@ function repositoryUrlHasCredentials(value: string): boolean {
   try {
     const parsed = new URL(value);
     return Boolean(parsed.username || parsed.password);
+  } catch {
+    return false;
+  }
+}
+
+function isSafeDecimalString(value: string): boolean {
+  try {
+    return /^\d+$/.test(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER);
   } catch {
     return false;
   }

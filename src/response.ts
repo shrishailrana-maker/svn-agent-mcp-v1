@@ -57,6 +57,7 @@ const MUTATION_STATUS: Record<string, string> = {
 // thresholds. Stdio is a byte stream, so clients must still buffer through the
 // newline delimiter; this bound limits the damage from clients that do not.
 const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
+const COMPACT_LOG_RESULT_BUDGET_BYTES = 24 * 1024;
 const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
 const COMPACT_DIFF_PREVIEW_CHAR_LIMIT = 512;
 const COMPACT_CONFLICT_PAGE_SIZE = 100;
@@ -655,11 +656,16 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
   const maxMessageChars = boundedInteger(request.maxMessageChars, includeFullMessage ? 2000 : 240, 32, 8000);
   const maxChangedPaths = boundedInteger(request.maxChangedPaths, 100, 1, 500);
   const maxTopLevelDirectories = boundedInteger(request.maxTopLevelDirectories, 10, 1, 50);
-  const entries = sourceEntries.slice(0, limit).map((entry) => {
+  const entryCount = numberValue(payload.entry_count) || sourceEntries.length;
+  const revisionRange = payload.revision_range ?? revisionRangeFromLogEntries(sourceEntries);
+  const continuationFloor = logContinuationFloor(request);
+  const sourceNextCursor = stringValue(payload.next_cursor);
+  const requestedEntries = sourceEntries.slice(0, limit);
+  const shapeEntries = (entryLimit: number, changedPathLimit: number) => requestedEntries.slice(0, entryLimit).map((entry) => {
     const rawMessage = redactText(includeFullMessage ? stringValue(entry.msg) : firstLine(stringValue(entry.msg)));
     const message = rawMessage.slice(0, maxMessageChars);
     const allChangedPaths = recordArray(entry.changed_paths);
-    const changedPaths = allChangedPaths.slice(0, maxChangedPaths).map((item) => ({
+    const changedPaths = allChangedPaths.slice(0, changedPathLimit).map((item) => ({
       status: redactText(stringValue(item.status)).slice(0, 16),
       path: redactText(stringValue(item.path)).slice(0, 4096)
     }));
@@ -680,41 +686,67 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
         : {})
     };
   });
-  const lastRevision = entries.at(-1)?.revision;
-  const entryCount = numberValue(payload.entry_count) || sourceEntries.length;
-  const revisionRange = payload.revision_range ?? revisionRangeFromLogEntries(sourceEntries);
-  const truncated = payload.has_more === true || sourceEntries.length > entries.length;
-  const continuationFloor = logContinuationFloor(request);
-  const nextRevision = typeof lastRevision === "number" ? lastRevision - 1 : null;
-  const sourceNextCursor = stringValue(payload.next_cursor);
-  const nextCursor = sourceNextCursor || (truncated && nextRevision !== null && continuationFloor !== null && nextRevision >= continuationFloor
-    ? continuationFloor > 0
-      ? `${nextRevision}:${continuationFloor}`
-      : String(Math.max(0, nextRevision))
-    : null);
-
-  return {
-    ok: true,
-    ...(entryCount > 1
-      ? {
-          revision: null,
-          revisionRange,
-          entryCount
-        }
-      : {}),
-    entries,
-    ...(request.messageContains !== undefined
-      ? {
-          scannedCount: numberValue(payload.scanned_count),
-          matchedCount: numberValue(payload.matched_count),
-          scanTruncated: payload.scan_truncated === true,
-          ...(entries.length === 0 ? { noMatches: true } : {})
-        }
-      : {}),
-    ...(payload.target_mode === "working-copy-path" ? { targetMode: payload.target_mode } : {}),
-    truncated,
-    ...(nextCursor !== null ? { nextCursor } : {})
+  const buildResult = (entries: Array<Record<string, unknown>>) => {
+    const entryTruncated = payload.has_more === true || sourceEntries.length > entries.length;
+    const pathTruncated = entries.some((entry) => entry.changedPathsTruncated === true);
+    const lastRevision = entries.at(-1)?.revision;
+    const nextRevision = typeof lastRevision === "number" ? lastRevision - 1 : null;
+    const nextCursor = sourceNextCursor || (entryTruncated && nextRevision !== null
+        && continuationFloor !== null && nextRevision >= continuationFloor
+      ? continuationFloor > 0
+        ? `${nextRevision}:${continuationFloor}`
+        : String(Math.max(0, nextRevision))
+      : null);
+    return {
+      ok: true,
+      ...(entryCount > 1 ? { revision: null, revisionRange, entryCount } : {}),
+      entries,
+      ...(request.messageContains !== undefined
+        ? {
+            scannedCount: numberValue(payload.scanned_count),
+            matchedCount: numberValue(payload.matched_count),
+            scanTruncated: payload.scan_truncated === true,
+            ...(entries.length === 0 ? { noMatches: true } : {})
+          }
+        : {}),
+      ...(payload.target_mode === "working-copy-path" ? { targetMode: payload.target_mode } : {}),
+      truncated: entryTruncated || pathTruncated,
+      ...(nextCursor !== null ? { nextCursor } : {})
+    };
   };
+
+  const entryLimit = requestedEntries.length === 0
+    ? 0
+    : largestFittingInteger(1, requestedEntries.length, (candidate) =>
+        serializedByteLength(buildResult(shapeEntries(candidate, 0))) <= COMPACT_LOG_RESULT_BUDGET_BYTES);
+  const entries = shapeEntries(entryLimit, 0);
+  if (includeChangedPaths) {
+    let saturated = false;
+    for (let entryIndex = 0; entryIndex < entries.length && !saturated; entryIndex += 1) {
+      const entry = entries[entryIndex];
+      const source = requestedEntries[entryIndex];
+      if (!entry || !source) continue;
+      const allChangedPaths = recordArray(source.changed_paths);
+      const changedPaths = entry.changedPaths as Array<Record<string, unknown>>;
+      const pathLimit = Math.min(maxChangedPaths, allChangedPaths.length);
+      for (let pathIndex = 0; pathIndex < pathLimit; pathIndex += 1) {
+        const item = allChangedPaths[pathIndex];
+        if (!item) continue;
+        changedPaths.push({
+          status: redactText(stringValue(item.status)).slice(0, 16),
+          path: redactText(stringValue(item.path)).slice(0, 4096)
+        });
+        if (changedPaths.length >= allChangedPaths.length) delete entry.changedPathsTruncated;
+        if (serializedByteLength(buildResult(entries)) > COMPACT_LOG_RESULT_BUDGET_BYTES) {
+          changedPaths.pop();
+          if (changedPaths.length < allChangedPaths.length) entry.changedPathsTruncated = true;
+          saturated = true;
+          break;
+        }
+      }
+    }
+  }
+  return buildResult(entries);
 }
 
 function summarizeLogChangedPaths(
@@ -727,7 +759,8 @@ function summarizeLogChangedPaths(
     const action = logActionName(stringValue(item.status));
     actions[action] = (actions[action] ?? 0) + 1;
     const normalized = stringValue(item.path).replace(/\\/g, "/").replace(/^\/+/, "");
-    const top = normalized.includes("/") ? normalized.split("/", 1)[0] ?? "." : ".";
+    const rawTop = normalized.includes("/") ? normalized.split("/", 1)[0] ?? "." : ".";
+    const top = redactText(rawTop).slice(0, 256);
     directories.set(top, (directories.get(top) ?? 0) + 1);
   }
   const allDirectories = [...directories.entries()]
@@ -1608,7 +1641,8 @@ function cursorOffset(value: unknown): number {
   if (typeof value !== "string" || !/^\d+$/.test(value)) {
     return 0;
   }
-  return Number.parseInt(value, 10);
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : 0;
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {

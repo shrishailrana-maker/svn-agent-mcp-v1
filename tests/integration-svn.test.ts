@@ -667,6 +667,29 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("rejects malformed svn import messages before creating a revision", async () => {
+    const fixture = createTempWorkingCopy();
+    const srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-import-message-"));
+    try {
+      fs.writeFileSync(path.join(srcRoot, "safe.txt"), "safe\r\n", "utf8");
+      const imported = await svnImport({
+        cwd: fixture.wc,
+        src: srcRoot,
+        url: `${pathToFileURL(fixture.repo).href}/invalid-message`,
+        message: "missing verification body"
+      });
+
+      expect(imported).toMatchObject({ ok: false, code: "COMMIT_MESSAGE_FORMAT" });
+      expect(execFileSync(svnExecutable(), ["list", pathToFileURL(fixture.repo).href], {
+        cwd: fixture.wc,
+        encoding: "utf8"
+      })).not.toContain("invalid-message/");
+    } finally {
+      fs.rmSync(srcRoot, { recursive: true, force: true });
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("skips SVN administrative metadata while scanning an import source", async () => {
     const fixture = createTempWorkingCopy();
     const srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-import-admin-"));
@@ -1159,6 +1182,42 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("applies never-commit guards to verified EOL repair", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "private.key");
+      fs.writeFileSync(file, "secret\n", "utf8");
+
+      const result = await eolFixVerified({ cwd: fixture.wc, path: "private.key", target: "crlf" });
+
+      expect(result.ok).toBe(false);
+      expect(result.note).toContain("never-commit path");
+      expect(fs.readFileSync(file, "utf8")).toBe("secret\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs and verifies large text files without loading them as one buffer", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "large-eol.txt");
+      fs.writeFileSync(file, "large line\n".repeat(500_000), "utf8");
+
+      const result = await eolFixVerified({
+        cwd: fixture.wc,
+        path: "large-eol.txt",
+        target: "crlf",
+        allowLarge: true
+      });
+
+      expect(result).toMatchObject({ ok: true, target: "crlf" });
+      expect(result.after).toMatchObject({ kind: "crlf", has_bom: false });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("sets EOL style on remaining paths when one path already matches", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -1404,7 +1463,17 @@ describe("SVN tool integration against a temp repository", () => {
 
       fs.writeFileSync(path.join(fixture.wc, "dir", "nested.txt"), "two\r\n", "utf8");
       fs.writeFileSync(path.join(fixture.wc, "file.txt"), "two\r\n", "utf8");
-      const reverted = await svnRevert({ cwd: fixture.wc, paths: ["dir", "file.txt"], allowRecursive: true, dryRun: false });
+      const refused = await svnRevert({ cwd: fixture.wc, paths: ["dir", "file.txt"], allowRecursive: true, dryRun: false });
+      expect(refused).toMatchObject({ ok: false, code: "RISK_ACK_REQUIRED" });
+      expect(fs.readFileSync(path.join(fixture.wc, "dir", "nested.txt"), "utf8")).toBe("two\r\n");
+
+      const reverted = await svnRevert({
+        cwd: fixture.wc,
+        paths: ["dir", "file.txt"],
+        allowRecursive: true,
+        dryRun: false,
+        riskAck: true
+      });
 
       expect(reverted.ok).toBe(true);
       expect(reverted.command).toContain("--depth infinity --");

@@ -6,7 +6,12 @@ import { currentRequestCancellationSignal, escapeSvnTarget, runSvn } from "./run
 import { parseInfoXml } from "./parse/infoXml.js";
 import { svnXmlEntityLimits } from "./parse/xmlOptions.js";
 import { MAX_POLICY_BYTES, pathIdentityKey, repositoryEolPolicy, repoRelativePath } from "./guards.js";
-import { sha256File } from "./fileHash.js";
+import {
+  configuredHashConcurrency,
+  mapWithConcurrency,
+  regularFileBytesWithinBudget,
+  sha256File
+} from "./fileHash.js";
 import { normalizeStatusLookup, scopedStatusMap } from "./tools/readonly.js";
 import type { DiffFileSummary } from "./types.js";
 
@@ -37,6 +42,13 @@ export async function captureCurrentWorkflowPathStates(
   if (!status.envelope.ok) {
     return { ok: false, note: status.envelope.note || "unable to capture workflow status" };
   }
+  const hashBudget = await regularFileBytesWithinBudget(absolutePaths, currentRequestCancellationSignal());
+  if (!hashBudget.ok) {
+    return {
+      ok: false,
+      note: `workflow content hashing exceeds ${hashBudget.maxBytes} byte aggregate limit; narrow the explicit path scope or raise SVN_MCP_MAX_HASH_BYTES`
+    };
+  }
   const propertyTargets = absolutePaths.filter((target) => {
     const state = normalizeStatusLookup(status.map, target);
     return state !== "D" && state !== "!";
@@ -54,7 +66,7 @@ export async function captureCurrentWorkflowPathStates(
       revisionByPath.set(pathIdentityKey(candidate), entry.revision ?? null);
     }
   }
-  const states = await Promise.all(absolutePaths.map(async (target) => {
+  const states = await mapWithConcurrency(absolutePaths, configuredHashConcurrency(), async (target) => {
     const targetStatus = normalizeStatusLookup(status.map, target) ?? "";
     return {
       path: repoRelativePath(target, wcRoot),
@@ -65,7 +77,7 @@ export async function captureCurrentWorkflowPathStates(
         ? sha256(JSON.stringify({ unavailableForStatus: targetStatus }))
         : properties.hashes.get(pathIdentityKey(target)) ?? emptyPropertyHash()
     };
-  }));
+  });
   return { ok: true, states };
 }
 

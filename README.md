@@ -168,11 +168,14 @@ needed.
 Non-guard failures retain bounded path-sanitized stdout/stderr diagnostics outside full mode;
 compact guard refusals return only a typed guard code, one-line reason, and affected-path count.
 Other development/test escape hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
-`SVN_AGENT_TIMEOUT_MS`, and `SVN_AGENT_MAX_DIFF_LINES`.
+`SVN_AGENT_TIMEOUT_MS`, `SVN_AGENT_MAX_DIFF_LINES`, `SVN_MCP_HASH_CONCURRENCY`, and
+`SVN_MCP_MAX_HASH_BYTES`. Hashing defaults to four concurrent files and a 1 GiB aggregate explicit
+scope; narrow the path scope before raising either bound.
 
 High-volume reads are bounded by default. Log messages and changed paths are capped and opt-in
 where appropriate. Diff collection defaults to 200 lines, compact excerpts are capped at 3,000
-characters, and compact diff results retain transport headroom below a 32 KiB JSON-RPC record.
+characters, compact logs are capped at 24 KiB, and compact diff results retain transport headroom
+below a 32 KiB JSON-RPC record.
 `maxChars` and `maxFiles` are upper requests: the response may return less with independent
 `nextCursor` and `nextFileCursor` values. Large file/property/status/EOL collections expose
 explicit continuation cursors.

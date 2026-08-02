@@ -2,7 +2,8 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { runDos2Unix } from "./runner.js";
+import { sha256File } from "./fileHash.js";
+import { currentRequestCancellationSignal, runDos2Unix } from "./runner.js";
 import type { EolCheckResult, EolKind, EolSniff, RunResult } from "./types.js";
 
 const SNIFF_LIMIT_BYTES = 5 * 1024 * 1024;
@@ -23,7 +24,7 @@ export interface PreparedEolNormalization {
   ok: boolean;
   results: EolNormalizationResult[];
   note?: string;
-  rollback(): void;
+  rollback(): { restored: number; skipped: number };
   dispose(): void;
 }
 
@@ -48,13 +49,12 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
     };
   }
 
-  const bytes = await fs.promises.readFile(filePath);
-  const hasBom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
-  if (bytes.subarray(0, Math.min(bytes.length, BINARY_SCAN_BYTES)).includes(0)) {
+  const scan = await scanEolFile(filePath);
+  if (scan.binary) {
     return {
       path: filePath,
       kind: "binary",
-      has_bom: hasBom,
+      has_bom: scan.hasBom,
       size: stat.size,
       sniff: "ok"
     };
@@ -62,8 +62,8 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
 
   return {
     path: filePath,
-    kind: classifyEol(bytes),
-    has_bom: hasBom,
+    kind: classifyEolCounts(scan.crlf, scan.lf, scan.crOnly),
+    has_bom: scan.hasBom,
     size: stat.size,
     sniff: "ok"
   };
@@ -119,15 +119,31 @@ export async function prepareEolNormalization(input: {
 
   const backupDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "svn-agent-eol-add-"));
   const backups = new Map<string, string>();
+  const normalizedStates = new Map<string, string>();
   let settled = false;
   const rollback = () => {
     if (settled) {
-      return;
+      return { restored: 0, skipped: 0 };
     }
+    let restored = 0;
+    let skipped = 0;
     for (const [filePath, backup] of backups) {
+      const expected = normalizedStates.get(filePath);
+      if (!expected || rawContentHashSync(filePath) !== expected) {
+        skipped += 1;
+        const result = results.find((item) => item.path === filePath);
+        if (result) {
+          result.verified = false;
+          result.failure = [result.failure, "rollback skipped because the file changed after normalization"]
+            .filter(Boolean).join("; ");
+        }
+        continue;
+      }
       fs.copyFileSync(backup, filePath);
+      restored += 1;
     }
     settled = true;
+    return { restored, skipped };
   };
   const dispose = () => {
     settled = true;
@@ -149,6 +165,8 @@ export async function prepareEolNormalization(input: {
           cwd: input.cwd
         });
         if (conversion.exitCode !== 0) {
+          const normalizedState = rawContentHashSync(candidate.filePath);
+          if (normalizedState) normalizedStates.set(candidate.filePath, normalizedState);
           results.push({
             path: candidate.filePath,
             before: candidate.before.kind,
@@ -162,6 +180,8 @@ export async function prepareEolNormalization(input: {
       }
 
       const after = await sniffEol(candidate.filePath);
+      const normalizedState = rawContentHashSync(candidate.filePath);
+      if (normalizedState) normalizedStates.set(candidate.filePath, normalizedState);
       const afterHash = normalizedContentHash(fs.readFileSync(candidate.filePath));
       const verified = (after.kind === input.target || after.kind === "none")
         && !after.has_bom
@@ -194,7 +214,67 @@ export async function prepareEolNormalization(input: {
 }
 
 function failedPreparation(results: EolNormalizationResult[], note: string): PreparedEolNormalization {
-  return { ok: false, results, note, rollback: () => undefined, dispose: () => undefined };
+  return { ok: false, results, note, rollback: () => ({ restored: 0, skipped: 0 }), dispose: () => undefined };
+}
+
+export async function normalizedContentHashFile(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const stream = fs.createReadStream(filePath, {
+    highWaterMark: 1024 * 1024,
+    ...(currentRequestCancellationSignal() ? { signal: currentRequestCancellationSignal() } : {})
+  });
+  const prefix: number[] = [];
+  let prefixHandled = false;
+  let pendingCr = false;
+  const feed = (bytes: Uint8Array) => {
+    const output: number[] = [];
+    for (const byte of bytes) {
+      if (pendingCr) {
+        output.push(0x0a);
+        pendingCr = false;
+        if (byte === 0x0a) continue;
+      }
+      if (byte === 0x0d) pendingCr = true;
+      else output.push(byte);
+    }
+    if (output.length > 0) hash.update(Buffer.from(output));
+  };
+  for await (const chunkValue of stream) {
+    const chunk = chunkValue as Buffer;
+    let offset = 0;
+    if (!prefixHandled) {
+      while (prefix.length < 3 && offset < chunk.length) {
+        prefix.push(chunk[offset] ?? 0);
+        offset += 1;
+      }
+      if (prefix.length === 3) {
+        const contentPrefix = prefix[0] === 0xef && prefix[1] === 0xbb && prefix[2] === 0xbf
+          ? []
+          : prefix;
+        feed(Uint8Array.from(contentPrefix));
+        prefixHandled = true;
+      }
+    }
+    if (prefixHandled && offset < chunk.length) feed(chunk.subarray(offset));
+  }
+  if (!prefixHandled) feed(Uint8Array.from(prefix));
+  if (pendingCr) hash.update(Buffer.from([0x0a]));
+  return hash.digest("hex");
+}
+
+export async function restoreBackupIfUnchanged(
+  filePath: string,
+  backup: Buffer | string,
+  expectedCurrentHash: string
+): Promise<"restored" | "changed" | "failed"> {
+  try {
+    if (await sha256File(filePath, currentRequestCancellationSignal()) !== expectedCurrentHash) return "changed";
+    if (Buffer.isBuffer(backup)) await fs.promises.writeFile(filePath, backup);
+    else await fs.promises.copyFile(backup, filePath);
+    return "restored";
+  } catch {
+    return "failed";
+  }
 }
 
 export function normalizedContentHash(bytes: Buffer): string {
@@ -261,6 +341,10 @@ function classifyEol(bytes: Buffer): EolKind {
     }
   }
 
+  return classifyEolCounts(crlf, lf, crOnly);
+}
+
+function classifyEolCounts(crlf: number, lf: number, crOnly: number): EolKind {
   const kinds = [crlf > 0, lf > 0, crOnly > 0].filter(Boolean).length;
   if (kinds === 0) {
     return "none";
@@ -269,4 +353,58 @@ function classifyEol(bytes: Buffer): EolKind {
     return "mixed";
   }
   return crlf > 0 ? "crlf" : "lf";
+}
+
+async function scanEolFile(filePath: string): Promise<{
+  hasBom: boolean;
+  binary: boolean;
+  crlf: number;
+  lf: number;
+  crOnly: number;
+}> {
+  const stream = fs.createReadStream(filePath, {
+    highWaterMark: 1024 * 1024,
+    ...(currentRequestCancellationSignal() ? { signal: currentRequestCancellationSignal() } : {})
+  });
+  const prefix: number[] = [];
+  let scanned = 0;
+  let binary = false;
+  let crlf = 0;
+  let lf = 0;
+  let crOnly = 0;
+  let pendingCr = false;
+  for await (const chunkValue of stream) {
+    const chunk = chunkValue as Buffer;
+    for (const byte of chunk) {
+      if (prefix.length < 3) prefix.push(byte);
+      if (scanned < BINARY_SCAN_BYTES && byte === 0) binary = true;
+      scanned += 1;
+      if (pendingCr) {
+        pendingCr = false;
+        if (byte === 0x0a) {
+          crlf += 1;
+          continue;
+        }
+        crOnly += 1;
+      }
+      if (byte === 0x0d) pendingCr = true;
+      else if (byte === 0x0a) lf += 1;
+    }
+  }
+  if (pendingCr) crOnly += 1;
+  return {
+    hasBom: prefix[0] === 0xef && prefix[1] === 0xbb && prefix[2] === 0xbf,
+    binary,
+    crlf,
+    lf,
+    crOnly
+  };
+}
+
+function rawContentHashSync(filePath: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  } catch {
+    return null;
+  }
 }

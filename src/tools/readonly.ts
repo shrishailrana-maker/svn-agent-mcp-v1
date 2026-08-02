@@ -345,7 +345,7 @@ export async function svnDiff(input: {
   }
 
   const lineLimit = input.lineLimit ?? defaultDiffLineLimit();
-  const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
+  const lineOffset = cursorValue(input.cursor);
   const ignoreEol = input.showEolChanges ? false : input.ignoreEol ?? true;
   const evidenceScope = diffEvidenceScope(context.wcRoot, effectivePaths, input.revision, ignoreEol);
   if (input.operationId) {
@@ -386,6 +386,8 @@ export async function svnDiff(input: {
   const revisionArgs = input.revision
     ? [isRevisionRange(input.revision) ? "-r" : "-c", input.revision]
     : [];
+  // Working-copy diffs treat local operands literally; appending '@' changes
+  // valid filenames. Revision diffs enable peg parsing and require escaping.
   const diffTargets = revisionArgs.length > 0 ? effectivePaths.map(escapeSvnTarget) : effectivePaths;
   const args = ignoreEol
     ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...diffTargets]
@@ -535,7 +537,7 @@ export async function svnLog(input: {
   if (input.revision && input.cursor) {
     return failEnvelope("svn log", cwd, "revision and cursor cannot be combined");
   }
-  if (input.cursor && !/^\d+(?::\d+)?$/.test(input.cursor)) {
+  if (input.cursor && (!/^\d+(?::\d+)?$/.test(input.cursor) || !input.cursor.split(":").every(isSafeDecimal))) {
     return failEnvelope("svn log", cwd, "invalid cursor");
   }
   if (input.messageContains !== undefined && (!input.messageContains.trim() || input.messageContains.length > 256)) {
@@ -618,7 +620,7 @@ function boundedLogCursor(nextRevision: number, cursor?: string, revision?: stri
   const cursorFloor = cursor?.match(/^\d+:(\d+)$/)?.[1];
   const range = revision?.match(/^(\d+):(\d+)$/);
   const floor = cursorFloor !== undefined
-    ? Number.parseInt(cursorFloor, 10)
+    ? cursorValue(cursorFloor)
     : cursor && /^\d+$/.test(cursor)
       ? 0
       : !revision
@@ -944,7 +946,15 @@ function excerptLineCount(excerpt: string): number {
 
 function cursorValue(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "0", 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function isSafeDecimal(value: string): boolean {
+  try {
+    return /^\d+$/.test(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER);
+  } catch {
+    return false;
+  }
 }
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
