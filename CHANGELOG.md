@@ -4,58 +4,12 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
-### Added
-
-- Added GitHub bug-report and feature-request templates with SVN MCP-specific environment,
-  reproduction, safety, and sanitization fields.
-
-### Changed
-
-- GitHub Issues is now the canonical public tracker. The 31 completed historical SVNMCP tasks were
-  migrated as closed issues with 33 distinct notes, condensed completion evidence, and four
-  relations, without private tracker metadata.
-- Reworked setup documentation around the globally installed npm command and added generic,
-  platform-neutral install and source-development prompts.
-- Prepared releases now carry their own package manifest, and API-contract generation always uses
-  the full canonical tool profile regardless of the caller's environment.
-- Buffered and streamed child processes now share bounded UTF-8 byte accounting, sticky
-  truncation, cancellation, timeout escalation, and process-tree termination.
-- Compact diff shaping bounds per-file previews before redaction and serialization. Streamed diff
-  callbacks have independent line/byte work budgets and report when aggregate totals are lower
-  bounds.
-- Workflow and commit hashes now use cancellable asynchronous streams, and test runs use isolated
-  operation-receipt stores instead of the live user store.
-- Workflow hashing now uses a bounded worker pool plus a configurable aggregate-byte ceiling;
-  receipt-lock retries yield to the MCP event loop instead of blocking every request.
-- Large verified EOL repairs now use streaming sniff/hash verification and disk-backed backups.
-  Rollback refuses to overwrite a file changed by another writer after normalization.
-
-### Fixed
-
-- Fixed prepared `current/dist/index.js` launches that could fail module/package resolution while
-  self-check still reported the layout healthy.
-- Fixed delete commit and safe-commit receipts so removed targets no longer cause false residue or
-  final-verification failures.
-- Fixed multi-path repository logs, exact numeric/whitespace property values, revision diffs for
-  literal `@` paths, observed update-HEAD receipts, added-parent guard rechecks, and lock-status
-  parsing.
-- Bounded evidence metadata, operation-receipt reads, workflow hashing, and diff evidence summaries;
-  snapshot tokens now use one canonical state across compact and receipt modes.
-- Durable stale commit outcomes now fail closed instead of inferring success from matching message
-  text, and operation-lock cleanup refuses to break locks owned by live processes.
-- Fixed receipt-store contention and abandoned breaker recovery, prepared-pointer validation by
-  physical path, cross-mode status snapshot tokens, independent stdout/stderr overflow handling,
-  and explicit buffered-output truncation receipts.
-- Enforced absolute `cwd` values and refused credential-bearing repository URLs at both schema and
-  runtime boundaries.
-- Bounded compact log serialization to 24 KiB, rejected unsafe numeric cursors, removed anonymous
-  tree-conflict placeholders, and required `riskAck:true` for destructive revert execution.
-- Applied never-commit guards to verified EOL repair and commit-message validation to `svn_import`.
-
 ## [1.4.0] - 2026-08-02
 
 ### Added
 
+- Added GitHub bug-report and feature-request templates with SVN MCP-specific environment,
+  reproduction, safety, and sanitization fields.
 - Added `receipt` and `structured-only` response modes. Receipt mode defines bounded minimal
   contracts for status, snapshot, precommit, update, and commit.
 - Added validated field projection for high-use tools. Allowed fields are published once in the
@@ -106,6 +60,24 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Changed
 
+- GitHub Issues is now the canonical public tracker. The 31 completed historical SVNMCP tasks were
+  migrated as closed issues with 33 distinct notes, condensed completion evidence, and four
+  relations, without private tracker metadata.
+- Reworked setup documentation around the globally installed npm command and added generic,
+  platform-neutral install and source-development prompts.
+- Prepared releases now carry their own package manifest, and API-contract generation always uses
+  the full canonical tool profile regardless of the caller's environment.
+- Buffered and streamed child processes now share bounded UTF-8 byte accounting, sticky
+  truncation, cancellation, timeout escalation, and process-tree termination.
+- Compact diff shaping bounds per-file previews before redaction and serialization. Streamed diff
+  callbacks have independent line/byte work budgets and report when aggregate totals are lower
+  bounds.
+- Workflow and commit hashes now use cancellable asynchronous streams, and test runs use isolated
+  operation-receipt stores instead of the live user store.
+- Workflow hashing now uses a bounded worker pool plus a configurable aggregate-byte ceiling;
+  receipt-lock retries yield to the MCP event loop instead of blocking every request.
+- Large verified EOL repairs now use streaming sniff/hash verification and disk-backed backups.
+  Rollback refuses to overwrite a file changed by another writer after normalization.
 - Structured content is now authoritative by default; successful and failed calls omit duplicate
   `content.text` unless explicitly requested.
 - Compact, receipt, and standard responses use working-copy-relative paths; absolute paths and
@@ -136,6 +108,25 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Fixed
 
+- Fixed prepared `current/dist/index.js` launches that could fail module/package resolution while
+  self-check still reported the layout healthy.
+- Fixed delete commit and safe-commit receipts so removed targets no longer cause false residue or
+  final-verification failures.
+- Fixed multi-path repository logs, exact numeric/whitespace property values, revision diffs for
+  literal `@` paths, observed update-HEAD receipts, added-parent guard rechecks, and lock-status
+  parsing.
+- Bounded evidence metadata, operation-receipt reads, workflow hashing, and diff evidence summaries;
+  snapshot tokens now use one canonical state across compact and receipt modes.
+- Durable stale commit outcomes now fail closed instead of inferring success from matching message
+  text, and operation-lock cleanup refuses to break locks owned by live processes.
+- Fixed receipt-store contention and abandoned breaker recovery, prepared-pointer validation by
+  physical path, cross-mode status snapshot tokens, independent stdout/stderr overflow handling,
+  and explicit buffered-output truncation receipts.
+- Enforced absolute `cwd` values and refused credential-bearing repository URLs at both schema and
+  runtime boundaries.
+- Bounded compact log serialization to 24 KiB, rejected unsafe numeric cursors, removed anonymous
+  tree-conflict placeholders, and required `riskAck:true` for destructive revert execution.
+- Applied never-commit guards to verified EOL repair and commit-message validation to `svn_import`.
 - Fixed receipt continuation so a supplied cursor advances to the next changed-path page instead of
   repeating page one.
 - Removed remaining absolute working-copy paths from non-full warnings, detailed self-check output,
