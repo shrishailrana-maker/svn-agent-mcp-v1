@@ -37,6 +37,14 @@ npm audit --audit-level=moderate
 Use focused tests for parser, guard, and workflow changes when possible. Mutating SVN behavior
 should be tested only against temporary repositories.
 
+## Issues
+
+- Use GitHub Issues for public bugs, feature requests, and planned work.
+- Search before filing and keep one actionable problem or proposal per issue.
+- Use the issue templates and include a minimal sanitized reproduction for bugs.
+- Never include credentials, private repository URLs, usernames, or local absolute paths.
+- Report vulnerabilities through `SECURITY.md`, not a public issue.
+
 ## Pull Requests
 
 - Keep changes narrowly scoped.

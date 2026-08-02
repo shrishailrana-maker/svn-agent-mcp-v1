@@ -8,24 +8,37 @@ Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
 `dos2unix`, and `unix2dos` must be available on `PATH`.
 
-## Quick Start
+## Install From npm
 
 ```shell
-git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git
-cd svn-agent-mcp-v1
-npm install
-npm run prepare:local
-npm test
+npm install -g svn-agent-mcp@latest
+npm list -g svn-agent-mcp --depth=0
 ```
 
-## Agent-Managed Global Install
+Register one MCP server named `svn` and let the client resolve the globally installed command from
+`PATH`:
 
-Give this prompt to Codex, Claude, or another local coding agent:
+```json
+{
+  "mcpServers": {
+    "svn": {
+      "command": "svn-agent-mcp"
+    }
+  }
+}
+```
+
+Restart the MCP client after changing its configuration, then run `svn_self_check` once to verify
+the installed version and runtime health.
+
+## Generic Agent Install Prompt
+
+Give this prompt to any local coding agent:
 
 ```text
 Install or update the SVN MCP globally with: npm install -g svn-agent-mcp@latest
 Verify the package with: npm list -g svn-agent-mcp --depth=0
-Resolve the executable with the platform command lookup: where.exe svn-agent-mcp on Windows, or command -v svn-agent-mcp on macOS/Linux.
+Resolve the executable with the host shell's command lookup: Get-Command svn-agent-mcp in PowerShell, where.exe svn-agent-mcp in Windows Command Prompt, or command -v svn-agent-mcp on POSIX shells. Do not use a lookup command from another platform.
 On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
 Ensure the MCP client entry is named "svn". Use command "svn-agent-mcp" when the client can launch it without a visible window; never use a source checkout, junction, or current pointer. Do not add --readonly.
 On Windows, enable the client's hidden/no-window process option. If the npm command shim still opens a console, resolve the global module root with `npm root -g`, then use command "node" with args `["<global-module-root>\\svn-agent-mcp\\dist\\index.js"]`; the server cannot choose its parent process creation flags.
@@ -34,12 +47,13 @@ Query the registry version with: npm view svn-agent-mcp version
 After restarting, run svn_self_check and compare its installed version with the registry version. Report the installed version, executable path, runtime layout, and MCP health instead of relying on a remembered version.
 ```
 
-## Agent Setup From GitHub
+## Source Setup From GitHub
 
-Tell an agent:
+Use a source checkout for development and contribution work, not as the normal global MCP runtime.
+Generic source-setup prompt:
 
 ```text
-Get the SVN MCP from https://github.com/shrishailrana-maker/svn-agent-mcp-v1, clone it to a stable absolute path, run npm install, run npm run prepare:local, then configure the MCP command as node <absolute-clone-path>/current/dist/index.js. Use the host platform's native path syntax.
+Clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1 into a stable development directory. Run npm ci --strict-allow-scripts, npm run prepare:local, and npm test. Use the globally installed svn-agent-mcp command for normal MCP client registration; use node <absolute-clone-path>/current/dist/index.js only when explicitly testing that checkout.
 ```
 
 The setup commands are:
@@ -47,8 +61,9 @@ The setup commands are:
 ```shell
 git clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1.git
 cd svn-agent-mcp-v1
-npm install
+npm ci --strict-allow-scripts
 npm run prepare:local
+npm test
 ```
 
 Then configure the MCP client to run:
@@ -57,7 +72,7 @@ Then configure the MCP client to run:
 node <absolute-clone-path>/current/dist/index.js
 ```
 
-### Claude Desktop Config Example
+### JSON Client Config Example
 
 Add this under `mcpServers`:
 
@@ -72,7 +87,7 @@ Add this under `mcpServers`:
 }
 ```
 
-### Codex Config Example
+### TOML Client Config Example
 
 ```toml
 [mcp_servers.svn]
@@ -124,6 +139,19 @@ Generic client example:
 The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths and omits `cwd`, the server finds the nearest SVN working copy for those paths. Relative paths require explicit per-call `cwd`.
 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
+
+## Issues And Feature Requests
+
+Use [GitHub Issues](https://github.com/shrishailrana-maker/svn-agent-mcp-v1/issues) for public bugs,
+feature requests, and planned work. Search existing issues before filing a new one and use the
+provided templates. Include the package version, operating system, Node.js version, installation
+method, and a minimal sanitized reproduction when relevant. Remove credentials, private repository
+URLs, usernames, and local absolute paths from public reports.
+
+The completed historical project backlog was migrated as issues
+[#1](https://github.com/shrishailrana-maker/svn-agent-mcp-v1/issues/1) through
+[#31](https://github.com/shrishailrana-maker/svn-agent-mcp-v1/issues/31). Report security
+vulnerabilities through the private process in `SECURITY.md`, not a public issue.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
 `SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 25

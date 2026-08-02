@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a bounded, agent-safe SVN MCP improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the workflow cost, safety gap, or repeated agent round trips.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe inputs, compact output, bounds, and continuation behavior where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety invariants
+      description: State which scoping, READONLY, EOL, conflict, or mutation guards must remain unchanged.
+    validations:
+      required: true
+  - type: textarea
+    id: token_cost
+    attributes:
+      label: Token or call-count impact
+      description: Include measured before/after payload size or round-trip count when available.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

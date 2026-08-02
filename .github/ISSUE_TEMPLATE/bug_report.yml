@@ -1,0 +1,67 @@
+name: Bug report
+description: Report reproducible SVN MCP behavior that is incorrect or unsafe.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, private repository URLs, usernames, and local absolute paths before submitting.
+        Report vulnerabilities through SECURITY.md instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: SVN MCP version
+      description: Output from npm list -g svn-agent-mcp --depth=0 or svn_self_check.
+      placeholder: 1.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Global npm package
+        - Source checkout
+        - Packed package test
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and runtime
+      description: Operating system, Node.js version, and native SVN version when applicable.
+      placeholder: Windows 11, Node.js 24.18.0, SVN 1.14.5
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the tool name, sanitized inputs, and the smallest safe reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include bounded structured output or diagnostics. Do not paste secrets or huge raw diffs.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I reproduced this in a disposable repository or with read-only operations where practical.
+          required: true
+        - label: I removed credentials, private URLs, usernames, and local absolute paths.
+          required: true

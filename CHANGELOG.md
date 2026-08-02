@@ -4,6 +4,19 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Added GitHub bug-report and feature-request templates with SVN MCP-specific environment,
+  reproduction, safety, and sanitization fields.
+
+### Changed
+
+- GitHub Issues is now the canonical public tracker. The 31 completed historical SVNMCP tasks were
+  migrated as closed issues with 33 distinct notes, condensed completion evidence, and four
+  relations, without private tracker metadata.
+- Reworked setup documentation around the globally installed npm command and added generic,
+  platform-neutral install and source-development prompts.
+
 ## [1.4.0] - 2026-08-02
 
 ### Added
