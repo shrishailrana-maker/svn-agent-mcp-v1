@@ -43,6 +43,7 @@ const MUTATION_STATUS: Record<string, string> = {
   svn_import: "imported",
   svn_move: "renamed",
   svn_path_change: "changed",
+  svn_prepare_commit: "prepared",
   svn_propset: "property-set",
   svn_propset_eol_style: "property-set",
   svn_rename: "renamed",
@@ -59,7 +60,8 @@ const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
 const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
 const COMPACT_CONFLICT_PAGE_SIZE = 100;
 const COMPACT_TOP_FOLDER_LIMIT = 25;
-const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
+const COMPACT_PREPARE_PATH_LIMIT = 25;
+const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_prepare_commit", "svn_update", "svn_commit"]);
 
 export function defaultResponseMode(
   env: Readonly<Record<string, string | undefined>> = process.env
@@ -128,6 +130,10 @@ function shapePayload(
     return compactPrecommit(payload, request);
   }
 
+  if (compactMode && (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit"))) {
+    return compactPrepareCommit(payload, request);
+  }
+
   if (compactMode && tool === "svn_self_check") {
     return compactSelfCheck(payload, request);
   }
@@ -188,6 +194,9 @@ function receiptPayload(
   payload: ToolEnvelope,
   request: Record<string, unknown>
 ): Record<string, unknown> {
+  if (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit")) {
+    return compactPrepareReceipt(payload);
+  }
   if (!payload.ok) {
     const error = compactError(payload, request);
     return {
@@ -901,6 +910,7 @@ function compactEolCheck(payload: ToolEnvelope, request: Record<string, unknown>
 
 function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const files = recordArray(payload.per_file);
+  const expandedPaths = stringArray(payload.expanded_paths);
   const verdict = stringValue(payload.verdict);
   if (!payload.ok && files.length === 0) {
     return {
@@ -969,6 +979,14 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
       ? { guardFailureCount: allGuardFailures.length, guardFailuresTruncated: true }
       : {}),
     ...(riskSignals.length > 0 ? { riskSignals } : {}),
+    ...(payload.scope_expanded === true
+      ? {
+          scopeExpanded: true,
+          expandedPaths: expandedPaths.slice(0, COMPACT_PREPARE_PATH_LIMIT),
+          expandedPathCount: expandedPaths.length,
+          ...(expandedPaths.length > COMPACT_PREPARE_PATH_LIMIT ? { expandedPathsTruncated: true } : {})
+        }
+      : {}),
     ...(!payload.ok && payload.note ? { note: payload.note } : {}),
     ...(request.includeDiff === true
       ? {
@@ -977,6 +995,72 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
         }
       : {}),
     ...(payload.truncated === true ? { truncated: true } : {})
+  };
+}
+
+function compactPrepareCommit(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  const verdict = stringValue(payload.verdict);
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const allFinalScope = stringArray(payload.final_commit_scope);
+  const allUpdatedPaths = stringArray(payload.updated_paths);
+  const allUnexpected = stringArray(payload.unexpected_touched_paths);
+  const finalScope = allFinalScope.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+  const updatedPaths = allUpdatedPaths.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+  const unexpected = allUnexpected.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+  const conflicts = payload.conflicts.slice(0, COMPACT_CONFLICT_PAGE_SIZE).map((conflict) => ({
+    path: workingCopyRelativePath(conflict.path, payload.cwd, root),
+    type: conflict.type
+  }));
+  const precommit = payload.precommit && typeof payload.precommit === "object"
+    ? compactPrecommit(payload.precommit as ToolEnvelope, request)
+    : null;
+  return {
+    ok: payload.ok,
+    ready: verdict === "READY",
+    verdict,
+    requestedRevision: payload.requested_revision,
+    resultingRevision: payload.resulting_revision,
+    revisionRange: payload.revision_range,
+    mixedRevision: payload.mixed_revision === true,
+    ...(payload.expected_remote_head !== undefined ? { expectedRemoteHead: payload.expected_remote_head } : {}),
+    ...(payload.observed_remote_head !== undefined ? { observedRemoteHead: payload.observed_remote_head } : {}),
+    finalCommitScope: finalScope,
+    updatedPaths,
+    unexpectedTouchedPaths: unexpected,
+    ...(allFinalScope.length > finalScope.length
+      ? { finalCommitScopeTruncated: true, finalCommitScopeCount: allFinalScope.length }
+      : {}),
+    ...(allUpdatedPaths.length > updatedPaths.length
+      ? { updatedPathsTruncated: true, updatedPathCount: allUpdatedPaths.length }
+      : {}),
+    ...(allUnexpected.length > unexpected.length
+      ? { unexpectedTouchedPathsTruncated: true, unexpectedTouchedPathCount: allUnexpected.length }
+      : {}),
+    conflicts,
+    ...(precommit ? { precommit } : {}),
+    ...(!payload.ok && payload.note ? { note: payload.note } : {})
+  };
+}
+
+function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
+  const allScope = stringArray(payload.final_commit_scope);
+  const allUnexpected = stringArray(payload.unexpected_touched_paths);
+  const scope = allScope.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+  const unexpected = allUnexpected.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+  return {
+    ok: payload.ok,
+    verdict: payload.verdict,
+    requestedRevision: payload.requested_revision,
+    resultingRevision: payload.resulting_revision,
+    ...(payload.observed_remote_head !== undefined ? { remoteHeadRevision: payload.observed_remote_head } : {}),
+    conflictCount: payload.conflicts.length,
+    finalCommitScope: scope,
+    ...(allScope.length > scope.length ? { finalCommitScopeTruncated: true, pathCount: allScope.length } : {}),
+    ...(unexpected.length > 0 ? { unexpectedTouchedPaths: unexpected } : {}),
+    ...(allUnexpected.length > unexpected.length
+      ? { unexpectedTouchedPathsTruncated: true, unexpectedTouchedPathCount: allUnexpected.length }
+      : {}),
+    ...(!payload.ok && payload.note ? { note: payload.note } : {})
   };
 }
 
@@ -1049,6 +1133,7 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   }
   if (tool === "svn_commit") {
     const committedPaths = stringArray(payload.committed_paths);
+    const expandedPaths = stringArray(payload.expanded_paths);
     const hasPostStatus = Array.isArray(payload.post_status);
     const postStatus = hasPostStatus ? changedPathArray(payload.post_status) : payload.changed_paths;
     if (payload.committed_revision !== undefined) {
@@ -1069,6 +1154,14 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     }
     if (committedPaths.length > 100) {
       receipt.committedPathsTruncated = true;
+    }
+    if (payload.scope_expanded === true) {
+      receipt.scopeExpanded = true;
+      receipt.expandedPaths = expandedPaths.slice(0, COMPACT_PREPARE_PATH_LIMIT);
+      receipt.expandedPathCount = expandedPaths.length;
+      if (expandedPaths.length > COMPACT_PREPARE_PATH_LIMIT) {
+        receipt.expandedPathsTruncated = true;
+      }
     }
     if (payload.post_status_clean === false && postStatus.length > 0) {
       receipt.residue = postStatus.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));

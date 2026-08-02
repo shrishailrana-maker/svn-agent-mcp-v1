@@ -6,8 +6,8 @@
 - `toolrules.md` contains local command and PowerShell rules.
 - `decisions/` contains architecture decision records, including plug-and-play global registration,
   compact MCP responses, authoritative structured receipts, bounded tool profiles, the bundled
-  Windows runtime, bounded process-local continuation evidence, and the external SVN MCP
-  comparison decision.
+  Windows runtime, bounded process-local continuation evidence, explicit expandable commit scopes,
+  and the external SVN MCP comparison decision.
 - `../CHANGELOG.md` records release history.
 
 The current source release is `1.3.0`; query `npm view svn-agent-mcp version` for the registry

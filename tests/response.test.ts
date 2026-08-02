@@ -1343,6 +1343,113 @@ describe("public MCP response shaping", () => {
     });
   });
 
+  it("returns compact and receipt prepare_commit evidence without nested raw output", () => {
+    const precommit = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn_precommit",
+        cwd: "E:\\dev\\example",
+        changed_paths: [{ status: "M", path: "E:\\dev\\example\\src\\a.ts" }],
+        note: "READY"
+      }),
+      verdict: "READY",
+      per_file: [{ path: "src/a.ts", status: "M", added: 2, removed: 1 }],
+      eol_check_complete: true
+    };
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn_prepare_commit",
+        cwd: "E:\\dev\\example",
+        revision: 42,
+        changed_paths: [{ status: "G", path: "E:\\dev\\example\\src\\a.ts" }]
+      }),
+      verdict: "READY",
+      requested_revision: "42",
+      resulting_revision: 42,
+      revision_range: { min: 42, max: 42 },
+      mixed_revision: false,
+      expected_remote_head: 43,
+      observed_remote_head: 43,
+      updated_paths: ["src/a.ts"],
+      unexpected_touched_paths: [],
+      final_commit_scope: ["src/a.ts"],
+      operation: "prepare_commit",
+      precommit
+    };
+
+    const compact = toToolResult("svn_commit", payload, {
+      responseMode: "compact",
+      request: { operation: "prepare", paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(compact).toMatchObject({
+      ok: true,
+      ready: true,
+      verdict: "READY",
+      requestedRevision: "42",
+      resultingRevision: 42,
+      finalCommitScope: ["src/a.ts"],
+      updatedPaths: ["src/a.ts"],
+      unexpectedTouchedPaths: []
+    });
+    expect(compact).not.toHaveProperty("command");
+    expect(compact).not.toHaveProperty("stdout_summary");
+    expect(compact.precommit).toMatchObject({ ready: true, diff: { files: 1, added: 2, removed: 1 } });
+
+    const receipt = toToolResult("svn_commit", payload, {
+      responseMode: "receipt",
+      request: { operation: "prepare", paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(receipt).toEqual({
+      ok: true,
+      verdict: "READY",
+      requestedRevision: "42",
+      resultingRevision: 42,
+      remoteHeadRevision: 43,
+      conflictCount: 0,
+      finalCommitScope: ["src/a.ts"]
+    });
+
+    const unexpectedPaths = Array.from({ length: 130 }, (_, index) => `src/unexpected-${index}.ts`);
+    const failedPayload = {
+      ...createEnvelope({
+        ok: false,
+        command: "svn_prepare_commit",
+        cwd: "E:\\dev\\example",
+        note: "update touched paths outside the explicit prepare scope"
+      }),
+      operation: "prepare_commit",
+      verdict: "UNEXPECTED_PATHS",
+      requested_revision: "42",
+      resulting_revision: 42,
+      unexpected_touched_paths: unexpectedPaths,
+      final_commit_scope: []
+    };
+    const failedCompact = toToolResult("svn_commit", failedPayload, {
+      responseMode: "compact",
+      request: { operation: "prepare", paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(failedCompact).toMatchObject({
+      ok: false,
+      verdict: "UNEXPECTED_PATHS",
+      unexpectedTouchedPathCount: 130,
+      unexpectedTouchedPathsTruncated: true
+    });
+    expect(failedCompact.unexpectedTouchedPaths as unknown[]).toHaveLength(25);
+
+    const failedReceipt = toToolResult("svn_commit", failedPayload, {
+      responseMode: "receipt",
+      request: { operation: "prepare", paths: ["src/a.ts"] }
+    }).structuredContent;
+    expect(failedReceipt).toMatchObject({
+      ok: false,
+      verdict: "UNEXPECTED_PATHS",
+      unexpectedTouchedPathCount: 130,
+      unexpectedTouchedPathsTruncated: true
+    });
+    expect(failedReceipt.unexpectedTouchedPaths as unknown[]).toHaveLength(25);
+  });
+
   it("projects compact info and property results onto requested fields", () => {
     const infoPayload = {
       ...createEnvelope({ ok: true, command: "svn info --xml", cwd: "E:\\dev\\example", revision: 42 }),

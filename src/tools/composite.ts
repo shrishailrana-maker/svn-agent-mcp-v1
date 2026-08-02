@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { resolveCommitScope } from "../commitScope.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, normalizedContentHash, sniffEol } from "../eol.js";
 import {
   assertExistingTargets,
-  findExistingDirectoryTarget,
   isCommittableStatus,
+  isInsideOrEqual,
   neverCommitHit,
   neverCommitNote,
   pathIdentityKey,
@@ -19,6 +20,7 @@ import {
 } from "../guards.js";
 import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
+import { svnCommit, svnUpdate } from "./mutating.js";
 import {
   defaultDiffLineLimit,
   dryRiskSignals,
@@ -86,6 +88,7 @@ export async function svnPrecommit(input: {
   lineLimit?: number;
   allowRoot?: boolean;
   allowDirectoryTargets?: boolean;
+  expandDescendants?: boolean;
   requireUniformRevision?: boolean;
 }): Promise<ToolEnvelope> {
   const explicitError = requireExplicitPaths(input.paths);
@@ -106,30 +109,44 @@ export async function svnPrecommit(input: {
   if (!input.allowRoot && resolved.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(context.wcRoot))) {
     return blockedPrecommit(failEnvelope("svn_precommit", context.cwd, "working-copy root commit requires allowRoot:true"));
   }
-  const directoryTarget = findExistingDirectoryTarget(resolved.paths);
-  if (!directoryTarget.ok) {
-    return blockedPrecommit(failEnvelope("svn_precommit", context.cwd, directoryTarget.note));
+  const scope = await resolveCommitScope({
+    cwd: context.cwd,
+    wcRoot: context.wcRoot,
+    paths: resolved.paths,
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+    ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets })
+  });
+  if (!scope.ok) {
+    return {
+      ...blockedPrecommit(scope.envelope ?? failEnvelope("svn_precommit", context.cwd, scope.note)),
+      ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
+    };
   }
-  if (directoryTarget.target && !input.allowDirectoryTargets) {
-    return blockedPrecommit(failEnvelope(
-      "svn_precommit",
-      context.cwd,
-      `directory commit target requires allowDirectoryTargets:true because --depth empty excludes descendants: ${repoRelativePath(directoryTarget.target, context.wcRoot)}`
-    ));
+  if (scope.expanded && scope.paths.length === 0) {
+    return {
+      ...createEnvelope({ ok: true, command: "svn_precommit", cwd: context.cwd, note: "NOTHING_TO_COMMIT" }),
+      verdict: "NOTHING_TO_COMMIT",
+      per_file: [],
+      risk_signals: [],
+      diff_excerpt: "",
+      scope_expanded: true,
+      expanded_paths: []
+    };
   }
 
-  const status = await scopedStatusMap(context.cwd, context.wcRoot, input.paths);
+  const scopedPaths = scope.paths;
+  const status = await scopedStatusMap(context.cwd, context.wcRoot, scopedPaths);
   if (!status.envelope.ok) {
     return blockedPrecommit(status.envelope);
   }
 
   const diff = await svnDiff({
     cwd: context.cwd,
-    paths: input.paths,
+    paths: scopedPaths,
     ignoreEol: true,
     lineLimit: input.lineLimit ?? defaultDiffLineLimit()
   });
-  const eol = await eolCheck({ cwd: context.cwd, paths: input.paths });
+  const eol = await eolCheck({ cwd: context.cwd, paths: scopedPaths });
   const eolPolicy = repositoryEolPolicy(context.wcRoot);
   const eolPolicyIdentity = `sha256:${createHash("sha256")
     .update(JSON.stringify({ target: eolPolicy.target, excludes: eolPolicy.excludes }))
@@ -141,7 +158,7 @@ export async function svnPrecommit(input: {
   const conflictedTargets = new Set(
     status.envelope.conflicts.map((conflict) => pathIdentityKey(path.resolve(context.cwd, conflict.path)))
   );
-  const riskSignals = dryRiskSignals(resolved.paths, context.wcRoot, status.map);
+  const riskSignals = dryRiskSignals(scopedPaths, context.wcRoot, status.map);
   const perFile = [];
   const guardNotes: string[] = [];
   const diffNotes: string[] = [];
@@ -155,7 +172,7 @@ export async function svnPrecommit(input: {
     }
   }
 
-  for (const target of resolved.paths) {
+  for (const target of scopedPaths) {
     const targetKey = pathIdentityKey(target);
     const statusCode = normalizeStatusLookup(status.map, target);
     const diffFile = diffFiles.get(targetKey);
@@ -246,7 +263,233 @@ export async function svnPrecommit(input: {
     eol_policy_identity: eolPolicyIdentity,
     ...(remediation ? { remediation } : {}),
     diff_excerpt: diff.diff_excerpt,
-    truncated: diff.truncated
+    truncated: diff.truncated,
+    ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
+  };
+}
+
+export async function svnPrepareCommit(input: {
+  cwd?: string;
+  paths: string[];
+  revision: string;
+  expectedRemoteHead?: number;
+  lineLimit?: number;
+  allowRoot?: boolean;
+  allowDirectoryTargets?: boolean;
+  expandDescendants?: boolean;
+  requireUniformRevision?: boolean;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (readonlyMode()) {
+    return prepareCommitFailure(failEnvelope("svn_prepare_commit", cwd, "READONLY instance"), "READONLY");
+  }
+  if (!/^\d+$/.test(input.revision)) {
+    return prepareCommitFailure(failEnvelope("svn_prepare_commit", cwd, "revision must be an exact numeric revision"), "INVALID_REVISION");
+  }
+  const explicitError = requireExplicitPaths(input.paths);
+  if (explicitError) {
+    return prepareCommitFailure(failEnvelope("svn_prepare_commit", cwd, explicitError), "GUARD_BLOCKED");
+  }
+
+  const context = await getWcContext(input.cwd, input.paths);
+  if (!context.ok) {
+    return prepareCommitFailure(context.envelope, "GUARD_BLOCKED");
+  }
+  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.paths);
+  if (!resolved.ok) {
+    return prepareCommitFailure(failEnvelope("svn_prepare_commit", context.cwd, resolved.note), "GUARD_BLOCKED");
+  }
+  if (!input.allowRoot && resolved.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(context.wcRoot))) {
+    return prepareCommitFailure(
+      failEnvelope("svn_prepare_commit", context.cwd, "working-copy root commit requires allowRoot:true"),
+      "GUARD_BLOCKED"
+    );
+  }
+  const preflightScope = await resolveCommitScope({
+    cwd: context.cwd,
+    wcRoot: context.wcRoot,
+    paths: resolved.paths,
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+    ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets })
+  });
+  if (!preflightScope.ok) {
+    return prepareCommitFailure(
+      preflightScope.envelope ?? failEnvelope("svn_prepare_commit", context.cwd, preflightScope.note),
+      "GUARD_BLOCKED"
+    );
+  }
+  const preflightGuardPaths = preflightScope.paths.length > 0 ? preflightScope.paths : resolved.paths;
+  for (const target of preflightGuardPaths) {
+    const hit = neverCommitHit(target, context.wcRoot);
+    if (hit) {
+      return prepareCommitFailure(
+        failEnvelope("svn_prepare_commit", context.cwd, neverCommitNote(hit, target, context.wcRoot)),
+        "GUARD_BLOCKED"
+      );
+    }
+  }
+  const directoryTargets = resolved.paths.filter((candidate) => {
+    try {
+      return fs.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  const directoryKeys = new Set(directoryTargets.map((candidate) => pathIdentityKey(candidate)));
+  const localBefore = await scopedStatusMap(context.cwd, context.wcRoot, resolved.paths);
+  if (!localBefore.envelope.ok) {
+    return prepareCommitFailure(localBefore.envelope, "STATUS_FAILED");
+  }
+  const localPathsBefore = localBefore.envelope.changed_paths.map((entry) =>
+    repoRelativePath(path.resolve(context.cwd, entry.path), context.wcRoot));
+
+  const updated = await svnUpdate({
+    cwd: context.cwd,
+    paths: input.paths,
+    revision: input.revision,
+    ...(directoryTargets.length > 0 && input.expandDescendants !== true ? { depth: "empty" as const } : {}),
+    ...(input.expectedRemoteHead === undefined ? {} : { expectedRemoteHead: input.expectedRemoteHead })
+  });
+  if (!updated.ok) {
+    const verdict = updated.note.includes("remote HEAD changed") ? "REMOTE_HEAD_CHANGED" : "UPDATE_FAILED";
+    return prepareCommitFailure(updated, verdict);
+  }
+
+  const unexpectedTouchedPaths = updated.changed_paths
+    .map((entry) => path.resolve(context.cwd, entry.path))
+    .filter((candidate) => !resolved.paths.some((target) =>
+      pathIdentityKey(candidate) === pathIdentityKey(target)
+      || (directoryKeys.has(pathIdentityKey(target)) && isInsideOrEqual(candidate, target))))
+    .map((candidate) => repoRelativePath(candidate, context.wcRoot));
+  if (unexpectedTouchedPaths.length > 0) {
+    return {
+      ...prepareCommitFailure(
+        failEnvelope("svn_prepare_commit", context.cwd, "update touched paths outside the explicit prepare scope"),
+        "UNEXPECTED_PATHS"
+      ),
+      requested_revision: input.revision,
+      resulting_revision: updated.resulting_revision,
+      unexpected_touched_paths: unexpectedTouchedPaths
+    };
+  }
+  if (updated.conflicts.length > 0) {
+    return {
+      ...prepareCommitFailure(
+        createEnvelope({
+          ok: false,
+          command: "svn_prepare_commit",
+          cwd: context.cwd,
+          changed_paths: updated.changed_paths,
+          conflicts: updated.conflicts,
+          note: "conflicts postponed; reconcile and rerun prepare_commit"
+        }),
+        "CONFLICTS_PRESENT"
+      ),
+      requested_revision: input.revision,
+      resulting_revision: updated.resulting_revision,
+      revision_range: updated.revision_range,
+      mixed_revision: updated.mixed_revision,
+      unexpected_touched_paths: []
+    };
+  }
+
+  const precommit = await svnPrecommit({
+    cwd: context.cwd,
+    paths: input.paths,
+    ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
+    ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+    ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+    ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
+  });
+  const finalScope = precommit.scope_expanded === true && Array.isArray(precommit.expanded_paths)
+    ? precommit.expanded_paths
+    : resolved.paths.map((candidate) => repoRelativePath(candidate, context.wcRoot));
+  const resultingRevision = typeof updated.resulting_revision === "number"
+    ? updated.resulting_revision
+    : Number.parseInt(input.revision, 10);
+  return {
+    ...createEnvelope({
+      ok: precommit.ok && precommit.verdict === "READY",
+      command: "svn_prepare_commit",
+      cwd: context.cwd,
+      revision: resultingRevision,
+      changed_paths: precommit.changed_paths,
+      conflicts: precommit.conflicts,
+      note: precommit.note
+    }),
+    verdict: precommit.verdict,
+    requested_revision: input.revision,
+    resulting_revision: resultingRevision,
+    revision_range: updated.revision_range,
+    mixed_revision: updated.mixed_revision,
+    expected_remote_head: input.expectedRemoteHead ?? null,
+    observed_remote_head: updated.observed_remote_head ?? null,
+    local_paths_before_update: localPathsBefore,
+    updated_paths: updated.changed_paths.map((entry) => repoRelativePath(path.resolve(context.cwd, entry.path), context.wcRoot)),
+    unexpected_touched_paths: [],
+    final_commit_scope: finalScope,
+    scope_expanded: precommit.scope_expanded === true,
+    operation: "prepare_commit",
+    precommit
+  };
+}
+
+export async function svnCommitWorkflow(input: {
+  operation?: "commit" | "prepare";
+  cwd?: string;
+  paths: string[];
+  message?: string;
+  revision?: string;
+  expectedRemoteHead?: number;
+  lineLimit?: number;
+  riskAck?: boolean;
+  allowRoot?: boolean;
+  allowDirectoryTargets?: boolean;
+  expandDescendants?: boolean;
+  requireUniformRevision?: boolean;
+}): Promise<ToolEnvelope> {
+  if (input.operation === "prepare") {
+    if (!input.revision) {
+      return prepareCommitFailure(
+        failEnvelope("svn commit --prepare", resolveCwd(input.cwd), "operation:prepare requires an exact numeric revision"),
+        "INVALID_REVISION"
+      );
+    }
+    return svnPrepareCommit({
+      paths: input.paths,
+      revision: input.revision,
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.expectedRemoteHead === undefined ? {} : { expectedRemoteHead: input.expectedRemoteHead }),
+      ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
+      ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+      ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
+      ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
+    });
+  }
+  if (input.message === undefined) {
+    return failEnvelope("svn commit", resolveCwd(input.cwd), "operation:commit requires message");
+  }
+  return svnCommit({
+    paths: input.paths,
+    message: input.message,
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    ...(input.riskAck === undefined ? {} : { riskAck: input.riskAck }),
+    ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+    ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants })
+  });
+}
+
+function prepareCommitFailure(envelope: ToolEnvelope, verdict: string): ToolEnvelope {
+  return {
+    ...envelope,
+    ok: false,
+    operation: "prepare_commit",
+    verdict,
+    unexpected_touched_paths: [],
+    final_commit_scope: []
   };
 }
 

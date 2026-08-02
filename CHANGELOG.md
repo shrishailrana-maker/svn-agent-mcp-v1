@@ -30,6 +30,12 @@ All notable changes to the SVN MCP are recorded here.
 - Added `eolCheckComplete` and an EOL-policy identity to compact precommit receipts.
 - Added independent 100-item conflict pages for status, snapshot, and update so complete conflict
   evidence remains reachable without allowing one receipt to grow without bound.
+- Added `expandDescendants:true` to precommit and commit. Explicit directories can now expand to a
+  fully guarded, visible changed-descendant scope while node-only behavior remains opt-in.
+- Added `svn_commit operation:"prepare"`, which performs a pinned explicit-path update with conflict
+  postponement, optional remote-HEAD guarding, unexpected-path refusal, and a final precommit
+  receipt without committing. A hidden `svn_prepare_commit` route preserves explicit compatibility
+  without adding an advertised schema.
 
 ### Changed
 
@@ -68,6 +74,11 @@ All notable changes to the SVN MCP are recorded here.
   Greek, accented, CJK, and spaced path arguments without a shell or machine-wide locale change.
 - Added a post-large-diff client call to prove oversized SVN output cannot corrupt the next MCP
   JSON-RPC frame.
+- Prepare mode now checks root, directory, never-commit, and expansion scope before updating;
+  node-only directory preparation uses `--depth empty`, and expanded precommit risk signals are
+  calculated from the expanded files.
+- Compact and receipt prepare failures retain up to 25 unexpected paths plus explicit total and
+  truncation metadata; ordinary non-expanded calls no longer emit empty expansion fields.
 
 ## [1.3.0] - 2026-07-31
 

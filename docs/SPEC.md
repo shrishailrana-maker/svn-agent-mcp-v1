@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.29 — public implementation contract. Single source of truth.**
+**Spec version 1.30 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -159,7 +159,7 @@ no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
     eol.ts            # byte sniffing (EOL kind, BOM, binary), dos2unix/unix2dos invocation
     tools\
       readonly.ts     # status/info, diff/log/cat/blame, EOL, properties
-      composite.ts    # svn_precommit, eol_fix_verified
+      composite.ts    # svn_snapshot, svn_precommit, commit workflows, eol_fix_verified
       mutating.ts     # svn_add, svn_commit, svn_path_change,
                       # svn_update, svn_revert, svn_delete, svn_resolve, svn_cleanup,
                       # svn_propset_eol_style, svn_propset, svn_export, svn_import
@@ -482,7 +482,7 @@ Combines working-copy revision metadata with bounded status counts, conflicts, a
 items in one response. It performs no mutation and is available under READONLY. Snapshot tokens use
 the same `afterCursor`/`NO_CHANGE` contract as status and additionally bind revision/head/range state.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, requireUniformRevision?: boolean = false }` *(read-only; allowed under READONLY)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
@@ -519,6 +519,27 @@ exclude policy, allowing a caller to avoid a redundant standalone EOL check for 
 Working-copy-root and existing-directory targets use the same `allowRoot` and
 `allowDirectoryTargets` acknowledgements as `svn_commit`, so `READY` does not contradict those
 target-scope guards for the same requested slice.
+With `expandDescendants:true`, each explicit existing directory is replaced by all changed paths
+under that directory. The expansion is capped at 500 paths, physically rechecked for working-copy
+containment, sorted, returned as `expanded_paths`, and subjected to every normal guard. A clean
+directory returns `NOTHING_TO_COMMIT`. Without this flag, directory-node behavior is unchanged.
+
+**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision? }` *(mutating update; refused under READONLY; never commits)*
+One call preflights root, directory, containment, expansion, and never-commit guards, records scoped
+local status, runs `svn update -r <revision> --accept postpone -- <paths...>`, refuses a changed
+expected remote HEAD, refuses any update result outside the explicit file or directory scope, stops
+on postponed conflicts, and runs `svn_precommit` on the same intended paths. A node-only directory
+acknowledged with `allowDirectoryTargets:true` updates with `--depth empty`; expanded directories
+update recursively and are guarded again after the update.
+The receipt includes `requested_revision`, `resulting_revision`, `revision_range`, `mixed_revision`,
+`updated_paths`, `unexpected_touched_paths`, and `final_commit_scope`. The exact numeric revision is
+required so a later repository commit cannot move the prepared slice beyond the intended build or
+release revision.
+Compact/receipt output keeps at most 25 paths per prepare collection and reports the corresponding
+total and truncation flag. Full mode retains the complete bounded evidence.
+The hidden `svn_prepare_commit` route has the same implementation for known full-profile callers.
+It is omitted from discovery so preparation and later safe-commit orchestration can share the one
+canonical `svn_commit` schema.
 
 **`eol_fix_verified`** — `{ cwd?, path?: string, paths?: string[], target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false }` *(mutating; refused under READONLY)*
 One call = read `svn:eol-style`, infer the target (`native` → platform native, `LF` → lf,
@@ -551,7 +572,7 @@ scope are backed up, converted, and content-hash verified before SVN scheduling.
 all converted files and prevents the add. Binary files and `eolExclude` globs (defaulting to
 `**/*.patch` and `**/*.diff`) are skipped and reported.
 
-**`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false }`
+**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -567,6 +588,9 @@ Whitespace-only messages are refused. Naming the working-copy root is refused un
 explicitly acknowledges that `--depth empty` commits only the directory node and excludes changed
 descendants. Explicit child paths remain the normal scoped workflow; any descendants left changed
 are reported by the post-status residue.
+With `expandDescendants:true`, existing directory inputs expand to the bounded, sorted set of all
+currently changed descendants. The exact expanded list is returned and every descendant receives
+the same containment, never-commit, status, conflict, and risk checks as an explicitly named path.
 
 **`svn_path_change`** — `{ cwd?, action: "move"|"rename"|"copy", src: string, dest: string }`
 argv: `svn <move|copy> --parents <src> <dest>`; `rename` uses SVN's `move` operation. Working-copy
@@ -784,6 +808,16 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.30 / Unreleased — 2026-08-02
+
+- Adds bounded `expandDescendants:true` commit scopes while preserving the default directory-node
+  refusal and opt-in node-only behavior.
+- Adds `svn_commit operation:"prepare"` for pinned explicit-path update, expected-HEAD verification,
+  unexpected-path refusal, conflict postponement, and final precommit evidence without committing,
+  without increasing the advertised tool count.
+- Requires all commit-scope guards before prepare mutates the WC, preserves node-only update depth,
+  evaluates expanded-file risk signals, and keeps unexpected-path failure evidence bounded.
 
 ### Spec 1.29 / Unreleased — 2026-08-02
 

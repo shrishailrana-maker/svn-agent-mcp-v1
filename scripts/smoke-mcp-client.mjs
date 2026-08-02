@@ -45,6 +45,12 @@ try {
     assert(updateTool?.inputSchema?.properties?.expectedRemoteHead, "svn_update expectedRemoteHead guard is missing");
     const precommitTool = tools.tools.find((tool) => tool.name === "svn_precommit");
     assert(precommitTool?.inputSchema?.properties?.requireUniformRevision, "precommit uniform-revision gate is missing");
+    assert(precommitTool?.inputSchema?.properties?.expandDescendants, "precommit descendant expansion is missing");
+    const commitTool = tools.tools.find((tool) => tool.name === "svn_commit");
+    assert(commitTool?.inputSchema?.properties?.operation, "commit workflow operation selector is missing");
+    assert(commitTool?.inputSchema?.properties?.revision, "commit prepare revision is missing");
+    assert(commitTool?.inputSchema?.properties?.expectedRemoteHead, "commit prepare expectedRemoteHead guard is missing");
+    assert(commitTool?.inputSchema?.properties?.expandDescendants, "commit descendant expansion is missing");
     const diffTool = tools.tools.find((tool) => tool.name === "svn_diff");
     assert(diffTool?.inputSchema?.properties?.lineLimit?.maximum === 2000, "diff lineLimit maximum is not published");
     assert(diffTool?.inputSchema?.properties?.maxHunksPerFile?.maximum === 20, "diff hunk maximum is not published");
@@ -119,6 +125,33 @@ try {
     });
     assert(Number.isInteger(committed.revision), "commit omitted its revision");
     passed.push("commit");
+
+    fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");
+    const prepared = await callOk(client, "svn_commit", {
+      operation: "prepare",
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      revision: String(committed.revision),
+      expectedRemoteHead: committed.revision
+    });
+    assert(
+      prepared.ready === true
+        && prepared.resultingRevision === committed.revision
+        && prepared.finalCommitScope.includes("client-smoke.txt"),
+      `prepare commit receipt was incomplete: ${JSON.stringify(prepared)}`
+    );
+    const prepareRootRefusal = await call(client, "svn_commit", {
+      operation: "prepare",
+      cwd: workingCopy,
+      paths: ["."],
+      revision: String(committed.revision),
+      expectedRemoteHead: committed.revision
+    });
+    assert(
+      prepareRootRefusal.ok === false && String(prepareRootRefusal.note).includes("allowRoot:true"),
+      `prepare accepted an unacknowledged working-copy root: ${JSON.stringify(prepareRootRefusal)}`
+    );
+    passed.push("prepare-commit");
 
     const guardedDirectory = path.join(workingCopy, "guarded-directory");
     const guardedChild = path.join(guardedDirectory, "child.txt");

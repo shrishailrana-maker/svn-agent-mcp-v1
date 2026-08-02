@@ -185,10 +185,10 @@ Conflict lists use independent pages of at most 100 paths; `conflictCount`, `con
 
 `svn_commit` refuses existing directory targets by default because its deliberate `--depth empty`
 behavior commits only the directory node and excludes changed descendants. Prefer explicit file
-paths. Set `allowDirectoryTargets:true` only when intentionally committing directory properties
-or another directory-node-only change; remaining descendants are reported as post-commit residue.
-`svn_precommit` accepts the same `allowDirectoryTargets` and `allowRoot` acknowledgements so its
-readiness verdict matches those target-scope guards.
+paths. Set `expandDescendants:true` to expand a named directory to its currently changed descendants,
+guard every result, and return the exact expanded scope. Set `allowDirectoryTargets:true` only when
+intentionally committing a directory property or another directory-node-only change.
+`svn_precommit` accepts the same scope controls so its readiness verdict matches the later commit.
 
 Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
@@ -196,6 +196,12 @@ to refuse if repository HEAD moved since the caller's probe. Use
 `svn_precommit requireUniformRevision:true` when a release handoff must not proceed from a
 mixed-revision working copy. The default remains backward compatible and reports mixed revisions
 without blocking ordinary precommit work.
+
+`svn_commit operation:"prepare"` performs a pinned update of explicit intended paths with conflicts
+postponed, checks an optional expected remote HEAD, refuses any path touched outside that scope, and
+then runs the normal guarded precommit checks. It never commits. Its compact receipt reports the
+resulting revision, conflicts, updated paths, and exact final commit scope. Keeping preparation as
+a mode of the existing commit workflow avoids loading another tool schema.
 
 Repositories can make EOL handling automatic for new files:
 

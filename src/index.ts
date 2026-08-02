@@ -11,14 +11,13 @@ import { failEnvelope } from "./envelope.js";
 import { readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
-import { eolFixVerified, svnPrecommit, svnSnapshot } from "./tools/composite.js";
+import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "./tools/composite.js";
 import { svnDiagnose } from "./tools/diagnose.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "./tools/readonly.js";
 import { svnSelfCheck } from "./tools/selfcheck.js";
 import {
   svnAdd,
   svnCleanup,
-  svnCommit,
   svnCopy,
   svnDelete,
   svnExport,
@@ -68,7 +67,10 @@ export const fieldProjectionNames = {
   svn_commit: [
     "revision", "committedRevision", "committedPaths", "committedCount", "pathCount", "baseRevision",
     "baseRevisionRange", "remoteHeadRevision", "eolVerdict", "workingCopyMixed", "contentHashes",
-    "postStatusClean", "residue", "warningCode", "warningDetail", "failedRule", "suggestedMessage"
+    "postStatusClean", "residue", "warningCode", "warningDetail", "failedRule", "suggestedMessage",
+    "verdict", "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision",
+    "expectedRemoteHead", "observedRemoteHead", "updatedPaths", "unexpectedTouchedPaths",
+    "finalCommitScope", "conflicts"
   ]
 } as const;
 
@@ -77,14 +79,18 @@ export const advancedInputNames = {
   svn_snapshot: ["afterCursor", "conflictCursor"],
   svn_diff: ["file", "operationId"],
   svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
-  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly"]
+  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly"],
+  svn_commit: [
+    "operation", "revision", "expectedRemoteHead", "lineLimit", "requireUniformRevision",
+    "expandDescendants", "allowRoot", "allowDirectoryTargets"
+  ]
 } as const;
 
 const docsToolNames = [
   "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
 ] as const;
 const reviewToolNames = [...docsToolNames, "svn_diff", "svn_cat", "svn_blame"] as const;
-const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved"]);
+const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved", "svn_prepare_commit"]);
 
 export function configuredToolProfile(value = process.env.SVN_MCP_TOOL_PROFILE): ToolProfile {
   const normalized = value?.trim().toLowerCase() || "full";
@@ -125,7 +131,7 @@ export function createServer(): McpServer {
   server.registerTool = ((name: string, config: unknown, callback: unknown) => {
     profileRegistrations.set(name, { config, callback });
     const advertised = enabledNames ? enabledNames.has(name) : !hiddenLegacyToolNames.has(name);
-    const publicConfig = advertised && enabledNames ? focusedProfileConfig(config) : config;
+    const publicConfig = advertised && enabledNames ? focusedProfileConfig(name, config) : config;
     const tool = register(name, publicConfig as never, callback as never);
     if (!advertised) {
       tool.disable();
@@ -147,6 +153,9 @@ export function createServer(): McpServer {
   const allowRootCommit = z.boolean().optional().describe("Acknowledge a working-copy-root commit target.");
   const allowDirectoryTargets = z.boolean().optional().describe(
     "Acknowledge that an existing directory target commits only the directory node; descendants require explicit paths."
+  );
+  const expandDescendants = z.boolean().optional().describe(
+    "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope."
   );
   const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i).optional();
   const revisionSelector = z.string().max(257).regex(
@@ -380,6 +389,7 @@ export function createServer(): McpServer {
         maxChars,
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
+        expandDescendants,
         requireUniformRevision: z.boolean().optional().describe(
           "Refuse READY while the working copy spans more than one revision; intended for release handoffs."
         ),
@@ -387,6 +397,26 @@ export function createServer(): McpServer {
       }
     },
     async (args, extra) => handleTool("svn_precommit", args, extra.signal, () => svnPrecommit(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_prepare_commit",
+    {
+      description: "Pinned scoped update followed by guarded precommit evidence.",
+      inputSchema: {
+        cwd,
+        paths,
+        revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision"),
+        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
+        lineLimit,
+        allowRoot: allowRootCommit,
+        allowDirectoryTargets,
+        expandDescendants,
+        requireUniformRevision: z.boolean().optional(),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_prepare_commit", args, extra.signal, () => svnPrepareCommit(compactArgs(args)))
   );
 
   server.registerTool(
@@ -423,14 +453,24 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths,
-        message: commitMessage,
+        operation: z.enum(["commit", "prepare"]).optional().describe(
+          "commit (default) performs the guarded commit; prepare performs only a pinned scoped update and precommit."
+        ),
+        message: commitMessage.optional().describe("Required for operation:commit; ignored for operation:prepare."),
+        revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision").optional().describe(
+          "Required for operation:prepare."
+        ),
+        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
+        lineLimit,
         riskAck: z.boolean().optional(),
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
+        expandDescendants,
+        requireUniformRevision: z.boolean().optional(),
         ...response
       }
     },
-    async (args, extra) => handleTool("svn_commit", args, extra.signal, () => svnCommit(compactArgs(args)))
+    async (args, extra) => handleTool("svn_commit", args, extra.signal, () => svnCommitWorkflow(compactArgs(args)))
   );
 
   server.registerTool(
@@ -626,7 +666,7 @@ export function createServer(): McpServer {
   return server;
 }
 
-function focusedProfileConfig(config: unknown): unknown {
+function focusedProfileConfig(name: string, config: unknown): unknown {
   if (!config || typeof config !== "object") {
     return config;
   }
@@ -634,10 +674,16 @@ function focusedProfileConfig(config: unknown): unknown {
   if (!typed.inputSchema?.responseMode) {
     return config;
   }
+  const inputSchema = { ...typed.inputSchema };
+  if (name === "svn_commit") {
+    for (const advanced of advancedInputNames.svn_commit) {
+      delete inputSchema[advanced];
+    }
+  }
   return {
     ...typed,
     inputSchema: {
-      ...typed.inputSchema,
+      ...inputSchema,
       responseMode: z.enum(["compact", "receipt", "structured-only"]).optional()
     }
   };

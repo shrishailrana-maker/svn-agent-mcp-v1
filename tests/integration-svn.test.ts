@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
-import { eolFixVerified, svnPrecommit, svnSnapshot } from "../src/tools/composite.js";
+import { eolFixVerified, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
 import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
@@ -1421,6 +1421,102 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("expands an explicit directory to its changed descendants without including siblings", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const directory = path.join(fixture.wc, "expanded scope");
+      const nested = path.join(directory, "nested");
+      fs.mkdirSync(nested, { recursive: true });
+      fs.writeFileSync(path.join(directory, "one.txt"), "one\r\n", "utf8");
+      fs.writeFileSync(path.join(nested, "two.txt"), "two\r\n", "utf8");
+      fs.writeFileSync(path.join(directory, "version.ver"), "1\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "sibling.txt"), "sibling\r\n", "utf8");
+      expect((await svnAdd({
+        cwd: fixture.wc,
+        paths: ["expanded scope", "sibling.txt"],
+        allowRecursive: true
+      })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["expanded scope/one.txt", "expanded scope/nested/two.txt", "expanded scope/version.ver", "sibling.txt"],
+        message: commitMessage("Add expansion fixtures"),
+        riskAck: true
+      })).ok).toBe(true);
+
+      fs.writeFileSync(path.join(directory, "one.txt"), "one changed\r\n", "utf8");
+      fs.writeFileSync(path.join(nested, "two.txt"), "two changed\r\n", "utf8");
+      fs.writeFileSync(path.join(directory, "version.ver"), "2\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "sibling.txt"), "sibling changed\r\n", "utf8");
+
+      const precommit = await svnPrecommit({
+        cwd: fixture.wc,
+        paths: ["expanded scope"],
+        expandDescendants: true
+      });
+      expect(precommit).toMatchObject({ ok: true, verdict: "READY", scope_expanded: true });
+      expect(precommit.expanded_paths).toEqual([
+        "expanded scope/nested/two.txt",
+        "expanded scope/one.txt",
+        "expanded scope/version.ver"
+      ]);
+      expect(precommit.risk_signals).toContain("version file touched");
+
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["expanded scope"],
+        message: commitMessage("Commit expanded descendants"),
+        expandDescendants: true,
+        riskAck: true
+      });
+      expect(committed).toMatchObject({ ok: true, scope_expanded: true, post_status_clean: true });
+      expect(committed.expanded_paths).toEqual([
+        "expanded scope/nested/two.txt",
+        "expanded scope/one.txt",
+        "expanded scope/version.ver"
+      ]);
+      expect(committed.committed_paths).toEqual(expect.arrayContaining([
+        "expanded scope/nested/two.txt",
+        "expanded scope/one.txt",
+        "expanded scope/version.ver"
+      ]));
+
+      const remaining = await svnStatus({ cwd: fixture.wc });
+      expect(statusByPath(remaining.changed_paths, fixture.wc)).toEqual(new Map([["sibling.txt", "M"]]));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a never-commit descendant discovered while expanding a directory", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const directory = path.join(fixture.wc, "guarded scope");
+      fs.mkdirSync(directory);
+      fs.writeFileSync(path.join(directory, "safe.txt"), "safe\r\n", "utf8");
+      fs.writeFileSync(path.join(directory, ".env"), "SECRET=example\r\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--force", "--no-ignore", "--", directory], { cwd: fixture.wc });
+
+      const precommit = await svnPrecommit({
+        cwd: fixture.wc,
+        paths: ["guarded scope"],
+        expandDescendants: true
+      });
+      expect(precommit).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED", scope_expanded: true });
+      expect(precommit.note).toContain(".env");
+
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["guarded scope"],
+        message: commitMessage("Attempt guarded expansion"),
+        expandDescendants: true
+      });
+      expect(committed).toMatchObject({ ok: false });
+      expect(committed.note).toContain(".env");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("supports bounded revision inspection, snapshots, and commit root guards", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -1721,6 +1817,84 @@ describe("SVN tool integration against a temp repository", () => {
       expectSvnArgs(conflicted.command, `update -r ${advancedHead} --accept postpone --`);
       expect(conflicted.conflicts.length).toBeGreaterThan(0);
       expect(conflicted.note).toContain("conflicts present");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepares only explicit commit paths at a pinned revision after remote HEAD advances", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "prepare peer");
+    try {
+      const relativePath = "prepared scope/prepared.txt";
+      const localFile = path.join(fixture.wc, relativePath);
+      fs.mkdirSync(path.dirname(localFile));
+      fs.writeFileSync(localFile, "alpha\r\nbeta\r\ngamma\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add prepare fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      const peerFile = path.join(peer, relativePath);
+      fs.writeFileSync(peerFile, "alpha\r\nremote beta\r\ngamma\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote revision two", "--", peerFile], { cwd: peer });
+      const probedHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+
+      fs.writeFileSync(localFile, "local alpha\r\nbeta\r\ngamma\r\n", "utf8");
+      fs.writeFileSync(peerFile, "alpha\r\nremote beta\r\nremote gamma\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote revision three", "--", peerFile], { cwd: peer });
+      const advancedHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+      expect(advancedHead).toBeGreaterThan(probedHead);
+
+      const beforeRefusals = fs.readFileSync(localFile, "utf8");
+      const rootRefused = await svnPrepareCommit({
+        cwd: fixture.wc,
+        paths: ["."],
+        revision: String(probedHead),
+        expectedRemoteHead: advancedHead
+      });
+      expect(rootRefused).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED" });
+      expect(rootRefused.note).toContain("allowRoot:true");
+      expect(fs.readFileSync(localFile, "utf8")).toBe(beforeRefusals);
+
+      const directoryRefused = await svnPrepareCommit({
+        cwd: fixture.wc,
+        paths: ["prepared scope"],
+        revision: String(probedHead),
+        expectedRemoteHead: advancedHead
+      });
+      expect(directoryRefused).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED" });
+      expect(directoryRefused.note).toContain("allowDirectoryTargets:true");
+      expect(fs.readFileSync(localFile, "utf8")).toBe(beforeRefusals);
+
+      const refused = await svnPrepareCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        revision: String(probedHead),
+        expectedRemoteHead: probedHead
+      });
+      expect(refused).toMatchObject({ ok: false, verdict: "REMOTE_HEAD_CHANGED" });
+      expect(fs.readFileSync(localFile, "utf8")).toBe("local alpha\r\nbeta\r\ngamma\r\n");
+
+      const prepared = await svnPrepareCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        revision: String(probedHead),
+        expectedRemoteHead: advancedHead
+      });
+      expect(prepared).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        requested_revision: String(probedHead),
+        resulting_revision: probedHead,
+        unexpected_touched_paths: [],
+        final_commit_scope: [relativePath]
+      });
+      expect(prepared.conflicts).toEqual([]);
+      expect(fs.readFileSync(localFile, "utf8")).toBe("local alpha\r\nremote beta\r\ngamma\r\n");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

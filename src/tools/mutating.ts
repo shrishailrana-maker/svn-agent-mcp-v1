@@ -2,11 +2,11 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { resolveCommitScope } from "../commitScope.js";
 import { prepareEolNormalization, type EolNormalizationResult } from "../eol.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   assertExistingTargets,
-  findExistingDirectoryTarget,
   eolPolicyExcludes,
   isCommittableStatus,
   isInsideOrEqual,
@@ -226,6 +226,7 @@ export async function svnCommit(input: {
   riskAck?: boolean;
   allowRoot?: boolean;
   allowDirectoryTargets?: boolean;
+  expandDescendants?: boolean;
 }): Promise<ToolEnvelope> {
   const guard = await mutatingPathGuard("svn commit", input.cwd, input.paths, { requireExisting: false });
   if (!guard.ok) {
@@ -248,26 +249,36 @@ export async function svnCommit(input: {
   if (!input.allowRoot && guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
     return failEnvelope("svn commit", guard.cwd, "working-copy root commit requires allowRoot:true");
   }
-  const directoryTarget = findExistingDirectoryTarget(guard.paths);
-  if (!directoryTarget.ok) {
-    return failEnvelope("svn commit", guard.cwd, directoryTarget.note);
+  const scope = await resolveCommitScope({
+    cwd: guard.cwd,
+    wcRoot: guard.wcRoot,
+    paths: guard.paths,
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+    ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets })
+  });
+  if (!scope.ok) {
+    return {
+      ...(scope.envelope ?? failEnvelope("svn commit", guard.cwd, scope.note)),
+      ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
+    };
   }
-  if (directoryTarget.target && !input.allowDirectoryTargets) {
-    return failEnvelope(
-      "svn commit",
-      guard.cwd,
-      `directory commit target requires allowDirectoryTargets:true because --depth empty excludes descendants: ${repoRelativePath(directoryTarget.target, guard.wcRoot)}`
-    );
+  if (scope.paths.length === 0) {
+    return {
+      ...failEnvelope("svn commit", guard.cwd, "nothing to commit in expanded directory scope"),
+      scope_expanded: scope.expanded,
+      expanded_paths: scope.expandedPaths
+    };
   }
 
-  for (const target of guard.paths) {
+  const scopedPaths = scope.paths;
+  for (const target of scopedPaths) {
     const hit = neverCommitHit(target, guard.wcRoot);
     if (hit) {
       return failEnvelope("svn commit", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
     }
   }
 
-  const status = await scopedStatusMap(guard.cwd, guard.wcRoot, statusPathsForCommit(guard.paths, guard.wcRoot));
+  const status = await scopedStatusMap(guard.cwd, guard.wcRoot, statusPathsForCommit(scopedPaths, guard.wcRoot));
   if (!status.envelope.ok) {
     return status.envelope;
   }
@@ -275,7 +286,7 @@ export async function svnCommit(input: {
   const conflictedTargets = new Set(
     status.envelope.conflicts.map((conflict) => pathIdentityKey(path.resolve(guard.cwd, conflict.path)))
   );
-  for (const target of guard.paths) {
+  for (const target of scopedPaths) {
     const code = status.map.get(pathIdentityKey(target));
     if (!code || code === "?" || code === "!" || code === "I") {
       return failEnvelope("svn commit", guard.cwd, `target not changed or not scheduled: ${repoRelativePath(target, guard.wcRoot)}`);
@@ -288,14 +299,14 @@ export async function svnCommit(input: {
     }
   }
 
-  const riskSignals = riskySignals(guard.paths, guard.wcRoot, status.map);
+  const riskSignals = riskySignals(scopedPaths, guard.wcRoot, status.map);
   if (riskSignals.length > 0 && !input.riskAck) {
     return {
       ...failEnvelope("svn commit", guard.cwd, `riskAck required: ${riskSignals.join(", ")}`),
       risk_signals: riskSignals
     };
   }
-  const commitPaths = commitPathsWithAddedParents(guard.paths, guard.wcRoot, status.map);
+  const commitPaths = commitPathsWithAddedParents(scopedPaths, guard.wcRoot, status.map);
 
   const warnings: string[] = [];
   const version = await runSvnVersion(guard.wcRoot, guard.cwd);
@@ -303,21 +314,21 @@ export async function svnCommit(input: {
   if (baseVersion?.mixed) {
     warnings.push("mixed revision working copy");
   }
-  const observedRemoteHeadBefore = await remoteHeadForTargets(guard.cwd, guard.paths);
+  const observedRemoteHeadBefore = await remoteHeadForTargets(guard.cwd, scopedPaths);
   const committedPaths = commitPaths.map((target) => repoRelativePath(target, guard.wcRoot));
   const explicitPaths = guard.paths.map((target) => repoRelativePath(target, guard.wcRoot));
   const preCommitChanges = commitPaths.map((target) => ({
     path: repoRelativePath(target, guard.wcRoot),
     status: status.map.get(pathIdentityKey(target)) ?? "M"
   }));
-  const contentHashes = hashCommitTargets(guard.paths, guard.wcRoot);
+  const contentHashes = hashCommitTargets(scopedPaths, guard.wcRoot);
 
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
 
   try {
     const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths.map(escapeSvnTarget)], guard.cwd);
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
-    const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
+    const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: scopedPaths }) : null;
     const postStatusClean = postStatus ? postStatus.changed_paths.length === 0 : false;
     const postVersionRun = run.exitCode === 0 ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
     const postVersion = postVersionRun?.exitCode === 0 ? parseSvnVersion(postVersionRun.stdout) : null;
@@ -353,7 +364,8 @@ export async function svnCommit(input: {
       post_status_clean: postStatusClean,
       working_copy_mixed: postVersion?.mixed ?? null,
       revision_range: postVersion?.range ?? null,
-      risk_signals: riskSignals
+      risk_signals: riskSignals,
+      ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
     };
   } finally {
     fs.rmSync(messageTemp.dir, { recursive: true, force: true });
@@ -411,6 +423,7 @@ export async function svnUpdate(input: {
   expectedRemoteHead?: number;
   taskPaths?: string[];
   targetOverlapOnly?: boolean;
+  depth?: "empty";
 }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
@@ -479,6 +492,7 @@ export async function svnUpdate(input: {
   const run = await runSvn([
     "update",
     ...(input.revision ? ["-r", input.revision] : []),
+    ...(input.depth ? ["--depth", input.depth] : []),
     "--accept",
     "postpone",
     ...(targets.length > 0 ? ["--", ...targets.map(escapeSvnTarget)] : [])
