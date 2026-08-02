@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
-import { configuredToolProfile, handleTool, serverVersion, toolNamesForProfile } from "../src/index.js";
+import {
+  advancedInputNames, configuredToolProfile, handleTool, serverVersion, toolNamesForProfile
+} from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
 
@@ -40,6 +42,11 @@ describe("server entrypoint launch detection", () => {
       ]);
       expect(status?.inputSchema.properties).not.toHaveProperty("humanText");
       expect(status?.inputSchema.properties).not.toHaveProperty("fields");
+      expect(status?.inputSchema.properties).not.toHaveProperty("afterCursor");
+      const diff = tools.tools.find((tool) => tool.name === "svn_diff");
+      expect(diff?.inputSchema.properties).not.toHaveProperty("operationId");
+      expect(advancedInputNames.svn_status).toContain("afterCursor");
+      expect(advancedInputNames.svn_diff).toContain("operationId");
     } finally {
       await client.close();
     }

@@ -155,12 +155,33 @@ characters.
 Compact mode changes response size only; path containment, mutation guards, EOL checks,
 mixed-revision checks, and commit verification run unchanged.
 
+Use `svn_diff diffMode:"counts"` for totals only or `"hunk-headings"` for one meaningful line per
+file plus omitted-hunk counts. A returned `operationId` binds later cursor pages to the same bounded
+process-local evidence, so continuation does not rerun SVN against a changing working copy. Evidence
+expires after 10 minutes and is limited to 2 MiB per operation, 32 operations, and 16 MiB total.
+`svn_log messageContains` performs a bounded server-side scan; `changedPathsSummary:true` returns
+per-revision action counts and top-level directories without listing every path. Large updates can
+use `maxItems`, `taskPaths`, and `targetOverlapOnly` to keep unrelated paths out of the receipt while
+making complete conflict evidence available through bounded `conflictCursor` pages.
+Runner-level line/output truncation is carried into the operation evidence, so a final retained page
+cannot be mistaken for the complete source diff.
+
 Normal responses use working-copy-relative paths. High-use tools accept a validated `fields`
 array; the allowed names are published once under `globalResponseControls.fieldProjections` in
 `docs/MCP_API.json` so the live MCP does not repeat those lists in every tool schema. Invalid
 fields are rejected before any SVN process starts. Focused `docs` and `review` profiles advertise
 only `compact`, `receipt`, and `structured-only`; known callers may still explicitly request
 standard/full diagnostics, but switching to the full profile is clearer for diagnostic work.
+
+High-volume controls are likewise published once under
+`globalResponseControls.advancedInputs` in `docs/MCP_API.json`, rather than repeated in every live
+tool schema. They include `afterCursor` for status/snapshot polling, diff `file`/`operationId`,
+bounded log filtering and summaries, and update paging/overlap controls. Snapshot tokens are opaque,
+working-copy and query bound, process-local, and expire after 15 minutes. Repeating the same status
+or snapshot with `afterCursor` returns a minimal `NO_CHANGE` receipt; changed or safety-relevant
+state returns the current bounded result and a replacement token.
+Conflict lists use independent pages of at most 100 paths; `conflictCount`, `conflictsTruncated`, and
+`nextConflictCursor` make omitted pages explicit without inflating every status or update response.
 
 `svn_commit` refuses existing directory targets by default because its deliberate `--depth empty`
 behavior commits only the directory node and excludes changed descendants. Prefer explicit file

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { parseCommittedRevision } from "../src/parse/commitText.js";
 import { parseBlameXml } from "../src/parse/blameXml.js";
-import { parseDiffText } from "../src/parse/diffText.js";
+import { createDiffAccumulator, parseDiffText } from "../src/parse/diffText.js";
 import { parseInfoXml } from "../src/parse/infoXml.js";
 import { parseLogXml } from "../src/parse/logXml.js";
 import { parseStatusXml } from "../src/parse/statusXml.js";
@@ -24,8 +24,39 @@ describe("SVN text and XML parsers", () => {
       4
     );
 
-    expect(diff.per_file).toEqual([{ path: "src/example.ts", added: 2, removed: 1, binary: false }]);
+    expect(diff.per_file).toEqual([{
+      path: "src/example.ts",
+      added: 2,
+      removed: 1,
+      binary: false,
+      hunks: 1,
+      first_hunk: "@@ -1,2 +1,3 @@",
+      first_meaningful_line: "-old"
+    }]);
+    expect(diff).toMatchObject({ total_files: 1, total_lines: 9, total_hunks: 1 });
+    expect(Number(diff.total_chars)).toBeGreaterThan(0);
     expect(diff.truncated).toBe(true);
+  });
+
+  it("keeps aggregate diff totals complete after per-file details reach their cap", () => {
+    const diff = createDiffAccumulator(100, 0, 1);
+    for (const line of [
+      "Index: first.txt", "@@ -1 +1 @@", "-old", "+new",
+      "Index: second.bin", "@@ -0,0 +1,2 @@", "+one", "+two",
+      "Cannot display: file marked as a binary type."
+    ]) {
+      diff.pushLine(line);
+    }
+
+    expect(diff.summary()).toMatchObject({
+      per_file_truncated: true,
+      total_files: 2,
+      total_hunks: 2,
+      total_added: 3,
+      total_removed: 1,
+      binary_files: 1
+    });
+    expect(diff.summary().per_file).toHaveLength(1);
   });
 
   it("parses status XML into changed paths and conflicts", () => {

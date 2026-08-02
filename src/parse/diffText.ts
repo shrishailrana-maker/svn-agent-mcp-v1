@@ -19,6 +19,7 @@ const DEFAULT_EXCERPT_CHAR_LIMIT = 2_000_000;
 export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLimit = 20000, excerptCharLimit = DEFAULT_EXCERPT_CHAR_LIMIT): {
   pushLine: (line: string) => void;
   summary: () => DiffSummary;
+  detail: () => { text: string; truncated: boolean };
 } {
   const perFile = new Map<string, DiffFileSummary>();
   let current: DiffFileSummary | null = null;
@@ -28,6 +29,19 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
   let excerptCharsTruncated = false;
   let inPropertyChanges = false;
   let perFileTruncated = false;
+  const detailLines: string[] = [];
+  let detailChars = 0;
+  let detailTruncated = false;
+  let totalChars = 0;
+  let totalHunks = 0;
+  let totalFiles = 0;
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  let binaryFiles = 0;
+  let propertyFiles = 0;
+  let currentPath = "";
+  let currentBinary = false;
+  let currentProperty = false;
 
   function getOrCreateFile(filePath: string): DiffFileSummary | null {
     const existing = perFile.get(filePath);
@@ -39,14 +53,34 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
       return null;
     }
 
-    const created = { path: filePath, added: 0, removed: 0, binary: false };
+    const created = { path: filePath, added: 0, removed: 0, binary: false, hunks: 0 };
     perFile.set(filePath, created);
     return created;
+  }
+
+  function startFile(filePath: string): void {
+    if (filePath === currentPath) {
+      return;
+    }
+    currentPath = filePath;
+    currentBinary = false;
+    currentProperty = false;
+    totalFiles += 1;
+    current = getOrCreateFile(filePath);
   }
 
   return {
     pushLine(line: string): void {
       totalLines += 1;
+      totalChars += line.length + 1;
+      if (!detailTruncated) {
+        if (detailChars + line.length <= DEFAULT_EXCERPT_CHAR_LIMIT) {
+          detailLines.push(line);
+          detailChars += line.length + 1;
+        } else {
+          detailTruncated = true;
+        }
+      }
       if (totalLines > lineOffset && excerptLines.length < lineLimit && !excerptCharsTruncated) {
         if (excerptChars + line.length <= excerptCharLimit) {
           excerptLines.push(line);
@@ -59,14 +93,18 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
       const indexMatch = /^Index: (.+)$/.exec(line);
       if (indexMatch) {
         inPropertyChanges = false;
-        current = getOrCreateFile(indexMatch[1] ?? "");
+        startFile(indexMatch[1] ?? "");
         return;
       }
 
       const propertyMatch = /^Property changes on: (.+)$/.exec(line);
       if (propertyMatch) {
         const propertyPath = propertyMatch[1] ?? "";
-        current = getOrCreateFile(propertyPath);
+        startFile(propertyPath);
+        if (!currentProperty) {
+          propertyFiles += 1;
+          currentProperty = true;
+        }
         if (current) {
           current.property_changed = true;
         }
@@ -74,19 +112,42 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
         return;
       }
 
-      if (!current) {
+      if (!currentPath) {
+        return;
+      }
+
+      if (line.startsWith("@@")) {
+        totalHunks += 1;
+        if (current) {
+          current.hunks += 1;
+          current.first_hunk ??= line;
+        }
         return;
       }
 
       if (/^(?:Cannot display: file marked as a binary type\.|Binary files differ\.)$/i.test(line)) {
-        current.binary = true;
+        if (!currentBinary) {
+          binaryFiles += 1;
+          currentBinary = true;
+        }
+        if (current) {
+          current.binary = true;
+        }
         return;
       }
 
       if (!inPropertyChanges && line.startsWith("+") && !line.startsWith("+++")) {
-        current.added += 1;
+        totalAdded += 1;
+        if (current) {
+          current.added += 1;
+          current.first_meaningful_line ??= line;
+        }
       } else if (!inPropertyChanges && line.startsWith("-") && !line.startsWith("---")) {
-        current.removed += 1;
+        totalRemoved += 1;
+        if (current) {
+          current.removed += 1;
+          current.first_meaningful_line ??= line;
+        }
       }
     },
     summary(): DiffSummary {
@@ -94,8 +155,19 @@ export function createDiffAccumulator(lineLimit: number, lineOffset = 0, fileLim
         per_file: [...perFile.values()],
         per_file_truncated: perFileTruncated,
         diff_excerpt: excerptLines.join("\n"),
-        truncated: totalLines > lineOffset + lineLimit || excerptCharsTruncated
+        truncated: totalLines > lineOffset + lineLimit || excerptCharsTruncated,
+        total_files: totalFiles,
+        total_lines: totalLines,
+        total_chars: totalChars,
+        total_hunks: totalHunks,
+        total_added: totalAdded,
+        total_removed: totalRemoved,
+        binary_files: binaryFiles,
+        property_files: propertyFiles
       };
+    },
+    detail(): { text: string; truncated: boolean } {
+      return { text: detailLines.join("\n"), truncated: detailTruncated };
     }
   };
 }

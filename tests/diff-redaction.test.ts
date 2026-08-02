@@ -20,7 +20,9 @@ describe("diff parsing and command redaction", () => {
 
     expect(diff.truncated).toBe(true);
     expect(diff.diff_excerpt.split("\n")).toHaveLength(4);
-    expect(diff.per_file).toEqual([{ path: "big.txt", added: 3, removed: 1, binary: false }]);
+    expect(diff.per_file).toEqual([{
+      path: "big.txt", added: 3, removed: 1, binary: false, hunks: 0, first_meaningful_line: "+one"
+    }]);
   });
 
   it("counts streamed diff lines after the excerpt cap", () => {
@@ -30,10 +32,20 @@ describe("diff parsing and command redaction", () => {
     }
 
     expect(diff.summary()).toEqual({
-      per_file: [{ path: "streamed.txt", added: 3, removed: 1, binary: false }],
+      per_file: [{
+        path: "streamed.txt", added: 3, removed: 1, binary: false, hunks: 0, first_meaningful_line: "+one"
+      }],
       per_file_truncated: false,
       diff_excerpt: "Index: streamed.txt\n+one",
-      truncated: true
+      truncated: true,
+      total_files: 1,
+      total_lines: 5,
+      total_chars: 42,
+      total_hunks: 0,
+      total_added: 3,
+      total_removed: 1,
+      binary_files: 0,
+      property_files: 0
     });
   });
 
@@ -44,10 +56,20 @@ describe("diff parsing and command redaction", () => {
     }
 
     expect(diff.summary()).toEqual({
-      per_file: [{ path: "streamed.txt", added: 3, removed: 1, binary: false }],
+      per_file: [{
+        path: "streamed.txt", added: 3, removed: 1, binary: false, hunks: 0, first_meaningful_line: "+one"
+      }],
       per_file_truncated: false,
       diff_excerpt: "+two\n-old",
-      truncated: true
+      truncated: true,
+      total_files: 1,
+      total_lines: 5,
+      total_chars: 42,
+      total_hunks: 0,
+      total_added: 3,
+      total_removed: 1,
+      binary_files: 0,
+      property_files: 0
     });
   });
 
@@ -80,7 +102,10 @@ describe("diff parsing and command redaction", () => {
     const summary = diff.summary();
     expect(summary.truncated).toBe(true);
     expect(summary.diff_excerpt).toBe("Index: big.txt");
-    expect(summary.per_file).toEqual([{ path: "big.txt", added: 2, removed: 1, binary: false }]);
+    expect(summary.per_file).toEqual([{
+      path: "big.txt", added: 2, removed: 1, binary: false, hunks: 0,
+      first_meaningful_line: `+${"a".repeat(30)}`
+    }]);
   });
 
   it("marks property changes without counting property values as source lines", () => {
@@ -100,6 +125,7 @@ describe("diff parsing and command redaction", () => {
       added: 0,
       removed: 0,
       binary: false,
+      hunks: 0,
       property_changed: true
     }]);
   });
@@ -181,7 +207,10 @@ describe("diff parsing and command redaction", () => {
       "+console.log(\"Cannot display in UI\");"
     ].join("\n"), 100);
 
-    expect(diff.per_file).toEqual([{ path: "src/a.ts", added: 2, removed: 0, binary: false }]);
+    expect(diff.per_file).toEqual([{
+      path: "src/a.ts", added: 2, removed: 0, binary: false, hunks: 1,
+      first_hunk: "@@ -1 +1,2 @@", first_meaningful_line: "+const isBinary = true;"
+    }]);
   });
 
   it("marks exact SVN binary diff messages as binary", () => {
@@ -191,7 +220,7 @@ describe("diff parsing and command redaction", () => {
       "Cannot display: file marked as a binary type."
     ].join("\n"), 100);
 
-    expect(diff.per_file).toEqual([{ path: "image.bin", added: 0, removed: 0, binary: true }]);
+    expect(diff.per_file).toEqual([{ path: "image.bin", added: 0, removed: 0, binary: true, hunks: 0 }]);
   });
 
   it("categorizes common SVN auth, network, lock, and database failures", () => {

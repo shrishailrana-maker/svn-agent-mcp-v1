@@ -57,6 +57,9 @@ export interface DiffFileSummary {
   removed: number;
   binary: boolean;
   property_changed?: boolean;
+  hunks: number;
+  first_hunk?: string;
+  first_meaningful_line?: string;
 }
 
 export interface DiffSummary {
@@ -64,6 +67,14 @@ export interface DiffSummary {
   per_file_truncated: boolean;
   diff_excerpt: string;
   truncated: boolean;
+  total_files: number;
+  total_lines: number;
+  total_chars: number;
+  total_hunks: number;
+  total_added: number;
+  total_removed: number;
+  binary_files: number;
+  property_files: number;
 }
 
 export type EolKind = "crlf" | "lf" | "mixed" | "none" | "binary" | "skipped-too-large" | "not-a-file";

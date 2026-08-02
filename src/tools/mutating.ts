@@ -409,6 +409,8 @@ export async function svnUpdate(input: {
   updateAll?: boolean;
   revision?: string;
   expectedRemoteHead?: number;
+  taskPaths?: string[];
+  targetOverlapOnly?: boolean;
 }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
@@ -441,6 +443,12 @@ export async function svnUpdate(input: {
       return failEnvelope("svn update", context.cwd, resolved.note);
     }
     targets = resolved.paths;
+  }
+  if (input.taskPaths && input.taskPaths.length > 0) {
+    const taskPaths = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.taskPaths);
+    if (!taskPaths.ok) {
+      return failEnvelope("svn update", context.cwd, taskPaths.note);
+    }
   }
 
   if (input.expectedRemoteHead !== undefined) {

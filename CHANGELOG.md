@@ -21,6 +21,15 @@ All notable changes to the SVN MCP are recorded here.
 - Added bounded multi-file `eol_fix_verified` input with aggregate counts, per-file failures, and
   normalized-content SHA256 proof.
 - Added actionable numeric-limit validation and a CI response/schema budget gate.
+- Added process-local snapshot tokens for status/snapshot `NO_CHANGE` polling, with bounded TTL,
+  query and working-copy binding, tamper rejection, and replacement tokens after a change.
+- Added bounded process-local diff evidence. Continuation calls reuse an opaque operation ID so
+  later pages are stable even when the working copy changes between requests.
+- Added bounded log message filtering, per-revision changed-path summaries, update overlap/top-folder
+  summaries, and diff `counts`/`hunk-headings` modes with complete total and omitted-hunk metadata.
+- Added `eolCheckComplete` and an EOL-policy identity to compact precommit receipts.
+- Added independent 100-item conflict pages for status, snapshot, and update so complete conflict
+  evidence remains reachable without allowing one receipt to grow without bound.
 
 ### Changed
 
@@ -30,6 +39,13 @@ All notable changes to the SVN MCP are recorded here.
   raw commands remain full-diagnostic output only.
 - Compact guard refusals now return a typed guard code, one actionable detail, and an affected-path
   count without echoing the complete submitted path list.
+- High-volume advanced inputs are validated centrally and published once in `MCP_API.json` instead
+  of being repeated across live tool schemas. This preserves schema-token budgets while keeping
+  snapshot, evidence, log-filter, and update-overlap controls available to known callers.
+- Diff aggregate file, hunk, addition, removal, binary, and property counts remain complete after
+  detailed per-file summaries reach their 20,000-entry cap; terminal evidence truncation is explicit.
+- Runner line/output truncation now propagates into stored diff evidence, and nonzero/past-end update
+  pages retain total, offset, and bounded top-folder context.
 - Check-style responses report pass counts and failures by default; passing details require
   `includePassing:true` and remain paginated.
 - The full profile now advertises 25 canonical tools. Legacy `svn_move`, `svn_rename`,

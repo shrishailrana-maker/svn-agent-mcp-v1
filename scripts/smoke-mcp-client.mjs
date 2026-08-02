@@ -85,6 +85,15 @@ try {
 
     const status = await callOk(client, "svn_status", { cwd: workingCopy });
     assert(status.items.some((item) => item.path === "client-smoke.txt" && item.status === "added"), "status omitted added file");
+    assert(typeof status.snapshotToken === "string", "status omitted its snapshot token");
+    const unchangedStatus = await callOk(client, "svn_status", {
+      cwd: workingCopy,
+      afterCursor: status.snapshotToken
+    });
+    assert(
+      unchangedStatus.verdict === "NO_CHANGE" && unchangedStatus.unchangedSinceCursor === true,
+      `status snapshot cursor did not return NO_CHANGE: ${JSON.stringify(unchangedStatus)}`
+    );
     const structuredOnly = await client.callTool({
       name: "svn_status",
       arguments: { cwd: workingCopy, responseMode: "structured-only" }
@@ -167,7 +176,8 @@ try {
     const exactLog = await callOk(client, "svn_log", {
       cwd: workingCopy,
       paths: ["client-smoke.txt"],
-      revision: String(committed.revision)
+      revision: String(committed.revision),
+      messageContains: "client smoke"
     });
     assert(exactLog.entries.length === 1 && exactLog.entries[0]?.revision === committed.revision, "exact revision log failed");
     const historical = await callOk(client, "svn_cat", {
@@ -224,6 +234,20 @@ try {
     });
     assert(String(largeDiff.excerpt).length <= 8_000, "compact full diff exceeded its excerpt cap");
     assert(largeDiff.truncated === true && /^\d+$/.test(largeDiff.nextCursor), "large diff omitted continuation");
+    assert(typeof largeDiff.operationId === "string", "large diff omitted its stable evidence operation ID");
+    const continuedDiff = await callOk(client, "svn_diff", {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      diffMode: "full",
+      operationId: largeDiff.operationId,
+      cursor: largeDiff.nextCursor,
+      maxChars: 64_000,
+      maxFiles: 500
+    });
+    assert(
+      continuedDiff.operationId === largeDiff.operationId,
+      "diff continuation did not reuse the stored operation evidence"
+    );
     passed.push("large-diff");
 
     const statusAfterLargeDiff = await callOk(client, "svn_status", {

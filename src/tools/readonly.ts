@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { XMLParser } from "fast-xml-parser";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun, redactText } from "../envelope.js";
 import { makeEolCheck } from "../eol.js";
+import { processEvidenceStore } from "../evidenceStore.js";
 import {
   assertExistingTargets,
   isInsideOrEqual,
@@ -90,7 +92,13 @@ export async function getWcContext(cwdInput?: string, pathHints: string[] = []):
   };
 }
 
-export async function svnStatus(input: { cwd?: string; paths?: string[]; includeIgnored?: boolean; hideNoise?: boolean }): Promise<ToolEnvelope> {
+export async function svnStatus(input: {
+  cwd?: string;
+  paths?: string[];
+  includeIgnored?: boolean;
+  hideNoise?: boolean;
+  includeRevisionState?: boolean;
+}): Promise<ToolEnvelope> {
   const context = await getWcContext(input.cwd, input.paths ?? []);
   if (!context.ok) {
     return context.envelope;
@@ -109,6 +117,12 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
     ...(targets.length > 0 ? ["--", ...resolved.paths.map(escapeSvnTarget)] : [])
   ];
   const run = await runSvn(args, context.cwd);
+  const versionRun = run.exitCode === 0 && input.includeRevisionState === true
+    ? await runSvnVersion(context.wcRoot, context.cwd)
+    : null;
+  const versionState = versionRun?.exitCode === 0
+    ? parseSvnVersion(versionRun.stdout)
+    : { range: null, mixed: false, modified: false, switched: false, partial: false };
   const parsed = run.exitCode === 0 ? parseStatusXml(run.stdout) : { changed_paths: [], conflicts: [] };
   if (run.exitCode === 0 && input.includeIgnored && /W155010/.test(`${run.stderr}\n${run.stdout}`)) {
     const knownPaths = new Set(parsed.changed_paths.map((entry) => pathIdentityKey(path.resolve(context.cwd, entry.path))));
@@ -140,6 +154,12 @@ export async function svnStatus(input: { cwd?: string; paths?: string[]; include
       note: run.exitCode === 0 ? successfulRunWarning(run.stderr) : noteFromRun(run)
     }),
     wc_root: context.wcRoot,
+    revision: versionState.range && versionState.range.min === versionState.range.max
+      ? versionState.range.max
+      : null,
+    revision_range: versionState.range,
+    mixed_revision: versionState.mixed,
+    svnversion: versionRun?.exitCode === 0 ? versionRun.stdout.trim() : null,
     filtered_paths: filtered.filtered_paths
   };
 }
@@ -226,6 +246,8 @@ export async function svnDiff(input: {
   lineLimit?: number;
   cursor?: string;
   revision?: string;
+  file?: string;
+  operationId?: string;
 }): Promise<ToolEnvelope & DiffSummary> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
@@ -235,7 +257,15 @@ export async function svnDiff(input: {
       per_file: [],
       per_file_truncated: false,
       diff_excerpt: "",
-      truncated: false
+      truncated: false,
+      total_files: 0,
+      total_lines: 0,
+      total_chars: 0,
+      total_hunks: 0,
+      total_added: 0,
+      total_removed: 0,
+      binary_files: 0,
+      property_files: 0
     };
   }
 
@@ -246,7 +276,15 @@ export async function svnDiff(input: {
       per_file: [],
       per_file_truncated: false,
       diff_excerpt: "",
-      truncated: false
+      truncated: false,
+      total_files: 0,
+      total_lines: 0,
+      total_chars: 0,
+      total_hunks: 0,
+      total_added: 0,
+      total_removed: 0,
+      binary_files: 0,
+      property_files: 0
     };
   }
 
@@ -257,7 +295,15 @@ export async function svnDiff(input: {
       per_file: [],
       per_file_truncated: false,
       diff_excerpt: "",
-      truncated: context.envelope.truncated
+      truncated: context.envelope.truncated,
+      total_files: 0,
+      total_lines: 0,
+      total_chars: 0,
+      total_hunks: 0,
+      total_added: 0,
+      total_removed: 0,
+      binary_files: 0,
+      property_files: 0
     };
   }
 
@@ -268,29 +314,97 @@ export async function svnDiff(input: {
       per_file: [],
       per_file_truncated: false,
       diff_excerpt: "",
-      truncated: false
+      truncated: false,
+      total_files: 0,
+      total_lines: 0,
+      total_chars: 0,
+      total_hunks: 0,
+      total_added: 0,
+      total_removed: 0,
+      binary_files: 0,
+      property_files: 0
     };
+  }
+
+  let effectivePaths = resolved.paths;
+  if (input.file) {
+    const selected = resolveTargetsInsideWc(context.cwd, context.wcRoot, [input.file]);
+    if (!selected.ok || !selected.paths[0]) {
+      return emptyDiffEnvelope(context.cwd, selected.ok ? "explicit diff file required" : selected.note);
+    }
+    const selectedPath = selected.paths[0];
+    if (!resolved.paths.some((scopePath) => isInsideOrEqual(selectedPath, scopePath))) {
+      return emptyDiffEnvelope(context.cwd, "selected diff file is outside the explicit path scope");
+    }
+    effectivePaths = [selectedPath];
   }
 
   const lineLimit = input.lineLimit ?? defaultDiffLineLimit();
   const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
   const ignoreEol = input.showEolChanges ? false : input.ignoreEol ?? true;
+  const evidenceScope = diffEvidenceScope(context.wcRoot, effectivePaths, input.revision, ignoreEol);
+  if (input.operationId) {
+    const evidence = processEvidenceStore.get(input.operationId, "svn_diff", evidenceScope);
+    if (!evidence.ok) {
+      return {
+        ...emptyDiffEnvelope(context.cwd, evidence.note),
+        code: evidence.code,
+        wc_root: context.wcRoot
+      };
+    }
+    const storedSummary = evidence.metadata.summary as DiffSummary;
+    const evidenceTruncated = evidence.truncated || evidence.metadata.sourceTruncated === true;
+    const lines = evidence.text ? evidence.text.split("\n") : [];
+    const page = lines.slice(lineOffset, lineOffset + lineLimit);
+    const nextOffset = lineOffset + page.length;
+    const hasMore = nextOffset < lines.length;
+    return {
+      ...createEnvelope({
+        ok: true,
+        command: "svn diff evidence",
+        cwd: context.cwd,
+        truncated: hasMore || evidenceTruncated
+      }),
+      ...storedSummary,
+      diff_excerpt: page.join("\n"),
+      truncated: hasMore || evidenceTruncated,
+      wc_root: context.wcRoot,
+      page_offset: lineOffset,
+      ...(hasMore ? { next_cursor: String(nextOffset) } : {}),
+      operation_id: input.operationId,
+      evidence_expires_at: evidence.expiresAt,
+      evidence_truncated: evidenceTruncated,
+      evidence_terminal_truncation: evidenceTruncated && !hasMore,
+      ignore_eol: ignoreEol
+    };
+  }
   const revisionArgs = input.revision
     ? [isRevisionRange(input.revision) ? "-r" : "-c", input.revision]
     : [];
   const args = ignoreEol
-    ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...resolved.paths]
-    : ["diff", ...revisionArgs, "--internal-diff", "--", ...resolved.paths];
+    ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...effectivePaths]
+    : ["diff", ...revisionArgs, "--internal-diff", "--", ...effectivePaths];
   const diffAccumulator = createDiffAccumulator(lineLimit, lineOffset);
   const run = await runSvnStreamingLines(args, context.cwd, diffAccumulator.pushLine, { stdoutLineLimit: lineLimit });
   const rawDiff = run.exitCode === 0
     ? diffAccumulator.summary()
-    : { per_file: [], per_file_truncated: false, diff_excerpt: "", truncated: false };
+    : {
+        per_file: [], per_file_truncated: false, diff_excerpt: "", truncated: false,
+        total_files: 0, total_lines: 0, total_chars: 0, total_hunks: 0,
+        total_added: 0, total_removed: 0, binary_files: 0, property_files: 0
+      };
   const diff = {
     ...rawDiff,
     diff_excerpt: redactText(rawDiff.diff_excerpt),
     truncated: rawDiff.truncated || Boolean(run.truncated)
   };
+  const detail = diffAccumulator.detail();
+  const storedEvidence = run.exitCode === 0
+    ? processEvidenceStore.put("svn_diff", evidenceScope, redactText(detail.text), {
+        summary: diff,
+        sourceTruncated: detail.truncated || Boolean(run.truncated)
+      })
+    : null;
   const eolDiagnostic = run.exitCode !== 0 && isInconsistentEolRun(run)
     ? await eolCheck({ cwd: context.cwd, paths: resolved.paths })
     : null;
@@ -301,6 +415,14 @@ export async function svnDiff(input: {
   const ignoredStatus = ignoredDiffEmpty ? await svnStatus({ cwd: context.cwd, paths: resolved.paths }) : null;
   const eolOnly = ignoredStatus?.ok === true
     && ignoredStatus.changed_paths.some((entry) => entry.status === "M");
+  const evidencePage = storedEvidence
+    ? diffEvidencePage({
+        pageOffset: lineOffset,
+        pageLineCount: excerptLineCount(diff.diff_excerpt),
+        storedLineCount: storedEvidence.storedLineCount,
+        sourceTruncated: detail.truncated || Boolean(run.truncated) || storedEvidence.truncated
+      })
+    : null;
   return {
     ...envelopeFromRun({
       run,
@@ -317,7 +439,15 @@ export async function svnDiff(input: {
     ...diff,
     wc_root: context.wcRoot,
     page_offset: lineOffset,
-    ...(diff.truncated ? { next_cursor: String(lineOffset + excerptLineCount(diff.diff_excerpt)) } : {}),
+    ...(evidencePage?.nextCursor ? { next_cursor: evidencePage.nextCursor } : {}),
+    ...(storedEvidence
+      ? {
+          operation_id: storedEvidence.operationId,
+          evidence_expires_at: storedEvidence.expiresAt,
+          evidence_truncated: evidencePage?.sourceTruncated === true,
+          evidence_terminal_truncation: evidencePage?.terminalTruncation === true
+        }
+      : {}),
     ignore_eol: ignoreEol,
     eol_only: eolOnly,
     ...(input.showEolChanges ? { eol_changes_included: true } : {}),
@@ -330,12 +460,63 @@ export async function svnDiff(input: {
   };
 }
 
+export function diffEvidencePage(input: {
+  pageOffset: number;
+  pageLineCount: number;
+  storedLineCount: number;
+  sourceTruncated: boolean;
+}): {
+  sourceTruncated: boolean;
+  terminalTruncation: boolean;
+  nextCursor?: string;
+} {
+  const nextOffset = input.pageOffset + input.pageLineCount;
+  const hasMore = input.pageLineCount > 0 && nextOffset < input.storedLineCount;
+  return {
+    sourceTruncated: input.sourceTruncated,
+    terminalTruncation: input.sourceTruncated && !hasMore,
+    ...(hasMore ? { nextCursor: String(nextOffset) } : {})
+  };
+}
+
+function emptyDiffEnvelope(cwd: string, note: string): ToolEnvelope & DiffSummary {
+  return {
+    ...failEnvelope("svn diff", cwd, note),
+    per_file: [],
+    per_file_truncated: false,
+    diff_excerpt: "",
+    truncated: false,
+    total_files: 0,
+    total_lines: 0,
+    total_chars: 0,
+    total_hunks: 0,
+    total_added: 0,
+    total_removed: 0,
+    binary_files: 0,
+    property_files: 0
+  };
+}
+
+function diffEvidenceScope(wcRoot: string, paths: string[], revision: string | undefined, ignoreEol: boolean): string {
+  const value = JSON.stringify({
+    wcRoot: pathIdentityKey(wcRoot),
+    paths: paths.map((item) => pathIdentityKey(item)).sort(),
+    revision: revision ?? null,
+    ignoreEol
+  });
+  return createHash("sha256").update(value).digest("base64url");
+}
+
 export async function svnLog(input: {
   cwd?: string;
   paths?: string[];
   limit?: number;
   verbose?: boolean;
   changedPaths?: boolean;
+  changedPathsSummary?: boolean;
+  messageContains?: string;
+  messageCaseSensitive?: boolean;
+  scanLimit?: number;
   cursor?: string;
   revision?: string;
 }): Promise<ToolEnvelope> {
@@ -349,6 +530,9 @@ export async function svnLog(input: {
   }
   if (input.cursor && !/^\d+(?::\d+)?$/.test(input.cursor)) {
     return failEnvelope("svn log", cwd, "invalid cursor");
+  }
+  if (input.messageContains !== undefined && (!input.messageContains.trim() || input.messageContains.length > 256)) {
+    return failEnvelope("svn log", cwd, "messageContains must contain 1 to 256 characters");
   }
 
   const context = await getWcContext(input.cwd, input.paths ?? []);
@@ -364,8 +548,9 @@ export async function svnLog(input: {
 
   const logTargets = await repositoryLogTargets(context.cwd, resolved.paths);
   const limit = input.limit ?? 10;
-  const args = ["log", "--xml", "-l", String(limit + 1)];
-  if (input.changedPaths ?? input.verbose ?? false) {
+  const scanLimit = input.messageContains ? input.scanLimit ?? Math.max(limit, 100) : limit;
+  const args = ["log", "--xml", "-l", String(scanLimit + 1)];
+  if (input.changedPathsSummary || input.changedPaths || input.verbose) {
     args.push("-v");
   }
   if (input.cursor) {
@@ -379,7 +564,26 @@ export async function svnLog(input: {
 
   const run = await runSvn(args, context.cwd);
   const parsedEntries = run.exitCode === 0 ? parseLogXml(run.stdout) : [];
-  const entries = parsedEntries.slice(0, limit);
+  const scannedEntries = parsedEntries.slice(0, scanLimit);
+  const needle = input.messageContains ?? "";
+  const comparableNeedle = input.messageCaseSensitive ? needle : needle.toLocaleLowerCase();
+  const matchingEntries = needle
+    ? scannedEntries.filter((entry) => {
+        const message = input.messageCaseSensitive ? entry.msg : entry.msg.toLocaleLowerCase();
+        return message.includes(comparableNeedle);
+      })
+    : scannedEntries;
+  const entries = matchingEntries.slice(0, limit);
+  const scanTruncated = parsedEntries.length > scannedEntries.length;
+  const matchesTruncated = matchingEntries.length > entries.length;
+  const continuationRevision = matchesTruncated
+    ? (entries.at(-1)?.rev ?? 0) - 1
+    : scanTruncated
+      ? (scannedEntries.at(-1)?.rev ?? 0) - 1
+      : null;
+  const nextCursor = continuationRevision !== null
+    ? boundedLogCursor(continuationRevision, input.cursor, input.revision)
+    : null;
   const revisions = entries.map((entry) => entry.rev);
   const revisionRange = revisions.length > 1
     ? { min: Math.min(...revisions), max: Math.max(...revisions) }
@@ -394,9 +598,31 @@ export async function svnLog(input: {
     entries,
     entry_count: entries.length,
     revision_range: revisionRange,
-    has_more: parsedEntries.length > entries.length,
+    has_more: matchesTruncated || scanTruncated,
+    scanned_count: scannedEntries.length,
+    matched_count: matchingEntries.length,
+    scan_truncated: scanTruncated,
+    ...(nextCursor ? { next_cursor: nextCursor } : {}),
     target_mode: logTargets.mode
   };
+}
+
+function boundedLogCursor(nextRevision: number, cursor?: string, revision?: string): string | null {
+  const cursorFloor = cursor?.match(/^\d+:(\d+)$/)?.[1];
+  const range = revision?.match(/^(\d+):(\d+)$/);
+  const floor = cursorFloor !== undefined
+    ? Number.parseInt(cursorFloor, 10)
+    : cursor && /^\d+$/.test(cursor)
+      ? 0
+      : !revision
+        ? 0
+        : range && Number.parseInt(range[1] ?? "0", 10) >= Number.parseInt(range[2] ?? "0", 10)
+          ? Number.parseInt(range[2] ?? "0", 10)
+          : null;
+  if (floor === null || nextRevision < floor) {
+    return null;
+  }
+  return floor > 0 ? `${nextRevision}:${floor}` : String(Math.max(0, nextRevision));
 }
 
 export async function svnCat(input: {

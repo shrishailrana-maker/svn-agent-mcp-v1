@@ -41,6 +41,16 @@ try {
       throw new Error(`installed third-party notice is missing: ${relative}`);
     }
   }
+  const apiContract = JSON.parse(fs.readFileSync(path.join(packageRoot, "docs", "MCP_API.json"), "utf8"));
+  const advancedInputs = apiContract.globalResponseControls?.advancedInputs?.names;
+  if (!advancedInputs?.svn_status?.includes("afterCursor")
+      || !advancedInputs?.svn_status?.includes("conflictCursor")
+      || !advancedInputs?.svn_diff?.includes("operationId")
+      || !advancedInputs?.svn_log?.includes("messageContains")
+      || !advancedInputs?.svn_update?.includes("targetOverlapOnly")
+      || !advancedInputs?.svn_update?.includes("conflictCursor")) {
+    throw new Error(`installed API contract omitted advanced inputs: ${JSON.stringify(advancedInputs)}`);
+  }
   const staleRuntimeFiles = fs.readdirSync(path.join(packageRoot, "bin"))
     .filter((name) => /Slik|libssl|libcrypto/i.test(name));
   if (staleRuntimeFiles.length > 0) {

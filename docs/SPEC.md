@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.28 — public implementation contract. Single source of truth.**
+**Spec version 1.29 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -228,6 +228,21 @@ every live tool schema. The call router validates projection names before invoki
 also skips its status or info subprocess group when the requested fields prove that group is not
 needed. Safety checks in precommit and mutations never skip work because of projection.
 
+High-volume controls that are useful only after an initial receipt are validated by the same call
+router and published once under `globalResponseControls.advancedInputs` in `MCP_API.json`. They are
+not repeated in every live tool schema. This catalog includes snapshot cursors, stable diff evidence,
+bounded log filtering/summaries, and update overlap/paging controls. A client that rejects unknown
+input properties must construct calls from the generated contract or use an MCP client that forwards
+these validated extension fields.
+
+Status/snapshot tokens are opaque, process-local, working-copy and query bound, valid for 15 minutes,
+and capped at 512 live tokens. Diff evidence is process-local, bound to operation kind and request
+scope, valid for 10 minutes, capped at 2 MiB per operation, 32 operations, and 16 MiB total. Invalid,
+expired, wrong-scope, or wrong-kind identifiers return typed errors. Neither token family survives a
+server restart or stores repository evidence outside server memory.
+Conflict evidence uses an independent `conflictCursor`, pages at most 100 explicit paths, and always
+reports total count and truncation. This keeps safety evidence reachable without unbounded receipts.
+
 ### 6.5 Tool profiles
 
 Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
@@ -324,7 +339,7 @@ svn invocation (before path resolution).
 
 ### 8.1 Read-only tools (allowed under READONLY)
 
-**`svn_status`** — `{ cwd?, paths?: string[], statuses?, includeUnversioned?, countOnly?, maxItems?, cursor? }`
+**`svn_status`** — `{ cwd?, paths?: string[], statuses?, includeUnversioned?, countOnly?, maxItems?, cursor?, afterCursor? }`
 argv: `svn status --xml [--no-ignore] [paths…]` (default target: `.` of explicit `cwd`;
 when both `cwd` and absolute path hints are absent, the MCP refuses instead of falling back to
 its launch directory). Inputs also accept
@@ -335,6 +350,11 @@ from `changed_paths` while reporting filtered paths in `filtered_paths`. Parses 
 property conflicts into `{type:"prop"}`, and tree/text conflicts into `conflicts`. Compact output
 returns status counts plus bounded working-copy-relative items; `truncated` and `nextCursor`
 identify continuation without silently dropping entries.
+The first compact/receipt response includes `snapshotToken`. Repeating the same scoped query with
+`afterCursor` returns only `verdict:"NO_CHANGE"` plus a replacement token when revision, status,
+conflict, or guard-relevant state is unchanged. Query and working-copy mismatches are refused.
+An unchanged conflict or guarded status is still `NO_CHANGE`; the receipt retains its conflict count
+instead of falsely reporting a state transition.
 Successful SVN warnings remain visible. With `includeIgnored:true`, an exact existing path hidden
 below an ignored directory is recovered from `W155010` by checking its contained parent chain; the
 result is status `I` with `covered_by_ignored_ancestor:true` and the working-copy-relative
@@ -349,7 +369,7 @@ in `note`. The MCP also returns `svnversion`, `revision_range:{min,max}`, `local
 mixed-revision working copy from dirty local edits. Compact callers may project the corresponding
 camel-case fields instead of receiving every metadata field.
 
-**`svn_diff`** — `{ cwd?, paths: string[], revision?: RevisionSelector, ignoreEol?: boolean = true, showEolChanges?: boolean = false, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
+**`svn_diff`** — `{ cwd?, paths: string[], file?, revision?: RevisionSelector, ignoreEol?: boolean = true, showEolChanges?: boolean = false, lineLimit?: number = 200, diffMode?: "summary"|"counts"|"hunk-headings"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor?, operationId? }`
 argv (default): `svn diff --internal-diff -x --ignore-eol-style -- <paths…>` — the generic
 commit-prep standard. `ignoreEol:false` → `svn diff --internal-diff -- <paths…>` (raw, for EOL
 diagnosis); `showEolChanges:true` is the clearer diagnostic opt-out. A pure EOL working change
@@ -366,8 +386,18 @@ shaping, up to 20,000 file summaries. `per_file_truncated:true` reports when tha
 reached. A single streamed line is capped at 1 MiB and visibly marked.
 An exact `revision` uses `svn diff -c`; a `start:end` selector uses `svn diff -r`, preserving the
 same bounded summary/excerpt behavior for committed revisions.
+Every fresh compact diff returns total files, lines, characters, and hunks plus an `operationId` for
+the bounded detail. `counts` (and legacy `summary`) omits hunks; `hunk-headings` returns each file's
+first hunk/meaningful line and explicit omitted-hunk/line counts. Optional `file` selects one path
+inside the original explicit scope. A continuation with `operationId` reads the stored evidence and
+does not rerun SVN, so the page is stable if the working copy changes between calls.
+Aggregate additions, removals, binary files, and property files continue counting after the bounded
+per-file detail map is full. If retained operation evidence reaches its byte cap, every page reports
+`evidenceTruncated`; the final available page adds `evidenceTerminalTruncation` and no unusable cursor.
+Runner-level over-limit lines/output contribute to the same terminal state as evidence-store and
+detail-capture limits.
 
-**`svn_log`** — `{ cwd?, paths?: string[], revision?: RevisionSelector, limit?: number = 10, verbose?: boolean = false, fullMessage?, changedPaths?, maxMessageChars?, maxChangedPaths?, cursor? }`
+**`svn_log`** — `{ cwd?, paths?: string[], revision?: RevisionSelector, limit?: number = 10, verbose?: boolean = false, fullMessage?, changedPaths?, changedPathsSummary?, maxTopLevelDirectories?, maxMessageChars?, maxChangedPaths?, messageContains?, messageCaseSensitive?, scanLimit?, cursor? }`
 argv: `svn log --xml -l <limit+1> [-v] [targets…]`; the extra entry determines whether a
 continuation exists and is not returned. For working-copy targets, the MCP
 resolves target URLs and queries repository URLs at HEAD when possible. This avoids the common
@@ -381,6 +411,10 @@ An exact or ranged `revision` performs a direct lookup; `revision` and `cursor` 
 One returned entry keeps the top-level numeric `revision`. Multiple returned entries instead use
 `revision:null`, `revision_range:{min,max}`, and `entry_count`; changed paths remain bounded within
 their entries and are not aggregated at the top level.
+`messageContains` performs a bounded server-side scan (case-insensitive unless
+`messageCaseSensitive:true`) and reports scanned/matched counts plus continuation even when a page
+contains zero matches. `scanLimit` is capped at 500. `changedPathsSummary:true` returns per-entry
+action counts and bounded top-level directory names without emitting the full path list.
 
 **`svn_cat`** — `{ cwd?, path: string, revision?: Revision, maxChars?: number = 16000, cursor? }`
 Returns one character-bounded page of one contained working-copy file at an optional revision.
@@ -443,9 +477,10 @@ credentials.
 
 ### 8.3 Composite tools (the P1 killers)
 
-**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor? }`
+**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor?, afterCursor? }`
 Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
-items in one response. It performs no mutation and is available under READONLY.
+items in one response. It performs no mutation and is available under READONLY. Snapshot tokens use
+the same `afterCursor`/`NO_CHANGE` contract as status and additionally bind revision/head/range state.
 
 **`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, requireUniformRevision?: boolean = false }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
@@ -479,6 +514,8 @@ Compact mode returns one authoritative receipt: path count, status counts, diff 
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
 `includeDiff:true` is requested. An early setup/status failure returns a compact diagnostic instead
 of implying that diff or EOL checks passed.
+It also returns `eolCheckComplete:true` and a SHA256 `eolPolicyIdentity` over the checked target and
+exclude policy, allowing a caller to avoid a redundant standalone EOL check for the same slice.
 Working-copy-root and existing-directory targets use the same `allowRoot` and
 `allowDirectoryTargets` acknowledgements as `svn_commit`, so `READY` does not contradict those
 target-scope guards for the same requested slice.
@@ -496,7 +533,8 @@ reports `before` + inferred converter/target, touches nothing. Never invoked imp
 other tool (fixing is always an explicit caller decision). Missing paths, non-files, binary files,
 and `sniff:"skipped-too-large"` files return structured refusals; oversized files require
 explicit `allowLarge:true`. No PowerShell scripts, byte rewrites, pipes, redirects, or shell
-quoting are involved.
+quoting are involved. `svn_add` may apply the same verified conversion transactionally when the
+repository policy enables `normalizeEol`; existing tracked-file repair remains an explicit call.
 `paths` accepts up to 500 explicit files and returns one aggregate receipt. Passing files are
 counted; failures retain bounded per-file evidence. Directories and implicit working-copy scans are
 refused. SHA256 over canonical LF/no-BOM content proves EOL conversion preserved content.
@@ -543,7 +581,7 @@ The legacy `svn_move`, `svn_rename`, and `svn_copy` routes remain callable in th
 compatibility but are omitted from tool discovery. They have the same guards and behavior as the
 corresponding `svn_path_change` action.
 
-**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer }`
+**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, maxItems?, cursor?, taskPaths?, targetOverlapOnly? }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
 requirement in §5.2 remains the caller's responsibility). argv:
 `svn update [-r <revision>] --accept postpone [paths…]`. Revision ranges are refused. An optional
@@ -552,8 +590,14 @@ repository HEAD still matches the caller's value; the numeric `-r` keeps the ope
 if HEAD advances after the check. Parses multi-column update output + "Summary of conflicts" →
 `changed_paths` + `conflicts`; any conflict ⇒ prominent `note`. Returns `requested_revision`,
 `resulting_revision` (null for a mixed WC), `revision_range`, and `mixed_revision`. Never auto-resolves.
-Compact receipts include up to 100 working-copy-relative `changedPaths`; larger updates return
-`changedPathCount` and `changedPathsTruncated:true` rather than silently dropping the remainder.
+Compact receipts include paged working-copy-relative `changedPaths`, complete conflicts, action
+counts, changed top-level folders, and total changed count. `taskPaths` highlights overlap with the
+caller's explicit work; `targetOverlapOnly:true` returns only that overlap plus an unrelated-change
+count. `maxItems` is capped at 500 and `cursor` continues the changed-path page.
+Top-folder summaries are capped at 25 with explicit total/truncation fields. Conflict paths use their
+own 100-item `conflictCursor` pages and are never silently omitted.
+Any nonzero or past-end changed-path cursor retains `changedCount`, `changedPathCount`, `pageOffset`,
+and bounded top-folder context; past-end pages add `cursorPastEnd:true`.
 
 **`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true }`
 `dryRun:true` (default) = preview: returns scoped status + per-file ± counts of what would be
@@ -740,6 +784,14 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.29 / Unreleased — 2026-08-02
+
+- Adds query-bound status/snapshot `NO_CHANGE` tokens and bounded operation evidence for stable
+  diff continuation without rerunning SVN.
+- Adds diff totals and hunk-heading modes, bounded log filtering/action summaries, update overlap
+  summaries, and precommit EOL-policy proof.
+- Publishes high-volume controls once in the generated contract to retain strict schema budgets.
 
 ### Spec 1.28 / Unreleased — 2026-08-02
 
@@ -1196,8 +1248,8 @@ work grounded in practical workflow friction, not abstract SVN theory.
 | 11 | Archiving or moving files is risky because external notes or checklists may reference exact paths. | `svn_move`/`svn_rename` are guarded, scoped, and report changed paths. | The MCP does not yet maintain a reference map or warn about out-of-repo links. |
 | 12 | Noisy status from ignored local runtime folders and generated artifacts. | Never-commit guards block common generated/dependency/cache paths; `svn_status hideNoise:true` filters common local clutter. | Project-specific noise may need local conventions or future custom filters. |
 | 13 | `svn status --no-ignore` is useful for audit but noisy for daily work. | Normal MCP status avoids `--no-ignore`; `includeIgnored:true` enables explicit ignored-path audits. | Callers must choose audit mode deliberately. |
-| 14 | EOL problems can make `svn diff` fail instead of merely showing a messy diff. | `svn_diff` defaults to ignored-EOL internal diff; v0.1.7 returns EOL diagnostics and `recovery_tool:"eol_fix_verified"` on inconsistent EOL failures. | Files still need explicit repair through `eol_fix_verified`; the MCP will not mutate implicitly. |
-| 15 | Editing tools can introduce LF into native-CRLF SVN files, causing diff/commit friction. | `eol_check` and `eol_fix_verified` detect and repair single files through bundled converters. | Preventing bad writes at source depends on editor/client behavior outside the MCP. |
+| 14 | EOL problems can make `svn diff` fail instead of merely showing a messy diff. | `svn_diff` defaults to ignored-EOL internal diff; failures return EOL diagnostics and `recovery_tool:"eol_fix_verified"`. | Existing tracked files may still need explicit batch repair. |
+| 15 | Editing tools can introduce LF into native-CRLF SVN files, causing diff/commit friction. | Repository policy can make `svn_add` transactionally normalize and verify new text files; batch `eol_fix_verified` repairs existing files. | Editors can still alter tracked files after add, so precommit EOL verification remains required. |
 | 16 | PowerShell byte rewrites or redirects are risky for tracked text files. | The MCP uses `unix2dos`/`dos2unix` binaries through `execFile`; docs forbid PowerShell EOL repair. | Callers should use MCP tools rather than ad hoc shell rewrites. |
 | 17 | Raw `svn diff` command flags are easy to forget and waste tokens. | `svn_diff` owns `svn diff --internal-diff -x --ignore-eol-style` by default and returns structured summaries. | Full raw diffs may still be needed for detailed review. |
 | 18 | SVN history lookup is clunkier than modern Git workflows. | `svn_log` returns structured XML-parsed entries and now avoids mixed-root log gaps. | Higher-level "what changed between these revisions" summaries are future tooling. |

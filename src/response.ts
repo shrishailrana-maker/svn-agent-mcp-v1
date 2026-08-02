@@ -1,5 +1,6 @@
 import path from "node:path";
 import { redactText } from "./envelope.js";
+import { processSnapshotTokens } from "./snapshotToken.js";
 import type { ChangedPath, ToolEnvelope } from "./types.js";
 
 export type ResponseMode = "compact" | "standard" | "full" | "receipt" | "structured-only";
@@ -56,6 +57,8 @@ const MUTATION_STATUS: Record<string, string> = {
 // newline delimiter; this bound limits the damage from clients that do not.
 const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
 const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
+const COMPACT_CONFLICT_PAGE_SIZE = 100;
+const COMPACT_TOP_FOLDER_LIMIT = 25;
 const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 
 export function defaultResponseMode(
@@ -217,7 +220,7 @@ function receiptPayload(
   const nextOffset = offset + page.length;
   const nextCursor = nextOffset < changedPaths.length ? String(nextOffset) : payload.next_cursor;
 
-  return {
+  const result = {
     ok: true,
     ...(payload.verdict ? { verdict: payload.verdict } : {}),
     ...(baseRevision !== null && baseRevision !== undefined ? { baseRevision } : {}),
@@ -231,6 +234,16 @@ function receiptPayload(
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
     ...(nextCursor ? { nextCursor } : {})
   };
+  if (tool === "svn_status" || tool === "svn_snapshot") {
+    return withSnapshotToken(tool, payload, request, result, {
+      revision: payload.revision,
+      revisionRange: payload.revision_range,
+      remoteHeadRevision: payload.remote_head_revision,
+      changedPaths: payload.changed_paths,
+      conflicts: payload.conflicts
+    });
+  }
+  return result;
 }
 
 function standardPayload(payload: ToolEnvelope): Record<string, unknown> {
@@ -246,7 +259,9 @@ function standardPayload(payload: ToolEnvelope): Record<string, unknown> {
 const PROJECTION_SAFETY_FIELDS = [
   "ok", "ready", "verdict", "code", "note", "warning", "warningCode", "warningDetail",
   "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts", "conflictCount",
-  "truncated", "nextCursor", "nextFileCursor", "hasMore", "recoveryTool", "remediation"
+  "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
+  "hasMore", "recoveryTool", "remediation",
+  "snapshotToken", "unchangedSinceCursor", "changedSinceCursor"
 ] as const;
 
 function applyFieldProjection(
@@ -278,8 +293,8 @@ function applyFieldProjection(
     changedPaths,
     conflicts,
     totalFiles: perFile.length,
-    added: perFile.reduce((sum, file) => sum + numberValue(file.added), 0),
-    removed: perFile.reduce((sum, file) => sum + numberValue(file.removed), 0),
+    added: payload.total_added ?? perFile.reduce((sum, file) => sum + numberValue(file.added), 0),
+    removed: payload.total_removed ?? perFile.reduce((sum, file) => sum + numberValue(file.removed), 0),
     ...shaped
   };
   const projected = projectFields(source, fields);
@@ -338,6 +353,7 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
   const submittedPathCount = stringArray(request.paths).length;
   return {
     ok: false,
+    ...(payload.code ? { code: payload.code } : {}),
     ...(guardCode ? { guardCode } : {}),
     note: payload.note || "svn command failed",
     ...(!guardCode && payload.stdout_summary ? { stdout: payload.stdout_summary } : {}),
@@ -429,15 +445,28 @@ function compactInfo(payload: ToolEnvelope, request: Record<string, unknown>): R
 
 function compactSnapshot(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const info = compactInfo(payload, {});
-  const status = compactStatus(payload, { ...request, cwd: request.cwd ?? payload.cwd });
+  const status = compactStatus(payload, {
+    ...request,
+    cwd: request.cwd ?? payload.cwd,
+    suppressSnapshotToken: true,
+    afterCursor: undefined
+  });
   const { ok: _infoOk, ...infoFields } = info;
   const { ok: _statusOk, truncated, ...statusFields } = status;
-  return {
+  const result = {
     ok: true,
     ...infoFields,
     ...statusFields,
     ...(truncated === true ? { truncated: true } : {})
   };
+  return withSnapshotToken("svn_snapshot", payload, request, result, {
+    revision: payload.revision,
+    revisionRange: payload.revision_range,
+    remoteHeadRevision: payload.remote_head_revision,
+    mixedRevision: payload.mixed_revision,
+    changedPaths: payload.changed_paths,
+    conflicts: payload.conflicts
+  });
 }
 
 function compactCat(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
@@ -571,9 +600,11 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
   const sourceEntries = recordArray(payload.entries);
   const limit = boundedInteger(request.limit, 10, 1, 100);
   const includeFullMessage = request.fullMessage === true;
-  const includeChangedPaths = request.changedPaths === true || request.verbose === true;
+  const includeChangedPathsSummary = request.changedPathsSummary === true;
+  const includeChangedPaths = !includeChangedPathsSummary && (request.changedPaths === true || request.verbose === true);
   const maxMessageChars = boundedInteger(request.maxMessageChars, includeFullMessage ? 2000 : 240, 32, 8000);
   const maxChangedPaths = boundedInteger(request.maxChangedPaths, 100, 1, 500);
+  const maxTopLevelDirectories = boundedInteger(request.maxTopLevelDirectories, 10, 1, 50);
   const entries = sourceEntries.slice(0, limit).map((entry) => {
     const rawMessage = redactText(includeFullMessage ? stringValue(entry.msg) : firstLine(stringValue(entry.msg)));
     const message = rawMessage.slice(0, maxMessageChars);
@@ -593,6 +624,9 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
             changedPaths,
             ...(changedPaths.length < allChangedPaths.length ? { changedPathsTruncated: true } : {})
           }
+        : {}),
+      ...(includeChangedPathsSummary
+        ? { changedPathsSummary: summarizeLogChangedPaths(allChangedPaths, maxTopLevelDirectories) }
         : {})
     };
   });
@@ -602,11 +636,12 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
   const truncated = payload.has_more === true || sourceEntries.length > entries.length;
   const continuationFloor = logContinuationFloor(request);
   const nextRevision = typeof lastRevision === "number" ? lastRevision - 1 : null;
-  const nextCursor = truncated && nextRevision !== null && continuationFloor !== null && nextRevision >= continuationFloor
+  const sourceNextCursor = stringValue(payload.next_cursor);
+  const nextCursor = sourceNextCursor || (truncated && nextRevision !== null && continuationFloor !== null && nextRevision >= continuationFloor
     ? continuationFloor > 0
       ? `${nextRevision}:${continuationFloor}`
       : String(Math.max(0, nextRevision))
-    : null;
+    : null);
 
   return {
     ok: true,
@@ -618,10 +653,50 @@ function compactLog(payload: ToolEnvelope, request: Record<string, unknown>): Re
         }
       : {}),
     entries,
+    ...(request.messageContains !== undefined
+      ? {
+          scannedCount: numberValue(payload.scanned_count),
+          matchedCount: numberValue(payload.matched_count),
+          scanTruncated: payload.scan_truncated === true,
+          ...(entries.length === 0 ? { noMatches: true } : {})
+        }
+      : {}),
     ...(payload.target_mode === "working-copy-path" ? { targetMode: payload.target_mode } : {}),
     truncated,
     ...(nextCursor !== null ? { nextCursor } : {})
   };
+}
+
+function summarizeLogChangedPaths(
+  changedPaths: Array<Record<string, unknown>>,
+  maxTopLevelDirectories: number
+): Record<string, unknown> {
+  const actions: Record<string, number> = {};
+  const directories = new Map<string, number>();
+  for (const item of changedPaths) {
+    const action = logActionName(stringValue(item.status));
+    actions[action] = (actions[action] ?? 0) + 1;
+    const normalized = stringValue(item.path).replace(/\\/g, "/").replace(/^\/+/, "");
+    const top = normalized.includes("/") ? normalized.split("/", 1)[0] ?? "." : ".";
+    directories.set(top, (directories.get(top) ?? 0) + 1);
+  }
+  const allDirectories = [...directories.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  const topLevelDirectories = allDirectories.slice(0, maxTopLevelDirectories)
+    .map(([path, count]) => ({ path, count }));
+  return {
+    total: changedPaths.length,
+    actions,
+    topLevelDirectories,
+    ...(topLevelDirectories.length < allDirectories.length
+      ? { topLevelDirectoriesTruncated: true, topLevelDirectoryCount: allDirectories.length }
+      : {})
+  };
+}
+
+function logActionName(value: string): string {
+  return ({ M: "modified", A: "added", D: "deleted", R: "replaced" } as Record<string, string>)[value]
+    ?? (value ? value.toLowerCase() : "unknown");
 }
 
 function revisionRangeFromLogEntries(entries: Array<Record<string, unknown>>): { min: number; max: number } | null {
@@ -657,7 +732,12 @@ function logContinuationFloor(request: Record<string, unknown>): number | null {
 }
 
 function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
-  const mode = request.diffMode === "summary" || request.diffMode === "full" ? request.diffMode : "compact";
+  const requestedMode = stringValue(request.diffMode);
+  const mode = requestedMode === "summary" || requestedMode === "counts"
+    ? "counts"
+    : requestedMode === "hunk-headings" || requestedMode === "full"
+      ? requestedMode
+      : "compact";
   const sourceFiles = recordArray(payload.per_file);
   const fileSummaryTruncated = payload.per_file_truncated === true;
   const fileOffset = cursorOffset(request.fileCursor);
@@ -668,7 +748,10 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
     added: file.added,
     removed: file.removed,
     binary: file.binary,
-    ...(file.property_changed === true ? { propertyChanged: true } : {})
+    ...(file.property_changed === true ? { propertyChanged: true } : {}),
+    ...(file.hunks !== undefined ? { hunks: numberValue(file.hunks) } : {}),
+    ...(file.first_hunk ? { firstHunk: file.first_hunk } : {}),
+    ...(file.first_meaningful_line ? { firstMeaningfulLine: file.first_meaningful_line } : {})
   }));
   const excerpt = stringValue(payload.diff_excerpt);
   const offset = numberValue(payload.page_offset);
@@ -678,7 +761,20 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   );
   const maxHunksPerFile = mode === "full"
     ? Number.MAX_SAFE_INTEGER
-    : boundedInteger(request.maxHunksPerFile, 3, 1, 20);
+    : boundedInteger(request.maxHunksPerFile, 1, 1, 20);
+  const totalFiles = numberValue(payload.total_files) || sourceFiles.length;
+  const totalLines = numberValue(payload.total_lines);
+  const totalChars = numberValue(payload.total_chars);
+  const totalHunks = numberValue(payload.total_hunks);
+  const totalAdded = payload.total_added === undefined
+    ? sourceFiles.reduce((sum, file) => sum + numberValue(file.added), 0)
+    : numberValue(payload.total_added);
+  const totalRemoved = payload.total_removed === undefined
+    ? sourceFiles.reduce((sum, file) => sum + numberValue(file.removed), 0)
+    : numberValue(payload.total_removed);
+  const binaryFiles = numberValue(payload.binary_files);
+  const propertyFiles = numberValue(payload.property_files);
+  const evidenceTerminalTruncation = payload.evidence_terminal_truncation === true;
 
   const buildResult = (fileCount: number, excerptCharLimit: number): Record<string, unknown> => {
     const files = requestedFiles.slice(0, fileCount);
@@ -688,11 +784,22 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
     const base = {
       ok: true,
       files,
+      totalFiles,
+      totalLines,
+      totalChars,
+      totalHunks,
+      added: totalAdded,
+      removed: totalRemoved,
+      ...(binaryFiles > 0 ? { binaryFiles } : {}),
+      ...(propertyFiles > 0 ? { propertyFiles } : {}),
+      ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+      ...(payload.evidence_expires_at ? { evidenceExpiresAt: payload.evidence_expires_at } : {}),
+      ...(payload.evidence_truncated === true ? { evidenceTruncated: true } : {}),
+      ...(evidenceTerminalTruncation ? { evidenceTerminalTruncation: true } : {}),
       ...(payload.eol_only === true ? { eolOnly: true, note: "EOL-only, no content change" } : {}),
       ...(fileSummaryTruncated ? { fileSummaryTruncated: true } : {}),
       ...(pagedFiles
         ? {
-            totalFiles: sourceFiles.length,
             filesTruncated,
             ...(filesTruncated ? { nextFileCursor: String(nextFileOffset) } : {})
           }
@@ -700,26 +807,48 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
       ...(payload.ignore_eol === false ? { ignoreEol: false, eolChangesIncluded: true } : {})
     };
 
-    if (mode === "summary") {
+    if (mode === "counts") {
       return {
         ...base,
-        truncated: fileSummaryTruncated || filesTruncated
+        truncated: fileSummaryTruncated || filesTruncated || evidenceTerminalTruncation
+      };
+    }
+
+    if (mode === "hunk-headings") {
+      const headingFiles = files.map((file) => ({
+        ...file,
+        omittedHunks: Math.max(0, numberValue(file.hunks) - (file.firstHunk ? 1 : 0))
+      }));
+      const omittedHunks = headingFiles.reduce((sum, file) => sum + numberValue(file.omittedHunks), 0)
+        + Math.max(0, totalHunks - files.reduce((sum, file) => sum + numberValue(file.hunks), 0));
+      return {
+        ...base,
+        files: headingFiles,
+        omittedHunks,
+        omittedLines: totalLines,
+        truncated: omittedHunks > 0 || fileSummaryTruncated || filesTruncated || payload.truncated === true,
+        ...(payload.operation_id && totalLines > 0 && !evidenceTerminalTruncation ? { nextCursor: "0" } : {})
       };
     }
 
     const page = boundedDiffExcerpt(excerpt, 0, excerptCharLimit, maxHunksPerFile);
-    const hasContinuation = page.nextOffset < lineCount(excerpt) || Boolean(payload.truncated);
+    const hasContinuation = page.nextOffset < lineCount(excerpt)
+      || (Boolean(payload.truncated) && !evidenceTerminalTruncation);
+    const pageHunks = page.text.split("\n").filter((line) => line.startsWith("@@")).length;
     return {
       ...base,
       excerpt: page.text,
-      truncated: hasContinuation || page.lineTruncated || fileSummaryTruncated || filesTruncated,
+      omittedHunks: Math.max(0, totalHunks - pageHunks),
+      omittedLines: Math.max(0, totalLines - lineCount(page.text)),
+      truncated: hasContinuation || page.lineTruncated || fileSummaryTruncated || filesTruncated
+        || evidenceTerminalTruncation,
       ...(page.lineTruncated ? { lineTruncated: true } : {}),
-      ...(hasContinuation ? { nextCursor: String(offset + page.nextOffset) } : {})
+      ...(hasContinuation ? { nextCursor: stringValue(payload.next_cursor) || String(offset + page.nextOffset) } : {})
     };
   };
 
   const minimumFileCount = requestedFiles.length > 0 ? 1 : 0;
-  const excerptCharLimit = mode === "summary"
+  const excerptCharLimit = mode === "counts"
     ? requestedExcerptCharLimit
     : largestFittingInteger(1, requestedExcerptCharLimit, (candidateLimit) =>
         serializedByteLength(buildResult(minimumFileCount, candidateLimit)) <= COMPACT_DIFF_RESULT_BUDGET_BYTES);
@@ -829,6 +958,8 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
         ? { failureCount: allEolFailures.length, failuresTruncated: true }
         : {})
     },
+    ...(payload.eol_check_complete === true ? { eolCheckComplete: true } : {}),
+    ...(payload.eol_policy_identity ? { eolPolicyIdentity: payload.eol_policy_identity } : {}),
     mixedRevision,
     ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
@@ -896,13 +1027,18 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   };
 
   if (payload.conflicts.length > 0) {
-    receipt.conflicts = payload.conflicts.slice(0, 100).map((conflict) => ({
-      path: workingCopyRelativePath(conflict.path, payload.cwd, receiptRoot),
-      type: conflict.type
-    }));
-    if (payload.conflicts.length > 100) {
-      receipt.conflictCount = payload.conflicts.length;
-      receipt.conflictsTruncated = true;
+    if (tool === "svn_update") {
+      Object.assign(receipt, compactConflictPage(payload, request, payload.cwd, receiptRoot));
+    } else {
+      const conflicts = payload.conflicts.slice(0, COMPACT_CONFLICT_PAGE_SIZE).map((conflict) => ({
+        path: workingCopyRelativePath(conflict.path, payload.cwd, receiptRoot),
+        type: conflict.type
+      }));
+      receipt.conflicts = conflicts;
+      if (payload.conflicts.length > conflicts.length) {
+        receipt.conflictCount = payload.conflicts.length;
+        receipt.conflictsTruncated = true;
+      }
     }
   }
   if (payload.post_status_clean !== undefined) {
@@ -939,11 +1075,50 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     }
   }
   if (tool === "svn_update" && payload.changed_paths.length > 0) {
+    const allChangedPaths = payload.changed_paths.map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
+    const taskPaths = uniqueStrings(stringArray(request.taskPaths)
+      .map((item) => receiptPathValue(item, payload.cwd, receiptRoot))
+      .filter((item): item is string => item !== undefined));
+    const taskPathChanges = taskPaths.length > 0
+      ? allChangedPaths.filter((item) => taskPaths.some((taskPath) => pathsOverlap(item.path, taskPath)))
+      : [];
+    const selectedChanges = request.targetOverlapOnly === true ? taskPathChanges : allChangedPaths;
+    const offset = cursorOffset(request.cursor);
+    const maxItems = boundedInteger(request.maxItems, 100, 1, 500);
+    const page = selectedChanges.slice(offset, offset + maxItems);
+    const nextOffset = offset + page.length;
+    const changedPathsTruncated = nextOffset < selectedChanges.length;
     receipt.counts = countByStatus(payload.changed_paths.map((item) => ({ status: normalizeStatus(item.status) })));
-    receipt.changedPaths = payload.changed_paths.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
-    if (payload.changed_paths.length > 100) {
-      receipt.changedPathCount = payload.changed_paths.length;
+    receipt.changedPaths = page;
+    const includePageContext = offset > 0 || changedPathsTruncated || request.targetOverlapOnly === true;
+    if (includePageContext) {
+      receipt.changedCount = allChangedPaths.length;
+      receipt.changedPathCount = allChangedPaths.length;
+      if (offset > 0) {
+        receipt.pageOffset = offset;
+      }
+      if (offset >= selectedChanges.length && selectedChanges.length > 0) {
+        receipt.cursorPastEnd = true;
+      }
+      const topFolders = summarizeTopFolders(allChangedPaths.map((item) => item.path));
+      receipt.changedByTopFolder = topFolders.slice(0, COMPACT_TOP_FOLDER_LIMIT);
+      if (topFolders.length > COMPACT_TOP_FOLDER_LIMIT) {
+        receipt.changedByTopFolderTruncated = true;
+        receipt.changedTopFolderCount = topFolders.length;
+      }
+    }
+    if (taskPathChanges.length > 0) {
+      receipt.taskPathChanges = taskPathChanges.slice(0, maxItems);
+      if (taskPathChanges.length > maxItems) {
+        receipt.taskPathChangesTruncated = true;
+      }
+    }
+    if (request.targetOverlapOnly === true) {
+      receipt.unrelatedChangedCount = allChangedPaths.length - taskPathChanges.length;
+    }
+    if (changedPathsTruncated) {
       receipt.changedPathsTruncated = true;
+      receipt.nextCursor = String(nextOffset);
     }
   }
   if (tool === "svn_update") {
@@ -1027,22 +1202,65 @@ function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>):
   const items = maxItems === 0 ? [] : changed.slice(offset, offset + maxItems);
   const nextOffset = offset + items.length;
   const truncated = !countOnly && nextOffset < changed.length;
-  const conflicts = payload.conflicts.slice(0, 100).map((conflict) => ({
-    path: relativePath(root, conflict.path),
-    type: conflict.type
-  }));
+  const conflictPage = compactConflictPage(payload, request, cwd, root);
 
-  return {
+  const result = {
     ok: true,
     counts,
     items,
-    ...(conflicts.length > 0 ? { conflicts } : {}),
-    ...(payload.conflicts.length > conflicts.length
-      ? { conflictCount: payload.conflicts.length, conflictsTruncated: true }
-      : {}),
+    ...conflictPage,
     ...(payload.note ? { note: payload.note } : {}),
     truncated,
     ...(truncated ? { nextCursor: String(nextOffset) } : {})
+  };
+  if (request.suppressSnapshotToken === true) {
+    return result;
+  }
+  return withSnapshotToken("svn_status", payload, request, result, {
+    revision: payload.revision,
+    revisionRange: payload.revision_range,
+    mixedRevision: payload.mixed_revision,
+    changed,
+    conflicts: payload.conflicts
+  });
+}
+
+function withSnapshotToken(
+  tool: "svn_status" | "svn_snapshot",
+  payload: ToolEnvelope,
+  request: Record<string, unknown>,
+  result: Record<string, unknown>,
+  state: unknown
+): Record<string, unknown> {
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const options = {
+    tool,
+    paths: stringArray(request.paths).map((item) => receiptPathValue(item, payload.cwd, root)),
+    includeIgnored: request.includeIgnored === true,
+    hideNoise: request.hideNoise === true,
+    includeUnversioned: request.includeUnversioned !== false,
+    statuses: stringArray(request.statuses).map(normalizeStatus).sort()
+  };
+  const afterCursor = stringValue(request.afterCursor);
+  if (afterCursor) {
+    const verification = processSnapshotTokens.verify(afterCursor, root, options, state);
+    if (!verification.ok) {
+      return { ok: false, code: verification.code, note: verification.note };
+    }
+    if (verification.unchanged) {
+      return {
+        ok: true,
+        verdict: "NO_CHANGE",
+        unchangedSinceCursor: true,
+        conflictCount: payload.conflicts.length,
+        snapshotToken: processSnapshotTokens.issue(root, options, state)
+      };
+    }
+  }
+  return {
+    ...result,
+    ...(afterCursor ? { changedSinceCursor: true } : {}),
+    snapshotToken: processSnapshotTokens.issue(root, options, state)
   };
 }
 
@@ -1057,6 +1275,29 @@ function compactStatusItem(item: ChangedPath, cwd: string, wcRoot = cwd): {
     status: normalizeStatus(item.status),
     ...(item.covered_by_ignored_ancestor === true ? { coveredByIgnoredAncestor: true } : {}),
     ...(item.ignored_ancestor ? { ignoredAncestor: item.ignored_ancestor } : {})
+  };
+}
+
+function compactConflictPage(
+  payload: ToolEnvelope,
+  request: Record<string, unknown>,
+  cwd: string,
+  wcRoot: string
+): Record<string, unknown> {
+  if (payload.conflicts.length === 0) {
+    return {};
+  }
+  const offset = cursorOffset(request.conflictCursor);
+  const conflicts = payload.conflicts.slice(offset, offset + COMPACT_CONFLICT_PAGE_SIZE).map((conflict) => ({
+    path: workingCopyRelativePath(conflict.path, cwd, wcRoot),
+    type: conflict.type
+  }));
+  const nextOffset = offset + conflicts.length;
+  const truncated = nextOffset < payload.conflicts.length;
+  return {
+    conflicts,
+    conflictCount: payload.conflicts.length,
+    ...(truncated ? { conflictsTruncated: true, nextConflictCursor: String(nextOffset) } : {})
   };
 }
 
@@ -1262,6 +1503,25 @@ function receiptPathValue(value: unknown, cwd: string, wcRoot: string): string |
   return typeof value === "string"
     ? redactText(workingCopyPathIfInside(value, cwd, wcRoot)).slice(0, 4096)
     : undefined;
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "").toLowerCase();
+  const a = normalize(left);
+  const b = normalize(right);
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function summarizeTopFolders(paths: string[]): Array<{ path: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of paths) {
+    const normalized = value.replace(/\\/g, "/").replace(/^\/+/, "");
+    const top = normalized.includes("/") ? normalized.split("/", 1)[0] ?? "." : ".";
+    counts.set(top, (counts.get(top) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([path, count]) => ({ path, count }));
 }
 
 function sanitizeNonFullStructuredValue(value: unknown, cwd: string, wcRoot: string): unknown {

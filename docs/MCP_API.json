@@ -46,15 +46,22 @@
         "revisionRange",
         "entryCount",
         "entries",
-        "targetMode"
+        "targetMode",
+        "scannedCount",
+        "matchedCount"
       ],
       "svn_diff": [
         "files",
         "totalFiles",
+        "totalLines",
+        "totalChars",
+        "totalHunks",
         "added",
         "removed",
         "excerpt",
-        "eolOnly"
+        "eolOnly",
+        "operationId",
+        "evidenceExpiresAt"
       ],
       "svn_propget": [
         "path",
@@ -72,7 +79,9 @@
         "revisionRange",
         "guardFailures",
         "riskSignals",
-        "remediation"
+        "remediation",
+        "eolCheckComplete",
+        "eolPolicyIdentity"
       ],
       "svn_update": [
         "requestedRevision",
@@ -105,6 +114,48 @@
         "failedRule",
         "suggestedMessage"
       ]
+    },
+    "advancedInputs": {
+      "names": {
+        "svn_status": [
+          "afterCursor",
+          "conflictCursor"
+        ],
+        "svn_snapshot": [
+          "afterCursor",
+          "conflictCursor"
+        ],
+        "svn_diff": [
+          "file",
+          "operationId"
+        ],
+        "svn_log": [
+          "changedPathsSummary",
+          "maxTopLevelDirectories",
+          "messageContains",
+          "messageCaseSensitive",
+          "scanLimit"
+        ],
+        "svn_update": [
+          "maxItems",
+          "cursor",
+          "conflictCursor",
+          "taskPaths",
+          "targetOverlapOnly"
+        ]
+      },
+      "limits": {
+        "afterCursor": "opaque string; max 64 chars",
+        "operationId": "UUID",
+        "file": "path; max 4096 chars",
+        "messageContains": "1..256 chars",
+        "scanLimit": "1..500",
+        "maxTopLevelDirectories": "1..50",
+        "maxItems": "1..500",
+        "cursor": "decimal string; max 32 digits",
+        "conflictCursor": "decimal string; max 32 digits; conflict pages contain at most 100 items",
+        "taskPaths": "1..500 paths; each max 4096 chars"
+      }
     }
   },
   "tools": [
@@ -439,6 +490,8 @@
             "type": "string",
             "enum": [
               "summary",
+              "counts",
+              "hunk-headings",
               "compact",
               "full"
             ]
@@ -624,7 +677,7 @@
     },
     {
       "name": "svn_blame",
-      "description": "Return bounded line attribution for one file.",
+      "description": "Return bounded blame for one file.",
       "inputSchema": {
         "type": "object",
         "properties": {

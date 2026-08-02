@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, normalizedContentHash, sniffEol } from "../eol.js";
 import {
@@ -10,6 +11,7 @@ import {
   neverCommitNote,
   pathIdentityKey,
   readonlyMode,
+  repositoryEolPolicy,
   repoRelativePath,
   requireExplicitPaths,
   resolveCwd,
@@ -128,6 +130,10 @@ export async function svnPrecommit(input: {
     lineLimit: input.lineLimit ?? defaultDiffLineLimit()
   });
   const eol = await eolCheck({ cwd: context.cwd, paths: input.paths });
+  const eolPolicy = repositoryEolPolicy(context.wcRoot);
+  const eolPolicyIdentity = `sha256:${createHash("sha256")
+    .update(JSON.stringify({ target: eolPolicy.target, excludes: eolPolicy.excludes }))
+    .digest("hex")}`;
   const eolFiles = new Map(
     ((eol.files as Array<{ path: string }> | undefined) ?? []).map((file) => [pathIdentityKey(file.path), file])
   );
@@ -236,6 +242,8 @@ export async function svnPrecommit(input: {
     risk_signals: riskSignals,
     mixed_revision: mixedRevision,
     revision_range: versionState?.range ?? null,
+    eol_check_complete: eol.ok,
+    eol_policy_identity: eolPolicyIdentity,
     ...(remediation ? { remediation } : {}),
     diff_excerpt: diff.diff_excerpt,
     truncated: diff.truncated

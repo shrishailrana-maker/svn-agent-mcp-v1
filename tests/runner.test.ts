@@ -14,6 +14,7 @@ import {
   svnVersionExecutable,
   withRequestCancellation
 } from "../src/runner.js";
+import { diffEvidencePage } from "../src/tools/readonly.js";
 
 describe("runner executable resolution", () => {
   it("uses the executable naming convention for each supported platform", () => {
@@ -136,6 +137,12 @@ describe("runner executable resolution", () => {
     expect(lines[0]).toBe("+xxxxxxxxxxxxxxx [line truncated]");
     expect(run.stdout).toBe(lines[0]);
     expect(run.truncated).toBe(true);
+    expect(diffEvidencePage({
+      pageOffset: 0,
+      pageLineCount: lines.length,
+      storedLineCount: lines.length,
+      sourceTruncated: run.truncated === true
+    })).toEqual({ sourceTruncated: true, terminalTruncation: true });
   });
 
   it("falls back to latin1 for streamed stdout lines that are not valid UTF-8", async () => {

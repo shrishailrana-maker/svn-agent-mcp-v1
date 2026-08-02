@@ -171,6 +171,19 @@ describe("public MCP response shaping", () => {
     expect(status.conflicts as unknown[]).toHaveLength(100);
     expect(status.conflictCount).toBe(150);
     expect(status.conflictsTruncated).toBe(true);
+    expect(status.nextConflictCursor).toBe("100");
+    const statusConflictPage = toToolResult("svn_status", createEnvelope({
+      ok: true,
+      command: "svn status --xml",
+      cwd: root,
+      changed_paths: conflicts.map((item) => ({ status: "C", path: item.path })),
+      conflicts
+    }), {
+      responseMode: "compact",
+      request: { cwd: root, maxItems: 1, conflictCursor: "100" }
+    }).structuredContent;
+    expect(statusConflictPage.conflicts as unknown[]).toHaveLength(50);
+    expect(statusConflictPage).not.toHaveProperty("nextConflictCursor");
 
     const precommit = toToolResult("svn_precommit", {
       ...createEnvelope({ ok: false, command: "svn_precommit", cwd: root, note: "GUARD_BLOCKED" }),
@@ -214,6 +227,7 @@ describe("public MCP response shaping", () => {
     expect(update.conflicts as unknown[]).toHaveLength(100);
     expect(update.conflictCount).toBe(150);
     expect(update.conflictsTruncated).toBe(true);
+    expect(update.nextConflictCursor).toBe("100");
     expect(update.changedPaths as unknown[]).toHaveLength(100);
     expect((update.changedPaths as Array<Record<string, unknown>>)[0]).toEqual({
       path: "src/updated-0.ts",
@@ -221,6 +235,8 @@ describe("public MCP response shaping", () => {
     });
     expect(update.changedPathCount).toBe(150);
     expect(update.changedPathsTruncated).toBe(true);
+    expect(update.nextCursor).toBe("100");
+    expect(update.changedByTopFolder).toEqual([{ path: "src", count: 150 }]);
     expect(update).toMatchObject({
       requestedRevision: "42",
       resultingRevision: 42,
@@ -229,6 +245,93 @@ describe("public MCP response shaping", () => {
       expectedRemoteHead: 42,
       observedRemoteHead: 42
     });
+
+    const updateConflictPage = toToolResult("svn_update", {
+      ...createEnvelope({ ok: true, command: "svn update", cwd: updateCwd, conflicts }),
+      wc_root: root,
+      requested_revision: "42",
+      resulting_revision: 42,
+      revision_range: { min: 42, max: 42 },
+      mixed_revision: false
+    }, { responseMode: "compact", request: { conflictCursor: "100" } }).structuredContent;
+    expect(updateConflictPage.conflicts as unknown[]).toHaveLength(50);
+    expect(updateConflictPage).not.toHaveProperty("nextConflictCursor");
+
+    const manyFolders = toToolResult("svn_update", {
+      ...createEnvelope({
+        ok: true,
+        command: "svn update",
+        cwd: root,
+        changed_paths: Array.from({ length: 40 }, (_, index) => ({
+          status: "U", path: `folder-${index}/file.ts`
+        }))
+      }),
+      wc_root: root,
+      resulting_revision: 42,
+      revision_range: { min: 42, max: 42 },
+      mixed_revision: false
+    }, { responseMode: "compact", request: { maxItems: 1 } }).structuredContent;
+    expect(manyFolders.changedByTopFolder as unknown[]).toHaveLength(25);
+    expect(manyFolders.changedByTopFolderTruncated).toBe(true);
+    expect(manyFolders.changedTopFolderCount).toBe(40);
+
+    const fiftyChangesPayload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn update",
+        cwd: root,
+        changed_paths: Array.from({ length: 50 }, (_, index) => ({
+          status: "U", path: `src/file-${index}.ts`
+        }))
+      }),
+      wc_root: root,
+      resulting_revision: 42,
+      revision_range: { min: 42, max: 42 },
+      mixed_revision: false
+    };
+    const nonzeroPage = toToolResult("svn_update", fiftyChangesPayload, {
+      responseMode: "compact",
+      request: { maxItems: 100, cursor: "25" }
+    }).structuredContent;
+    expect(nonzeroPage.changedPaths as unknown[]).toHaveLength(25);
+    expect(nonzeroPage).toMatchObject({ changedCount: 50, changedPathCount: 50, pageOffset: 25 });
+
+    const pastEndPage = toToolResult("svn_update", fiftyChangesPayload, {
+      responseMode: "compact",
+      request: { maxItems: 100, cursor: "75" }
+    }).structuredContent;
+    expect(pastEndPage.changedPaths).toEqual([]);
+    expect(pastEndPage).toMatchObject({
+      changedCount: 50,
+      changedPathCount: 50,
+      pageOffset: 75,
+      cursorPastEnd: true
+    });
+
+    const overlapOnly = toToolResult("svn_update", {
+      ...createEnvelope({
+        ok: true,
+        command: "svn update",
+        cwd: updateCwd,
+        revision: 42,
+        changed_paths: Array.from({ length: 150 }, (_, index) => ({
+          status: "U",
+          path: `updated-${index}.ts`
+        }))
+      }),
+      wc_root: root,
+      resulting_revision: 42
+    }, {
+      responseMode: "compact",
+      request: {
+        maxItems: 10,
+        taskPaths: ["updated-149.ts"],
+        targetOverlapOnly: true
+      }
+    }).structuredContent;
+    expect(overlapOnly.changedPaths).toEqual([{ path: "src/updated-149.ts", status: "updated" }]);
+    expect(overlapOnly.taskPathChanges).toEqual([{ path: "src/updated-149.ts", status: "updated" }]);
+    expect(overlapOnly).toMatchObject({ changedCount: 150, unrelatedChangedCount: 149 });
 
     const staleUpdate = toToolResult("svn_update", {
       ...createEnvelope({ ok: false, command: "svn update", cwd: root, note: "remote HEAD changed" }),
@@ -346,7 +449,8 @@ describe("public MCP response shaping", () => {
       remoteHeadRevision: 43,
       changedPaths: ["src/a.ts", "src/b.ts"],
       conflictCount: 1,
-      operationId: "op-123"
+      operationId: "op-123",
+      snapshotToken: expect.any(String)
     });
     expect(JSON.stringify(receipt)).not.toContain(root);
   });
@@ -397,7 +501,8 @@ describe("public MCP response shaping", () => {
       baseRevision: 40,
       remoteHeadRevision: 43,
       changedPaths: ["src/a.ts"],
-      conflictCount: 0
+      conflictCount: 0,
+      snapshotToken: expect.any(String)
     });
 
     const precommit = toToolResult("svn_precommit", {
@@ -482,6 +587,94 @@ describe("public MCP response shaping", () => {
       conflicts: [{ path: "src/a.ts", type: "text" }]
     });
     expect(JSON.stringify(standard)).not.toContain(root);
+  });
+
+  it("returns minimal unchanged status and snapshot receipts from scoped snapshot tokens", () => {
+    const root = "E:\\dev\\example";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn status --xml",
+        cwd: root,
+        revision: 42,
+        changed_paths: [{ status: "M", path: `${root}\\src\\a.ts` }]
+      }),
+      wc_root: root,
+      remote_head_revision: 43,
+      mixed_revision: false
+    };
+    const first = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { paths: ["src"] }
+    }).structuredContent;
+    expect(first.snapshotToken).toEqual(expect.any(String));
+
+    const unchanged = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { paths: ["src"], afterCursor: first.snapshotToken }
+    }).structuredContent;
+    expect(unchanged).toMatchObject({ ok: true, verdict: "NO_CHANGE", unchangedSinceCursor: true });
+    expect(unchanged).not.toHaveProperty("items");
+
+    const changed = toToolResult("svn_status", {
+      ...payload,
+      changed_paths: [{ status: "M", path: `${root}\\src\\b.ts` }]
+    }, {
+      responseMode: "compact",
+      request: { paths: ["src"], afterCursor: first.snapshotToken }
+    }).structuredContent;
+    expect(changed).toMatchObject({ ok: true, changedSinceCursor: true });
+    expect(changed.items).toEqual([{ path: "src/b.ts", status: "modified" }]);
+
+    const revisionOnly = toToolResult("svn_status", {
+      ...payload,
+      revision: 43,
+      revision_range: { min: 43, max: 43 }
+    }, {
+      responseMode: "compact",
+      request: { paths: ["src"], afterCursor: first.snapshotToken }
+    }).structuredContent;
+    expect(revisionOnly).toMatchObject({ ok: true, changedSinceCursor: true });
+
+    const guardedPayload = {
+      ...payload,
+      changed_paths: [{ status: "C", path: `${root}\\src\\conflicted.ts` }],
+      conflicts: [{ path: `${root}\\src\\conflicted.ts`, type: "text" as const }]
+    };
+    const guardedFirst = toToolResult("svn_status", guardedPayload, {
+      responseMode: "compact",
+      request: { paths: ["src"] }
+    }).structuredContent;
+    const guardedUnchanged = toToolResult("svn_status", guardedPayload, {
+      responseMode: "compact",
+      request: { paths: ["src"], afterCursor: guardedFirst.snapshotToken }
+    }).structuredContent;
+    expect(guardedUnchanged).toMatchObject({
+      ok: true,
+      verdict: "NO_CHANGE",
+      unchangedSinceCursor: true,
+      conflictCount: 1
+    });
+
+    const optionMismatch = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { paths: ["src"], includeIgnored: true, afterCursor: first.snapshotToken }
+    }).structuredContent;
+    expect(optionMismatch).toMatchObject({ ok: false, code: "SNAPSHOT_CURSOR_OPTION_MISMATCH" });
+
+    const snapshotFirst = toToolResult("svn_snapshot", payload, {
+      responseMode: "compact",
+      request: { paths: ["src"] }
+    }).structuredContent;
+    const advancedSnapshot = toToolResult("svn_snapshot", {
+      ...payload,
+      revision: 43,
+      remote_head_revision: 44
+    }, {
+      responseMode: "compact",
+      request: { paths: ["src"], afterCursor: snapshotFirst.snapshotToken }
+    }).structuredContent;
+    expect(advancedSnapshot).toMatchObject({ ok: true, changedSinceCursor: true, revision: 43 });
   });
 
   it("reserves absolute machine paths for full diagnostics", () => {
@@ -588,6 +781,18 @@ describe("public MCP response shaping", () => {
     expect(boundedEntry?.messageTruncated).toBe(true);
     expect(boundedEntry?.changedPaths as unknown[]).toHaveLength(2);
     expect(boundedEntry?.changedPathsTruncated).toBe(true);
+
+    const summarized = toToolResult("svn_log", payload, {
+      responseMode: "compact",
+      request: { limit: 1, changedPathsSummary: true, maxTopLevelDirectories: 2 }
+    }).structuredContent as Record<string, unknown>;
+    const summarizedEntry = (summarized.entries as Array<Record<string, unknown>>)[0];
+    expect(summarizedEntry?.changedPathsSummary).toEqual({
+      total: 20,
+      actions: { modified: 20 },
+      topLevelDirectories: [{ path: "src", count: 20 }]
+    });
+    expect(summarizedEntry).not.toHaveProperty("changedPaths");
   });
 
   it("keeps the requested revision-range floor when paginating svn_log", () => {
@@ -687,6 +892,69 @@ describe("public MCP response shaping", () => {
     expect(compact.nextCursor).toMatch(/^\d+$/);
     expect(String(compact.excerpt)).toContain("@@ -1,2 +1,2 @@");
     expect(String(compact.excerpt)).not.toContain("@@ -10,2 +10,2 @@");
+
+    const evidencePayload = {
+      ...payload,
+      operation_id: "11111111-1111-4111-8111-111111111111",
+      evidence_expires_at: 123456,
+      total_files: 1,
+      total_lines: 10,
+      total_chars: excerpt.length,
+      total_hunks: 2,
+      per_file: [{
+        path: "src/example.ts",
+        added: 2,
+        removed: 2,
+        binary: false,
+        hunks: 2,
+        first_hunk: "@@ -1,2 +1,2 @@",
+        first_meaningful_line: `-${"a".repeat(180)}`
+      }]
+    };
+    const headings = toToolResult("svn_diff", evidencePayload, {
+      responseMode: "compact",
+      request: { diffMode: "hunk-headings" }
+    }).structuredContent;
+    expect(headings).toMatchObject({
+      totalFiles: 1,
+      totalLines: 10,
+      totalHunks: 2,
+      omittedHunks: 1,
+      operationId: "11111111-1111-4111-8111-111111111111",
+      nextCursor: "0",
+      truncated: true
+    });
+    expect((headings.files as Array<Record<string, unknown>>)[0]).toMatchObject({
+      path: "src/example.ts",
+      hunks: 2,
+      firstHunk: "@@ -1,2 +1,2 @@",
+      omittedHunks: 1
+    });
+    expect(headings).not.toHaveProperty("excerpt");
+
+    const counts = toToolResult("svn_diff", evidencePayload, {
+      responseMode: "compact",
+      request: { diffMode: "counts" }
+    }).structuredContent;
+    expect(counts).toMatchObject({ totalFiles: 1, totalLines: 10, totalHunks: 2 });
+    expect(counts).not.toHaveProperty("excerpt");
+
+    const terminalEvidence = toToolResult("svn_diff", {
+      ...evidencePayload,
+      diff_excerpt: "+last available line",
+      truncated: true,
+      evidence_truncated: true,
+      evidence_terminal_truncation: true
+    }, {
+      responseMode: "compact",
+      request: { diffMode: "compact" }
+    }).structuredContent;
+    expect(terminalEvidence).toMatchObject({
+      truncated: true,
+      evidenceTruncated: true,
+      evidenceTerminalTruncation: true
+    });
+    expect(terminalEvidence).not.toHaveProperty("nextCursor");
 
     const longLinePayload = { ...payload, diff_excerpt: `+${"x".repeat(1000)}`, truncated: false };
     const longLine = toToolResult("svn_diff", longLinePayload, {
@@ -844,6 +1112,8 @@ describe("public MCP response shaping", () => {
       }],
       risk_signals: ["build-system file touched"],
       mixed_revision: false,
+      eol_check_complete: true,
+      eol_policy_identity: "sha256:abc123",
       diff_excerpt: "+large source line that should not be in compact precommit"
     };
     const precommit = toToolResult("svn_precommit", precommitPayload, {
@@ -857,6 +1127,8 @@ describe("public MCP response shaping", () => {
     expect(precommit.statusCounts).toEqual({ modified: 1 });
     expect(precommit.diff).toEqual({ files: 1, added: 3, removed: 1, truncated: false });
     expect(precommit.eol).toEqual({ ok: true });
+    expect(precommit.eolCheckComplete).toBe(true);
+    expect(precommit.eolPolicyIdentity).toBe("sha256:abc123");
     expect(precommit).not.toHaveProperty("properties");
     expect(precommit.mixedRevision).toBe(false);
     expect(precommit).not.toHaveProperty("guardFailures");
@@ -1204,7 +1476,8 @@ describe("public MCP response shaping", () => {
       remoteHeadRevision: 43,
       staleBase: true,
       counts: { modified: 1 },
-      items: [{ path: "src/a.ts", status: "modified" }]
+      items: [{ path: "src/a.ts", status: "modified" }],
+      snapshotToken: expect.any(String)
     });
 
     const cat = toToolResult("svn_cat", {

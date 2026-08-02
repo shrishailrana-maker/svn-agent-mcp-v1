@@ -50,12 +50,16 @@ export const fieldProjectionNames = {
     "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
     "remoteHeadRevision", "staleBase", "changedPaths", "counts", "items", "conflicts"
   ],
-  svn_log: ["revision", "revisionRange", "entryCount", "entries", "targetMode"],
-  svn_diff: ["files", "totalFiles", "added", "removed", "excerpt", "eolOnly"],
+  svn_log: ["revision", "revisionRange", "entryCount", "entries", "targetMode", "scannedCount", "matchedCount"],
+  svn_diff: [
+    "files", "totalFiles", "totalLines", "totalChars", "totalHunks", "added", "removed",
+    "excerpt", "eolOnly", "operationId", "evidenceExpiresAt"
+  ],
   svn_propget: ["path", "name", "value"],
   svn_precommit: [
     "ready", "verdict", "pathCount", "statusCounts", "diff", "eol", "mixedRevision",
-    "revisionRange", "guardFailures", "riskSignals", "remediation"
+    "revisionRange", "guardFailures", "riskSignals", "remediation", "eolCheckComplete",
+    "eolPolicyIdentity"
   ],
   svn_update: [
     "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision", "remoteHeadRevision",
@@ -66,6 +70,14 @@ export const fieldProjectionNames = {
     "baseRevisionRange", "remoteHeadRevision", "eolVerdict", "workingCopyMixed", "contentHashes",
     "postStatusClean", "residue", "warningCode", "warningDetail", "failedRule", "suggestedMessage"
   ]
+} as const;
+
+export const advancedInputNames = {
+  svn_status: ["afterCursor", "conflictCursor"],
+  svn_snapshot: ["afterCursor", "conflictCursor"],
+  svn_diff: ["file", "operationId"],
+  svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
+  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly"]
 } as const;
 
 const docsToolNames = [
@@ -203,7 +215,10 @@ export function createServer(): McpServer {
         ...response
       }
     },
-    async (args, extra) => handleTool("svn_status", args, extra.signal, () => svnStatus(compactArgs(args)))
+    async (args, extra) => handleTool("svn_status", args, extra.signal, () => svnStatus({
+      ...compactArgs(args),
+      includeRevisionState: args.responseMode !== "full" && args.responseMode !== "standard"
+    }))
   );
 
   server.registerTool(
@@ -250,7 +265,7 @@ export function createServer(): McpServer {
         ignoreEol: z.boolean().optional(),
         showEolChanges: z.boolean().optional().describe("Include EOL-only changes; default false."),
         lineLimit,
-        diffMode: z.enum(["summary", "compact", "full"]).optional(),
+        diffMode: z.enum(["summary", "counts", "hunk-headings", "compact", "full"]).optional(),
         maxChars,
         maxHunksPerFile,
         maxFiles,
@@ -303,7 +318,7 @@ export function createServer(): McpServer {
   server.registerTool(
     "svn_blame",
     {
-      description: "Return bounded line attribution for one file.",
+      description: "Return bounded blame for one file.",
       inputSchema: {
         cwd,
         path: filesystemPath,
@@ -688,7 +703,100 @@ function validateGlobalResponseArguments(name: string, args: Record<string, unkn
     }
     extras.fields = args.fields;
   }
+  Object.assign(extras, validateAdvancedInputs(name, args));
   return extras;
+}
+
+function validateAdvancedInputs(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  const extras: Record<string, unknown> = {};
+  if ((name === "svn_status" || name === "svn_snapshot") && args.afterCursor !== undefined) {
+    if (typeof args.afterCursor !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(args.afterCursor)) {
+      throw new McpError(ErrorCode.InvalidParams, "afterCursor must be an opaque snapshot token of at most 64 characters");
+    }
+    extras.afterCursor = args.afterCursor;
+  }
+  if ((name === "svn_status" || name === "svn_snapshot" || name === "svn_update")
+      && args.conflictCursor !== undefined) {
+    if (typeof args.conflictCursor !== "string" || !/^\d{1,32}$/.test(args.conflictCursor)) {
+      throw new McpError(ErrorCode.InvalidParams, "conflictCursor must be a decimal offset with at most 32 digits");
+    }
+    extras.conflictCursor = args.conflictCursor;
+  }
+  if (name === "svn_diff") {
+    if (args.file !== undefined) {
+      extras.file = validatedPath("file", args.file);
+    }
+    if (args.operationId !== undefined) {
+      if (typeof args.operationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args.operationId)) {
+        throw new McpError(ErrorCode.InvalidParams, "operationId must be a UUID");
+      }
+      extras.operationId = args.operationId;
+    }
+  }
+  if (name === "svn_log") {
+    copyOptionalBoolean(extras, args, "changedPathsSummary");
+    copyOptionalBoolean(extras, args, "messageCaseSensitive");
+    copyOptionalInteger(extras, args, "maxTopLevelDirectories", 1, 50);
+    copyOptionalInteger(extras, args, "scanLimit", 1, 500);
+    if (args.messageContains !== undefined) {
+      if (typeof args.messageContains !== "string" || args.messageContains.length < 1
+        || args.messageContains.length > 256 || args.messageContains.includes("\0")) {
+        throw new McpError(ErrorCode.InvalidParams, "messageContains must contain 1 to 256 non-NUL characters");
+      }
+      extras.messageContains = args.messageContains;
+    }
+  }
+  if (name === "svn_update") {
+    copyOptionalBoolean(extras, args, "targetOverlapOnly");
+    copyOptionalInteger(extras, args, "maxItems", 1, 500);
+    if (args.cursor !== undefined) {
+      if (typeof args.cursor !== "string" || !/^\d{1,32}$/.test(args.cursor)) {
+        throw new McpError(ErrorCode.InvalidParams, "cursor must be a decimal offset with at most 32 digits");
+      }
+      extras.cursor = args.cursor;
+    }
+    if (args.taskPaths !== undefined) {
+      if (!Array.isArray(args.taskPaths) || args.taskPaths.length < 1 || args.taskPaths.length > 500) {
+        throw new McpError(ErrorCode.InvalidParams, "taskPaths must contain 1 to 500 explicit paths");
+      }
+      extras.taskPaths = args.taskPaths.map((value) => validatedPath("taskPaths", value));
+    }
+  }
+  return extras;
+}
+
+function copyOptionalBoolean(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  name: string
+): void {
+  if (source[name] === undefined) return;
+  if (typeof source[name] !== "boolean") {
+    throw new McpError(ErrorCode.InvalidParams, `${name} must be true or false`);
+  }
+  target[name] = source[name];
+}
+
+function copyOptionalInteger(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  name: string,
+  minimum: number,
+  maximum: number
+): void {
+  if (source[name] === undefined) return;
+  if (!Number.isSafeInteger(source[name]) || Number(source[name]) < minimum || Number(source[name]) > maximum) {
+    throw new McpError(ErrorCode.InvalidParams, `${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  target[name] = source[name];
+}
+
+function validatedPath(name: string, value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 4096 || value.includes("\0")) {
+    throw new McpError(ErrorCode.InvalidParams, `${name} must be a non-empty path of at most 4096 non-NUL characters`);
+  }
+  return value;
 }
 
 export async function handleTool(

@@ -13,6 +13,27 @@ import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnSt
 jest.setTimeout(30000);
 
 describe("SVN tool integration against a temp repository", () => {
+  it("includes revision state when compact status tokens need change detection", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const before = await svnStatus({ cwd: fixture.wc, includeRevisionState: true });
+      fs.writeFileSync(path.join(fixture.wc, "revision-state.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["revision-state.txt"] })).ok).toBe(true);
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["revision-state.txt"],
+        message: commitMessage("Add revision-state fixture")
+      });
+      const after = await svnStatus({ cwd: fixture.wc, includeRevisionState: true });
+
+      expect(before.revision_range).toEqual({ min: 0, max: 0 });
+      expect(after.revision_range).toMatchObject({ max: committed.revision });
+      expect(after.svnversion).toEqual(expect.any(String));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("skips unrequested snapshot components for projected fields", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -55,7 +76,8 @@ describe("SVN tool integration against a temp repository", () => {
 
       fs.writeFileSync(source, "two\r\n", "utf8");
       expect((await svnStatus({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
-      expect((await svnDiff({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
+      const literalAtDiff = await svnDiff({ cwd: fixture.wc, paths: [sourceName] });
+      expect(literalAtDiff.ok ? null : literalAtDiff).toBeNull();
       expect((await eolCheck({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
       expect((await svnPrecommit({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
 
@@ -1431,6 +1453,48 @@ describe("SVN tool integration against a temp repository", () => {
       expect(exactLog.entries).toHaveLength(1);
       expect((exactLog.entries as Array<{ rev: number }>)[0]?.rev).toBe(firstCommit.revision);
 
+      const filteredLog = await svnLog({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        limit: 1,
+        messageContains: "add HISTORY fixture"
+      });
+      expect(filteredLog).toMatchObject({ ok: true, entry_count: 1, scan_truncated: false });
+      expect((filteredLog.entries as Array<{ rev: number }>)[0]?.rev).toBe(firstCommit.revision);
+
+      const caseSensitiveMiss = await svnLog({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        messageContains: "add HISTORY fixture",
+        messageCaseSensitive: true
+      });
+      expect(caseSensitiveMiss).toMatchObject({ ok: true, entry_count: 0, scan_truncated: false });
+
+      const firstFilteredPage = await svnLog({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        limit: 1,
+        scanLimit: 1,
+        messageContains: "Add history fixture"
+      });
+      expect(firstFilteredPage).toMatchObject({
+        ok: true,
+        entry_count: 0,
+        scanned_count: 1,
+        scan_truncated: true,
+        has_more: true
+      });
+      expect(firstFilteredPage.next_cursor).toEqual(expect.any(String));
+      const secondFilteredPage = await svnLog({
+        cwd: fixture.wc,
+        paths: ["history.txt"],
+        limit: 1,
+        scanLimit: 1,
+        messageContains: "Add history fixture",
+        cursor: String(firstFilteredPage.next_cursor)
+      });
+      expect((secondFilteredPage.entries as Array<{ rev: number }>)[0]?.rev).toBe(firstCommit.revision);
+
       const revisionDiff = await svnDiff({ cwd: fixture.wc, paths: ["history.txt"], revision: secondRevision });
       expect(revisionDiff.ok).toBe(true);
       expect(revisionDiff.per_file).toEqual([
@@ -1474,6 +1538,47 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(blockedRoot).toMatchObject({ ok: false });
       expect(blockedRoot.note).toContain("allowRoot:true");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("pages stable diff evidence without rerunning a changed working file", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relative = "diff evidence.txt";
+      const file = path.join(fixture.wc, relative);
+      fs.writeFileSync(file, "one\r\ntwo\r\nthree\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relative] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relative],
+        message: commitMessage("Add diff evidence fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, "one changed\r\ntwo changed\r\nthree changed\r\nfour\r\n", "utf8");
+      const first = await svnDiff({ cwd: fixture.wc, paths: ["."], file: relative, lineLimit: 5 });
+      expect(first).toMatchObject({
+        ok: true,
+        operation_id: expect.any(String),
+        evidence_expires_at: expect.any(Number),
+        total_files: 1,
+        total_hunks: 1
+      });
+      expect(first.next_cursor).toEqual(expect.any(String));
+
+      fs.writeFileSync(file, "AFTER THE SNAPSHOT\r\n", "utf8");
+      const second = await svnDiff({
+        cwd: fixture.wc,
+        paths: ["."],
+        file: relative,
+        lineLimit: 50,
+        cursor: String(first.next_cursor),
+        operationId: String(first.operation_id)
+      });
+      expect(second.ok).toBe(true);
+      expect(second.operation_id).toBe(first.operation_id);
+      expect(second.diff_excerpt).not.toContain("AFTER THE SNAPSHOT");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
