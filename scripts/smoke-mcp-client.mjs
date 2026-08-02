@@ -16,15 +16,17 @@ const workingCopy = path.join(temporaryRoot, "wc");
 const svn = executable("svn");
 const svnadmin = executable("svnadmin");
 const passed = [];
+const preparedEntrypoint = path.join(projectRoot, "current", "dist", "index.js");
 
 try {
+  assert(fs.existsSync(preparedEntrypoint), "prepared current/dist/index.js is missing; run npm run prepare:local");
   run(svnadmin, ["create", repository], temporaryRoot);
   run(svn, ["checkout", pathToFileURL(repository).href, workingCopy], temporaryRoot);
 
   const client = new Client({ name: "svn-agent-client-smoke", version: "1.0.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(projectRoot, "dist", "index.js")],
+    args: [preparedEntrypoint],
     stderr: "ignore"
   });
   try {

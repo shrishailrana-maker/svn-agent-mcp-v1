@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   findExistingDirectoryTarget,
+  isCommittableStatus,
   isInsideOrEqual,
   pathIdentityKey,
   repoRelativePath,
@@ -70,6 +71,7 @@ export async function resolveCommitScope(input: {
 
   const candidates: string[] = [];
   for (const changed of status.envelope.changed_paths) {
+    if (!isCommittableStatus(changed.status)) continue;
     const candidate = path.resolve(input.cwd, changed.path);
     const key = pathIdentityKey(candidate);
     if (explicitFileKeys.has(key) || [...directoryKeys].some((directory) => isInsideOrEqual(candidate, directory))) {

@@ -10,7 +10,7 @@ import { advancedInputNames, createServer, fieldProjectionNames, serverName, ser
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = path.join(root, "docs", "MCP_API.json");
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-const server = createServer();
+const server = createServer("full");
 const client = new Client({ name: "svn-agent-contract-generator", version: serverVersion });
 
 try {

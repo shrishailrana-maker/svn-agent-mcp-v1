@@ -89,11 +89,12 @@ describe("SVN tool integration against a temp repository", () => {
 
       expect((await svnAdd({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
       expect((await svnPropset({ cwd: fixture.wc, paths: [sourceName], name: "custom:flag", value: "yes" })).ok).toBe(true);
-      expect((await svnCommit({
+      const atPathCommit = await svnCommit({
         cwd: fixture.wc,
         paths: [sourceName],
         message: "Add literal at-sign path\n\n- Verify SVN target escaping"
-      })).ok).toBe(true);
+      });
+      expect(atPathCommit.ok).toBe(true);
 
       expect((await svnInfo({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
       expect((await svnLog({ cwd: fixture.wc, paths: [sourceName], limit: 1 })).ok).toBe(true);
@@ -110,6 +111,12 @@ describe("SVN tool integration against a temp repository", () => {
       expect((await svnStatus({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
       const literalAtDiff = await svnDiff({ cwd: fixture.wc, paths: [sourceName] });
       expect(literalAtDiff.ok ? null : literalAtDiff).toBeNull();
+      const revisionAtDiff = await svnDiff({
+        cwd: fixture.wc,
+        paths: [sourceName],
+        revision: String(atPathCommit.revision)
+      });
+      expect(revisionAtDiff.ok ? null : revisionAtDiff).toBeNull();
       expect((await eolCheck({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
       expect((await svnPrecommit({ cwd: fixture.wc, paths: [sourceName] })).ok).toBe(true);
 
@@ -897,6 +904,14 @@ describe("SVN tool integration against a temp repository", () => {
       fs.writeFileSync(path.join(fixture.wc, "props-missing.txt"), "two\r\n", "utf8");
       expect((await svnAdd({ cwd: fixture.wc, paths: ["props.txt", "props-missing.txt"] })).ok).toBe(true);
       expect((await svnCommit({ cwd: fixture.wc, paths: ["props.txt", "props-missing.txt"], message: commitMessage("Add prop targets") })).ok).toBe(true);
+      const multiPathLog = await svnLog({
+        cwd: fixture.wc,
+        paths: ["props.txt", "props-missing.txt"],
+        changedPaths: true,
+        limit: 1
+      });
+      expect(multiPathLog.ok).toBe(true);
+      expect(multiPathLog.entries).toHaveLength(1);
 
       const missing = await svnPropget({ cwd: fixture.wc, paths: ["props.txt"], name: "custom:review-note" });
       expect(missing.ok).toBe(true);
@@ -918,6 +933,24 @@ describe("SVN tool integration against a temp repository", () => {
       expect(got.properties).toEqual([
         { path: "props.txt", name: "custom:review-note", value: "checked by MCP" }
       ]);
+
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: ["props.txt"],
+        name: "custom:numeric",
+        value: "00123"
+      })).ok).toBe(true);
+      expect((await svnPropget({ cwd: fixture.wc, paths: ["props.txt"], name: "custom:numeric" })).properties)
+        .toEqual([{ path: "props.txt", name: "custom:numeric", value: "00123" }]);
+
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: ["props.txt"],
+        name: "custom:padded",
+        value: "  keep both sides  "
+      })).ok).toBe(true);
+      expect((await svnPropget({ cwd: fixture.wc, paths: ["props.txt"], name: "custom:padded" })).properties)
+        .toEqual([{ path: "props.txt", name: "custom:padded", value: "  keep both sides  " }]);
 
       const mixed = await svnPropget({ cwd: fixture.wc, paths: ["props.txt", "props-missing.txt"], name: "custom:review-note" });
       expect(mixed.ok).toBe(true);
@@ -1155,6 +1188,18 @@ describe("SVN tool integration against a temp repository", () => {
         paths: ["already-lf.txt", "needs-lf.txt"],
         style: "LF"
       })).ok).toBe(true);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses svn:eol-style on directories", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.mkdirSync(path.join(fixture.wc, "eol-directory"));
+      const result = await svnPropsetEolStyle({ cwd: fixture.wc, paths: ["eol-directory"] });
+      expect(result).toMatchObject({ ok: false });
+      expect(result.note).toContain("requires a regular file");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1421,6 +1466,18 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(deletedFile).toMatchObject({ ok: true, post_status_verified: true });
       expect(statusByPath(deletedFile.changed_paths, fixture.wc).get("delete-file.txt")).toBe("D");
+      const committedDeletion = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["delete-file.txt"],
+        message: commitMessage("Commit deleted file"),
+        riskAck: true
+      });
+      expect(committedDeletion).toMatchObject({
+        ok: true,
+        committed_paths: ["delete-file.txt"],
+        committed_count: 1,
+        post_status_clean: true
+      });
 
       const deletedDirectory = await svnDelete({
         cwd: fixture.wc,
@@ -1518,6 +1575,7 @@ describe("SVN tool integration against a temp repository", () => {
       fs.writeFileSync(path.join(directory, "one.txt"), "one changed\r\n", "utf8");
       fs.writeFileSync(path.join(nested, "two.txt"), "two changed\r\n", "utf8");
       fs.writeFileSync(path.join(directory, "version.ver"), "2\r\n", "utf8");
+      fs.writeFileSync(path.join(directory, "untracked.tmp"), "not scheduled\r\n", "utf8");
       fs.writeFileSync(path.join(fixture.wc, "sibling.txt"), "sibling changed\r\n", "utf8");
 
       const precommit = await svnPrecommit({
@@ -1531,6 +1589,7 @@ describe("SVN tool integration against a temp repository", () => {
         "expanded scope/one.txt",
         "expanded scope/version.ver"
       ]);
+      expect(precommit.expanded_paths).not.toContain("expanded scope/untracked.tmp");
       expect(precommit.risk_signals).toContain("version file touched");
 
       const committed = await svnCommit({
@@ -1553,7 +1612,8 @@ describe("SVN tool integration against a temp repository", () => {
       ]));
 
       const remaining = await svnStatus({ cwd: fixture.wc });
-      expect(statusByPath(remaining.changed_paths, fixture.wc)).toEqual(new Map([["sibling.txt", "M"]]));
+      expect(statusByPath(remaining.changed_paths, fixture.wc).get("sibling.txt")).toBe("M");
+      expect(statusByPath(remaining.changed_paths, fixture.wc).get("expanded scope/untracked.tmp")).toBe("?");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

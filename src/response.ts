@@ -58,6 +58,7 @@ const MUTATION_STATUS: Record<string, string> = {
 // newline delimiter; this bound limits the damage from clients that do not.
 const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
 const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
+const COMPACT_DIFF_PREVIEW_CHAR_LIMIT = 512;
 const COMPACT_CONFLICT_PAGE_SIZE = 100;
 const COMPACT_TOP_FOLDER_LIMIT = 25;
 const COMPACT_PREPARE_PATH_LIMIT = 25;
@@ -78,13 +79,14 @@ export function toToolResult<T extends ToolEnvelope>(
   options: ResponseOptions = {}
 ): ToolResult<Record<string, unknown>> {
   const mode = options.responseMode ?? defaultResponseMode();
-  const safePayload = redactStructuredValue(payload) as T;
-  const shaped = shapePayload(tool, safePayload, mode, options.request ?? {});
-  const responseRoot = stringValue(safePayload.wc_root) || safePayload.cwd;
-  const candidateWarning = mode !== "full" && safePayload.ok
-    ? sanitizeNonFullText(safePayload.stderr_summary.slice(0, 2000), safePayload.cwd, responseRoot)
+  const request = options.request ?? {};
+  const responseRoot = stringValue(payload.wc_root) || payload.cwd;
+  const safePayload = mode === "full" ? redactStructuredValue(payload) as T : payload;
+  const shaped = shapePayload(tool, safePayload, mode, request);
+  const candidateWarning = mode !== "full" && payload.ok
+    ? sanitizeNonFullText(redactText(payload.stderr_summary.slice(0, 2000)), payload.cwd, responseRoot)
     : "";
-  const shapedNote = sanitizeNonFullText(stringValue(shaped.note), safePayload.cwd, responseRoot);
+  const shapedNote = sanitizeNonFullText(redactText(stringValue(shaped.note)), payload.cwd, responseRoot);
   const warning = candidateWarning && shapedNote !== candidateWarning ? candidateWarning : "";
   const warned = warning
     ? {
@@ -93,11 +95,11 @@ export function toToolResult<T extends ToolEnvelope>(
         ...(warning.length < safePayload.stderr_summary.length ? { warningTruncated: true } : {})
       }
     : shaped;
-  const projected = applyFieldProjection(tool, safePayload, warned, options.request ?? {});
+  const projected = applyFieldProjection(tool, safePayload, warned, request);
   const structured = mode === "full"
     ? projected
-    : sanitizeNonFullStructuredValue(projected, safePayload.cwd, responseRoot) as Record<string, unknown>;
-  const humanText = options.request?.humanText === true;
+    : sanitizeNonFullStructuredValue(redactStructuredValue(projected), payload.cwd, responseRoot) as Record<string, unknown>;
+  const humanText = request.humanText === true;
   const text = mode === "full" ? JSON.stringify(safePayload, null, 2) : summarizeToolResult(tool, structured);
 
   return {
@@ -257,11 +259,13 @@ function receiptPayload(
     ...(nextCursor ? { nextCursor } : {})
   };
   if (tool === "svn_status" || tool === "svn_snapshot") {
+    const snapshotRoot = stringValue(payload.wc_root) || payload.cwd;
     return withSnapshotToken(tool, payload, request, result, {
       revision: payload.revision,
       revisionRange: payload.revision_range,
+      mixedRevision: payload.mixed_revision,
       remoteHeadRevision: payload.remote_head_revision,
-      changedPaths: payload.changed_paths,
+      changed: canonicalStatusItems(payload, request, payload.cwd, snapshotRoot),
       conflicts: payload.conflicts
     });
   }
@@ -280,7 +284,7 @@ function standardPayload(payload: ToolEnvelope): Record<string, unknown> {
 
 const PROJECTION_SAFETY_FIELDS = [
   "ok", "ready", "verdict", "code", "note", "warning", "warningCode", "warningDetail",
-  "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts", "conflictCount",
+  "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts",
   "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
   "hasMore", "recoveryTool", "remediation",
   "snapshotToken", "unchangedSinceCursor", "changedSinceCursor",
@@ -300,32 +304,49 @@ function applyFieldProjection(
 
   const root = stringValue(payload.wc_root) || payload.cwd;
   const perFile = recordArray(payload.per_file);
-  const changedPaths = payload.changed_paths.map((item) => ({
-    status: item.status,
-    path: workingCopyRelativePath(item.path, payload.cwd, root)
-  }));
-  const conflicts = payload.conflicts.map((item) => ({
-    path: workingCopyRelativePath(item.path, payload.cwd, root),
-    type: item.type
-  }));
+  const fallbackOffset = cursorOffset(request.cursor);
+  const fallbackLimit = boundedInteger(request.maxItems, 100, 1, 500);
+  const usesFallbackChangedPaths = !Array.isArray(shaped.changedPaths) && !Array.isArray(shaped.items);
+  const fallbackNextOffset = Math.min(payload.changed_paths.length, fallbackOffset + fallbackLimit);
+  const fallbackHasMore = usesFallbackChangedPaths && fallbackNextOffset < payload.changed_paths.length;
+  const standardShape = Array.isArray(shaped.changed_paths);
+  const changedPaths = Array.isArray(shaped.changedPaths)
+    ? shaped.changedPaths
+    : Array.isArray(shaped.items)
+      ? shaped.items
+      : payload.changed_paths.slice(fallbackOffset, fallbackOffset + fallbackLimit).map((item) => ({
+          status: item.status,
+          path: workingCopyRelativePath(item.path, payload.cwd, root)
+        }));
+  const boundedConflicts = compactConflictPage(payload, request, payload.cwd, root);
+  const conflicts = !standardShape && Array.isArray(shaped.conflicts)
+    ? shaped.conflicts
+    : boundedConflicts.conflicts;
   const source: Record<string, unknown> = {
+    ...shaped,
     revision: payload.revision,
     revisionRange: payload.revision_range,
     mixedRevision: payload.mixed_revision,
     remoteHeadRevision: payload.remote_head_revision ?? payload.observed_remote_head,
     changedPaths,
     conflicts,
+    ...(standardShape ? boundedConflicts : {}),
     totalFiles: perFile.length,
     added: payload.total_added ?? perFile.reduce((sum, file) => sum + numberValue(file.added), 0),
     removed: payload.total_removed ?? perFile.reduce((sum, file) => sum + numberValue(file.removed), 0),
-    ...shaped
+    ...(fallbackHasMore ? { truncated: true, nextCursor: String(fallbackNextOffset) } : {})
   };
   const projected = projectFields(source, fields);
   for (const field of PROJECTION_SAFETY_FIELDS) {
-    const value = shaped[field];
-    if (value !== undefined && value !== false && value !== "" && projected[field] === undefined) {
+    const value = source[field];
+    if (value !== undefined && value !== false && value !== ""
+        && (!Array.isArray(value) || value.length > 0) && projected[field] === undefined) {
       projected[field] = value;
     }
+  }
+  if (source.conflictsTruncated === true && source.conflictCount !== undefined
+      && projected.conflictCount === undefined) {
+    projected.conflictCount = source.conflictCount;
   }
   return { ok: true, ...projected };
 }
@@ -493,7 +514,7 @@ function compactSnapshot(payload: ToolEnvelope, request: Record<string, unknown>
     revisionRange: payload.revision_range,
     remoteHeadRevision: payload.remote_head_revision,
     mixedRevision: payload.mixed_revision,
-    changedPaths: payload.changed_paths,
+    changed: canonicalStatusItems(payload, request, payload.cwd, stringValue(payload.wc_root) || payload.cwd),
     conflicts: payload.conflicts
   });
 }
@@ -772,16 +793,23 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   const fileOffset = cursorOffset(request.fileCursor);
   const requestedFileCount = boundedInteger(request.maxFiles, 100, 1, 500);
   const diffRoot = stringValue(payload.wc_root) || payload.cwd;
-  const requestedFiles = sourceFiles.slice(fileOffset, fileOffset + requestedFileCount).map((file) => ({
-    path: redactText(workingCopyRelativePath(stringValue(file.path), payload.cwd, diffRoot)).slice(0, 4096),
-    added: file.added,
-    removed: file.removed,
-    binary: file.binary,
-    ...(file.property_changed === true ? { propertyChanged: true } : {}),
-    ...(file.hunks !== undefined ? { hunks: numberValue(file.hunks) } : {}),
-    ...(file.first_hunk ? { firstHunk: file.first_hunk } : {}),
-    ...(file.first_meaningful_line ? { firstMeaningfulLine: file.first_meaningful_line } : {})
-  }));
+  const requestedFiles = sourceFiles.slice(fileOffset, fileOffset + requestedFileCount).map((file) => {
+    const firstHunk = boundedPreview(stringValue(file.first_hunk), COMPACT_DIFF_PREVIEW_CHAR_LIMIT);
+    const firstMeaningfulLine = boundedPreview(stringValue(file.first_meaningful_line), COMPACT_DIFF_PREVIEW_CHAR_LIMIT);
+    return {
+      path: redactText(workingCopyRelativePath(stringValue(file.path), payload.cwd, diffRoot)).slice(0, 4096),
+      added: file.added,
+      removed: file.removed,
+      binary: file.binary,
+      ...(file.property_changed === true ? { propertyChanged: true } : {}),
+      ...(file.hunks !== undefined ? { hunks: numberValue(file.hunks) } : {}),
+      ...(firstHunk.text ? { firstHunk: firstHunk.text } : {}),
+      ...(firstMeaningfulLine.text ? { firstMeaningfulLine: firstMeaningfulLine.text } : {}),
+      ...(file.preview_truncated === true || firstHunk.truncated || firstMeaningfulLine.truncated
+        ? { previewTruncated: true }
+        : {})
+    };
+  });
   const excerpt = stringValue(payload.diff_excerpt);
   const offset = numberValue(payload.page_offset);
   const requestedExcerptCharLimit = Math.min(
@@ -819,6 +847,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
       totalHunks,
       added: totalAdded,
       removed: totalRemoved,
+      ...(payload.totals_complete === false ? { totalsComplete: false } : {}),
       ...(binaryFiles > 0 ? { binaryFiles } : {}),
       ...(propertyFiles > 0 ? { propertyFiles } : {}),
       ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
@@ -1368,15 +1397,7 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
 function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const cwd = payload.cwd;
   const root = typeof payload.wc_root === "string" ? payload.wc_root : cwd;
-  const includeUnversioned = request.includeUnversioned !== false;
-  const requestedStatuses = stringArray(request.statuses);
-  const allowedStatuses = requestedStatuses.length > 0
-    ? new Set(requestedStatuses.map((value) => normalizeStatus(value)))
-    : null;
-  const changed = payload.changed_paths
-    .map((item) => compactStatusItem(item, cwd, root))
-    .filter((item) => includeUnversioned || item.status !== "unversioned")
-    .filter((item) => !allowedStatuses || allowedStatuses.has(item.status));
+  const changed = canonicalStatusItems(payload, request, cwd, root);
   const counts = countByStatus(changed);
   const offset = cursorOffset(request.cursor);
   const countOnly = request.countOnly === true;
@@ -1402,9 +1423,27 @@ function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>):
     revision: payload.revision,
     revisionRange: payload.revision_range,
     mixedRevision: payload.mixed_revision,
+    remoteHeadRevision: payload.remote_head_revision,
     changed,
     conflicts: payload.conflicts
   });
+}
+
+function canonicalStatusItems(
+  payload: ToolEnvelope,
+  request: Record<string, unknown>,
+  cwd: string,
+  root: string
+): Array<{ path: string; status: string }> {
+  const includeUnversioned = request.includeUnversioned !== false;
+  const requestedStatuses = stringArray(request.statuses);
+  const allowedStatuses = requestedStatuses.length > 0
+    ? new Set(requestedStatuses.map((value) => normalizeStatus(value)))
+    : null;
+  return payload.changed_paths
+    .map((item) => compactStatusItem(item, cwd, root))
+    .filter((item) => includeUnversioned || item.status !== "unversioned")
+    .filter((item) => !allowedStatuses || allowedStatuses.has(item.status));
 }
 
 function withSnapshotToken(
@@ -1586,7 +1625,7 @@ function serializedByteLength(value: unknown): number {
 function largestFittingInteger(minimum: number, maximum: number, fits: (candidate: number) => boolean): number {
   let low = minimum;
   let high = maximum;
-  let best = minimum;
+  let best = Math.max(0, minimum - 1);
   while (low <= high) {
     const candidate = Math.floor((low + high) / 2);
     if (fits(candidate)) {
@@ -1597,6 +1636,13 @@ function largestFittingInteger(minimum: number, maximum: number, fits: (candidat
     }
   }
   return best;
+}
+
+function boundedPreview(value: string, maxChars: number): { text: string; truncated: boolean } {
+  if (value.length <= maxChars) return { text: value, truncated: false };
+  let end = maxChars;
+  if (end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1] ?? "")) end -= 1;
+  return { text: `${value.slice(0, end)}...`, truncated: true };
 }
 
 function boundedDiffExcerpt(text: string, offset: number, maxChars: number, maxHunksPerFile: number): {

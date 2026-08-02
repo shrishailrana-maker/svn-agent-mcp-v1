@@ -56,8 +56,16 @@ export class EvidenceStore {
   } {
     this.#cleanupExpired();
     const byteLimit = Math.min(this.#maxEntryBytes, this.#maxTotalBytes);
-    const bounded = boundUtf8(text, byteLimit);
-    while (this.#records.size >= this.#maxEntries || this.#totalBytes + bounded.bytes > this.#maxTotalBytes) {
+    const metadataClone = structuredClone(metadata);
+    const metadataBytes = Object.keys(metadataClone).length === 0
+      ? 0
+      : Buffer.byteLength(JSON.stringify(metadataClone), "utf8");
+    if (metadataBytes > byteLimit) {
+      throw new Error(`operation evidence metadata exceeds ${byteLimit} bytes`);
+    }
+    const bounded = boundUtf8(text, byteLimit - metadataBytes);
+    const storedBytes = bounded.bytes + metadataBytes;
+    while (this.#records.size >= this.#maxEntries || this.#totalBytes + storedBytes > this.#maxTotalBytes) {
       if (!this.#evictOldest()) {
         break;
       }
@@ -69,16 +77,16 @@ export class EvidenceStore {
       kind,
       scope,
       text: bounded.text,
-      metadata: structuredClone(metadata),
+      metadata: metadataClone,
       expiresAt,
-      bytes: bounded.bytes,
+      bytes: storedBytes,
       truncated: bounded.truncated
     });
-    this.#totalBytes += bounded.bytes;
+    this.#totalBytes += storedBytes;
     return {
       operationId,
       expiresAt,
-      storedBytes: bounded.bytes,
+      storedBytes,
       storedLineCount: textLineCount(bounded.text),
       truncated: bounded.truncated
     };
@@ -154,6 +162,9 @@ function boundUtf8(value: string, maxBytes: number): { text: string; bytes: numb
     } else {
       high = middle - 1;
     }
+  }
+  if (end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1] ?? "")) {
+    end -= 1;
   }
   const text = value.slice(0, end);
   return { text, bytes: Buffer.byteLength(text, "utf8"), truncated: true };

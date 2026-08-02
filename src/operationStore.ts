@@ -11,7 +11,7 @@ const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_RECORDS = 256;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
-const DEFAULT_LOCK_WAIT_MS = 500;
+const DEFAULT_LOCK_WAIT_MS = 5_000;
 const DEFAULT_LOCK_STALE_MS = 30_000;
 const MAX_RECORD_BYTES = 8 * 1024 * 1024;
 const TERMINAL_RECEIPT_RESERVE_BYTES = 16 * 1024;
@@ -211,8 +211,9 @@ export class DurableOperationStore {
 
   #read(operationId: string): StoredOperation | null {
     try {
-      const text = fs.readFileSync(this.#recordPath(operationId), "utf8");
-      if (text.length > MAX_RECORD_BYTES) return null;
+      const bytes = readBoundedFile(this.#recordPath(operationId), MAX_RECORD_BYTES);
+      if (!bytes) return null;
+      const text = bytes.toString("utf8");
       const parsed = JSON.parse(text) as Partial<StoredOperation>;
       if (parsed.schema !== 1 || parsed.operationId !== operationId || typeof parsed.kind !== "string"
           || typeof parsed.fingerprint !== "string" || typeof parsed.lease !== "string"
@@ -242,22 +243,16 @@ export class DurableOperationStore {
 
   #withFileLock<T>(lockPath: string, action: () => T): T {
     let descriptor: number | null = null;
+    const lockToken = randomUUID();
     const deadline = Date.now() + this.#lockWaitMs;
     while (descriptor === null) {
       try {
         descriptor = fs.openSync(lockPath, "wx", 0o600);
+        fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, token: lockToken }), "utf8");
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        try {
-          if (Date.now() - fs.statSync(lockPath).mtimeMs > this.#lockStaleMs) {
-            fs.rmSync(lockPath, { force: true });
-            continue;
-          }
-        } catch (statError) {
-          if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw statError;
-        }
+        if (this.#breakAbandonedLock(lockPath)) continue;
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(10, remaining));
@@ -268,7 +263,53 @@ export class DurableOperationStore {
       return action();
     } finally {
       fs.closeSync(descriptor);
+      if (lockTokenMatches(lockPath, lockToken)) {
+        fs.rmSync(lockPath, { force: true });
+      }
+    }
+  }
+
+  #breakAbandonedLock(lockPath: string): boolean {
+    const breakerPath = `${lockPath}.break`;
+    const breakerToken = randomUUID();
+    let breaker: number;
+    try {
+      breaker = fs.openSync(breakerPath, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        return this.#removeAbandonedBreaker(breakerPath) ? this.#breakAbandonedLock(lockPath) : false;
+      }
+      throw error;
+    }
+    try {
+      fs.writeFileSync(breaker, JSON.stringify({ pid: process.pid, token: breakerToken }), "utf8");
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      if (this.#now() - stat.mtimeMs <= this.#lockStaleMs || lockOwnerIsAlive(lockPath)) return false;
       fs.rmSync(lockPath, { force: true });
+      return true;
+    } finally {
+      fs.closeSync(breaker);
+      if (lockTokenMatches(breakerPath, breakerToken)) {
+        fs.rmSync(breakerPath, { force: true });
+      }
+    }
+  }
+
+  #removeAbandonedBreaker(breakerPath: string): boolean {
+    try {
+      const stat = fs.statSync(breakerPath);
+      if (this.#now() - stat.mtimeMs <= this.#lockStaleMs || lockOwnerIsAlive(breakerPath)) return false;
+      fs.rmSync(breakerPath, { force: true });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
     }
   }
 
@@ -279,9 +320,7 @@ export class DurableOperationStore {
       if (!isOperationLock(name) && !isOperationTemp(name)) continue;
       const filePath = path.join(this.directory, name);
       try {
-        if (Date.now() - fs.statSync(filePath).mtimeMs > this.#lockStaleMs) {
-          fs.rmSync(filePath, { force: true });
-        }
+        this.#breakAbandonedLock(filePath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -289,18 +328,23 @@ export class DurableOperationStore {
 
     const records = fs.readdirSync(this.directory)
       .filter((name) => OPERATION_ID.test(name.replace(/\.json$/, "")) && name.endsWith(".json"))
-      .map((name) => {
+      .flatMap((name) => {
         const filePath = path.join(this.directory, name);
-        const stat = fs.statSync(filePath);
-        const operationId = name.slice(0, -".json".length);
-        const record = this.#read(operationId);
-        return {
-          operationId,
-          filePath,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          terminal: record?.state !== "in_progress" && record !== null
-        };
+        try {
+          const stat = fs.statSync(filePath);
+          const operationId = name.slice(0, -".json".length);
+          const record = this.#read(operationId);
+          return [{
+            operationId,
+            filePath,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            terminal: record?.state !== "in_progress" && record !== null
+          }];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+          throw error;
+        }
       });
     for (const file of records) {
       if (file.operationId !== preserveOperationId && file.terminal && now - file.mtimeMs > this.#ttlMs) {
@@ -354,16 +398,21 @@ export class DurableOperationStore {
     const excluded = new Set([".store.lock", `${preserveOperationId}.lock`]);
     const removable = fs.readdirSync(this.directory)
       .filter((name) => name.endsWith(".json"))
-      .map((name) => {
+      .flatMap((name) => {
         const operationId = name.slice(0, -".json".length);
         const filePath = path.join(this.directory, name);
-        const record = OPERATION_ID.test(operationId) ? this.#read(operationId) : null;
-        return {
-          operationId,
-          filePath,
-          mtimeMs: fs.statSync(filePath).mtimeMs,
-          terminal: record?.state === "completed" || record?.state === "failed"
-        };
+        try {
+          const record = OPERATION_ID.test(operationId) ? this.#read(operationId) : null;
+          return [{
+            operationId,
+            filePath,
+            mtimeMs: fs.statSync(filePath).mtimeMs,
+            terminal: record?.state === "completed" || record?.state === "failed"
+          }];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+          throw error;
+        }
       })
       .filter((item) => item.operationId !== preserveOperationId && item.terminal)
       .sort((left, right) => left.mtimeMs - right.mtimeMs);
@@ -395,6 +444,55 @@ export class DurableOperationStore {
       throw new Error("operation receipt exceeds total store byte capacity");
     }
     return record;
+  }
+}
+
+function lockOwnerIsAlive(lockPath: string): boolean {
+  try {
+    const bytes = readBoundedFile(lockPath, 4096);
+    if (!bytes) return false;
+    const parsed = JSON.parse(bytes.toString("utf8")) as { pid?: unknown };
+    if (!Number.isSafeInteger(parsed.pid) || Number(parsed.pid) <= 0) return false;
+    try {
+      process.kill(Number(parsed.pid), 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  } catch {
+    return false;
+  }
+}
+
+function lockTokenMatches(lockPath: string, token: string): boolean {
+  try {
+    const bytes = readBoundedFile(lockPath, 4096);
+    if (!bytes) return false;
+    const parsed = JSON.parse(bytes.toString("utf8")) as { token?: unknown };
+    return parsed.token === token;
+  } catch {
+    return false;
+  }
+}
+
+function readBoundedFile(filePath: string, maxBytes: number): Buffer | null {
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset !== bytes.length) return null;
+    const extra = Buffer.allocUnsafe(1);
+    if (fs.readSync(descriptor, extra, 0, 1, offset) !== 0) return null;
+    return bytes;
+  } finally {
+    fs.closeSync(descriptor);
   }
 }
 

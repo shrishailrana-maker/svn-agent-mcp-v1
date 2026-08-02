@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.32 — public implementation contract. Single source of truth.**
+**Spec version 1.33 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -92,7 +92,7 @@ workflow).
 | D2 | Read-only safety = launch with `--readonly` (legacy/dev env `SVN_AGENT_READONLY=1` also works); every mutating tool refuses | Simple, unbypassable, matches "read-only clients never change SVN state" |
 | D3 | Mixed-revision WC on commit → **warn in `note`, proceed** | Caller decides; refusing blocks legitimate scoped commits |
 | D4 | `riskAck:true` required for mechanically detectable risky slices (§7 G6); undetectable risk categories stay the calling client's approval-gate duty | Encodes the risky-slice gate without pretending to detect the undetectable |
-| D5 | Branch/switch/merge/relocate/delete: **out of v0.1** | Not needed for daily flow; each is high-risk |
+| D5 | Branch/switch/merge/relocate remain out of scope; guarded delete is supported with dry-run, explicit paths, and risk acknowledgement | Delete is needed for normal scoped maintenance; the other operations still require separate guard designs |
 | D6 | Versioning: **semver**, first release `v0.1.0`; `current` junction → `releases\v0.1.0` | One pin, easy rollback |
 | D7 | Env overrides win; use compatible bundled tools next and native `PATH` tools otherwise | Windows stays self-contained while macOS/Linux use their normal package-managed toolchain |
 | D8 | Commit message format is validated before SVN and invalid messages are refused with typed remediation | Prevent successful commits followed by unusable warnings |
@@ -651,9 +651,11 @@ are reported by the post-status residue.
 With `expandDescendants:true`, existing directory inputs expand to the bounded, sorted set of all
 currently changed descendants. The exact expanded list is returned and every descendant receives
 the same containment, never-commit, status, conflict, and risk checks as an explicitly named path.
-When `precommitToken` is supplied, commit first proves that exact scope, file state, repository
-policy, and observed remote revision still match the READY precommit evidence. A mismatch is a typed
-refusal; the token never substitutes for G1-G6.
+When `precommitToken` is supplied, commit proves that exact scope, file state, repository policy,
+and observed remote revision still match the READY evidence, then repeats that proof immediately
+before invoking SVN. A mismatch is a typed refusal; the token never substitutes for G1-G6. This
+does not freeze files against an unrelated external editor, so one writable process per working
+copy remains an operating boundary.
 
 **`svn_path_change`** — `{ cwd?, action: "move"|"rename"|"copy", src: string, dest: string }`
 argv: `svn <move|copy> --parents <src> <dest>`; `rename` uses SVN's `move` operation. Working-copy
@@ -876,6 +878,19 @@ housekeeping — separate initiative.
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 
+### Spec 1.33 / Unreleased — 2026-08-02
+
+- Makes prepared releases self-contained with an adjacent package manifest and validates that
+  manifest in self-check.
+- Bounds process output, streamed parser callbacks, per-file previews, evidence metadata, operation
+  receipts, asynchronous workflow hashing, and stored diff summaries; process cancellation and
+  timeouts terminate complete process trees.
+- Fixes deletion verification, multi-path logs, exact property values, snapshot-token state,
+  update receipts, lock parsing, and credential/path input validation.
+- Makes ambiguous stale commits fail closed and revalidates READY evidence immediately before SVN.
+- Validates prepared-release pointers by canonical path, isolates test receipts from live state, and
+  recovers abandoned lock-break coordination files after their bounded stale interval.
+
 ### Spec 1.32 / v1.4.0 — 2026-08-02
 
 - Adds explicit-file pre-edit baseline tokens and path-level local/remote collision receipts on
@@ -891,8 +906,9 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
   resolution without adding advertised schemas.
 - Binds each ID to normalized inputs, replays identical terminal results across MCP restarts, and
   refuses concurrent, mismatched, unreadable, incomplete, or ambiguous stale operations.
-- Allows narrowly proven commit recovery from clean scoped status and matching post-start history;
-  unfinished receipts are never automatically removed or blindly re-executed.
+- Makes interrupted commit outcomes fail closed; message/time history similarity is not sufficient
+  proof that a particular operation performed a revision. Unfinished receipts are never blindly
+  re-executed.
 - Physically excludes working-copy storage, cleans bounded terminal/orphan evidence, and refuses new
   work rather than pruning protected ambiguous records when store capacity is exhausted.
 

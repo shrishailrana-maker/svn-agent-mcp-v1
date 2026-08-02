@@ -208,6 +208,49 @@ describe("durable operation receipts", () => {
     }
   });
 
+  it("recovers when a crashed stale-lock breaker was left behind", () => {
+    const directory = temporaryDirectory();
+    try {
+      const lock = path.join(directory, ".store.lock");
+      const breaker = `${lock}.break`;
+      fs.writeFileSync(lock, "abandoned", "utf8");
+      fs.writeFileSync(breaker, "abandoned", "utf8");
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lock, old, old);
+      fs.utimesSync(breaker, old, old);
+
+      const store = new DurableOperationStore({ directory, lockWaitMs: 100, lockStaleMs: 1_000 });
+      expect(store.begin({
+        operationId: OPERATION_ID,
+        kind: "svn_update",
+        fingerprint: stableOperationFingerprint({ paths: ["a.txt"] })
+      }).status).toBe("execute");
+      expect(fs.existsSync(breaker)).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not break a stale-looking lock owned by a live process", () => {
+    const directory = temporaryDirectory();
+    try {
+      const lock = path.join(directory, ".store.lock");
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "live-lock" }), "utf8");
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lock, old, old);
+
+      const store = new DurableOperationStore({ directory, lockWaitMs: 0, lockStaleMs: 1_000 });
+      expect(() => store.begin({
+        operationId: OPERATION_ID,
+        kind: "svn_update",
+        fingerprint: stableOperationFingerprint({ paths: ["a.txt"] })
+      })).toThrow("operation receipt lock is busy");
+      expect(fs.existsSync(lock)).toBe(true);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("returns a typed failure when the receipt store remains locked", async () => {
     const directory = temporaryDirectory();
     try {

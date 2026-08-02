@@ -136,7 +136,7 @@ Generic client example:
 }
 ```
 
-The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths and omits `cwd`, the server finds the nearest SVN working copy for those paths. Relative paths require explicit per-call `cwd`.
+The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths and omits `cwd`, the server finds the nearest SVN working copy for those paths. Relative paths require an explicit, absolute per-call `cwd`. Repository URL inputs must not embed usernames or passwords; use the native SVN credential cache.
 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
 

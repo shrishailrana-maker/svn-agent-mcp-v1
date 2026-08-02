@@ -83,6 +83,44 @@ describe("svn self-check", () => {
     }
   });
 
+  it("rejects a prepared release that omits its package manifest", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-prepared-"));
+    const releaseRoot = path.join(root, "releases", "v1.4.0");
+    try {
+      await writeRuntimeFiles(releaseRoot, "win32");
+      await fs.rm(path.join(releaseRoot, "package.json"));
+      await fs.symlink(path.relative(root, releaseRoot), path.join(root, "current"), process.platform === "win32" ? "junction" : "dir");
+
+      const layout = await inspectRuntimeLayout(root, "1.4.0", "win32");
+
+      expect(layout.runtimeLayout).toBe("source-tree");
+      expect(layout.layoutOk).toBe(false);
+      expect(layout.currentMatchesPackage).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a current pointer to an external directory with the expected basename", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-pointer-"));
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-external-"));
+    const externalRelease = path.join(externalRoot, "v1.4.0");
+    try {
+      await writeRuntimeFiles(path.join(root, "releases", "v1.4.0"), "win32");
+      await writeRuntimeFiles(externalRelease, "win32");
+      await fs.symlink(path.relative(root, externalRelease), path.join(root, "current"), process.platform === "win32" ? "junction" : "dir");
+
+      const layout = await inspectRuntimeLayout(root, "1.4.0", "win32");
+
+      expect(layout.currentRelease).toBe("v1.4.0");
+      expect(layout.currentMatchesPackage).toBe(false);
+      expect(layout.layoutOk).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(externalRoot, { recursive: true, force: true });
+    }
+  });
+
   it("accepts a Unix npm package layout without a Windows bin payload", async () => {
     const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-unix-"));
     const packageRoot = path.join(temporaryRoot, "node_modules", "svn-agent-mcp");
@@ -136,9 +174,27 @@ describe("svn self-check", () => {
       await fs.rm(temporaryRoot, { recursive: true, force: true });
     }
   });
+
+  it("resolves a prepared release entrypoint back to its source root", async () => {
+    const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "svn-selfcheck-prepared-root-"));
+    const releaseRoot = path.join(sourceRoot, "releases", "v1.4.0");
+    const start = path.join(releaseRoot, "dist", "tools");
+    try {
+      await fs.mkdir(start, { recursive: true });
+      const manifest = JSON.stringify({ name: "svn-agent-mcp", version: "1.4.0" });
+      await fs.writeFile(path.join(sourceRoot, "package.json"), manifest);
+      await fs.writeFile(path.join(releaseRoot, "package.json"), manifest);
+
+      await expect(findProjectRoot(start)).resolves.toBe(sourceRoot);
+    } finally {
+      await fs.rm(sourceRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 async function writeRuntimeFiles(root: string, platform: NodeJS.Platform): Promise<void> {
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "svn-agent-mcp", version: "1.4.0" }));
   const dist = path.join(root, "dist");
   await fs.mkdir(dist, { recursive: true });
   await fs.writeFile(path.join(dist, "index.js"), "runtime");

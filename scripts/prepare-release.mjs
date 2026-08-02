@@ -34,6 +34,7 @@ if (bundleRuntime) {
 await fs.rm(releaseRoot, { recursive: true, force: true });
 await fs.mkdir(releaseRoot, { recursive: true });
 await fs.cp(sourceDist, releaseDist, { recursive: true });
+await fs.copyFile(packageJsonPath, path.join(releaseRoot, "package.json"));
 if (bundleRuntime) {
   await fs.cp(sourceBin, releaseBin, { recursive: true });
 }

@@ -843,6 +843,7 @@ async function executeCanonicalSafeCommit(
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
       ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+      ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
       allowDirectoryTargets: true
     });
     stages.push({ stage: "precommit_after_eol", result: precommit });
@@ -859,6 +860,7 @@ async function executeCanonicalSafeCommit(
     message: input.message,
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     ...(input.riskAck === undefined ? {} : { riskAck: input.riskAck }),
+    ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
     allowDirectoryTargets: true,
     precommitToken: precommit.precommit_token
   });
@@ -969,10 +971,12 @@ async function finalizeSafeCommit(
   if (!updated.ok || updated.conflicts.length > 0) {
     return attachSafeDetail(input, safeCommitFailure(updated.cwd, "FINAL_UPDATE_FAILED", updated.note || "final pinned update failed"), stages);
   }
-  const finalStatus = await svnStatus({
-    paths: finalScope,
-    ...(input.cwd === undefined ? {} : { cwd: input.cwd })
-  });
+  const finalStatus = updateScope.length > 0
+    ? await svnStatus({
+        paths: updateScope,
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd })
+      })
+    : createEnvelope({ ok: true, command: "svn status (deleted scope skipped)", cwd: committed.cwd });
   const finalSnapshot = updateScope.length > 0
     ? await svnSnapshot({
         paths: updateScope,
@@ -1028,7 +1032,7 @@ async function recoverSafeCommit(
   createdAt: number
 ): Promise<ToolEnvelope | null> {
   const canonical = await canonicalSafeCommitInput(input);
-  if (!canonical.ok) return canonical.envelope;
+  if (!canonical.ok) return null;
   const recovered = await recoverCommittedOperation(canonical.input, createdAt);
   if (!recovered || typeof recovered.committed_revision !== "number") return null;
   return finalizeSafeCommit(canonical.input, recovered, canonical.input.paths, [{ stage: "commit_recovered", result: recovered }]);
@@ -1311,16 +1315,29 @@ async function eolFixOneVerified(input: {
   const contentPreserved = normalizedHashAfter === normalizedHashBefore;
   const targetVerified = (after.kind === target || after.kind === "none") && !after.has_bom;
   if (!contentPreserved || !targetVerified) {
-    fs.writeFileSync(filePath, originalBytes);
+    let restored = false;
+    try {
+      fs.writeFileSync(filePath, originalBytes);
+      restored = true;
+    } catch {
+      restored = false;
+    }
     return {
-      ...failEnvelope("eol_fix_verified", context.cwd, "normalized content or EOL verification failed; original restored"),
+      ...failEnvelope(
+        "eol_fix_verified",
+        context.cwd,
+        restored
+          ? "normalized content or EOL verification failed; original restored"
+          : "normalized content or EOL verification failed; restoring the original also failed"
+      ),
       before,
       after,
       target,
       eol_style: eolStyle,
       converter,
       normalized_content_hash: normalizedHashAfter,
-      pure_eol_churn: false
+      pure_eol_churn: false,
+      original_restored: restored
     };
   }
   const diff = await svnDiff({ cwd: context.cwd, paths: [filePath], ignoreEol: true, lineLimit: defaultDiffLineLimit() });

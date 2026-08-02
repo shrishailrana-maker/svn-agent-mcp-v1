@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,10 +15,16 @@ const DEFAULT_MAX_STDOUT_LINE_BYTES = 1024 * 1024;
 // Total budget for retained streamed stdout; lines beyond it still reach the
 // per-line callback (so summaries stay complete) but are not stored.
 const DEFAULT_MAX_STDOUT_CAPTURE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_STDOUT_CALLBACK_LINES = 100_000;
+const DEFAULT_MAX_STDOUT_CALLBACK_BYTES = 64 * 1024 * 1024;
 const requestCancellation = new AsyncLocalStorage<AbortSignal>();
 
 export function withRequestCancellation<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
   return requestCancellation.run(signal, operation);
+}
+
+export function currentRequestCancellationSignal(): AbortSignal | undefined {
+  return requestCancellation.getStore();
 }
 
 export function timeoutMs(): number {
@@ -106,53 +113,111 @@ export async function runExecutable(
   const command = redactArgv(executable, args);
   const effectiveTimeoutMs = options.timeout ?? timeoutMs();
   const cancellationSignal = options.signal ?? requestCancellation.getStore();
+  if (cancellationSignal?.aborted) {
+    return cancelledBeforeLaunchResult(command, cwd, executable, args, effectiveTimeoutMs);
+  }
 
   return new Promise((resolve) => {
+    let child: ChildProcess;
     try {
-      execFile(
-      executable,
-      args,
-      {
+      child = spawn(executable, args, {
         cwd,
         env: stableToolEnv(),
-        timeout: effectiveTimeoutMs,
-        maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         windowsHide: true,
-        encoding: "buffer",
-        ...(cancellationSignal ? { signal: cancellationSignal } : {})
-      },
-      (error, stdoutBuffer, stderrBuffer) => {
-        const stdout = decodeOutput(stdoutBuffer);
-        const stderr = decodeOutput(stderrBuffer);
-        const execError = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals }) | null;
-        const cancelled = cancellationSignal?.aborted === true;
-        const killedByTimeout =
-          !cancelled && Boolean(execError?.killed) && (execError?.signal === "SIGTERM" || execError?.code === "ETIMEDOUT");
-
-        const result: RunResult = {
-          command,
-          cwd,
-          executable,
-          args,
-          exitCode: typeof execError?.code === "number" ? execError.code : execError ? 1 : 0,
-          signal: (execError?.signal as NodeJS.Signals | null | undefined) ?? null,
-          stdout,
-          stderr,
-          timedOut: killedByTimeout,
-          cancelled,
-          timeoutMs: effectiveTimeoutMs
-        };
-        if (typeof execError?.code === "string") {
-          result.errorCode = execError.code;
-        }
-        resolve(result);
-      }
-      );
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"]
+      });
     } catch (error) {
       // A synchronous launch failure (for example a NUL byte in an argument)
       // must resolve as a structured failed run, never as a thrown TypeError.
       resolve(launchFailureResult({ command, cwd, executable, args, timeoutMs: effectiveTimeoutMs, error }));
+      return;
     }
+
+    const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER;
+    const stdoutBuffers: Buffer[] = [];
+    const stderrBuffers: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutOverflowed = false;
+    let stderrOverflowed = false;
+    let launchError: NodeJS.ErrnoException | null = null;
+    let timedOut = false;
+    let cancelled = false;
+    let settled = false;
+    let escalation: NodeJS.Timeout | null = null;
+
+    const capture = (buffers: Buffer[], chunk: Buffer, currentBytes: number, streamOverflowed: boolean): {
+      bytes: number;
+      overflowed: boolean;
+    } => {
+      if (streamOverflowed) return { bytes: currentBytes, overflowed: true };
+      if (currentBytes + chunk.length > maxBuffer) {
+        const remaining = Math.max(0, maxBuffer - currentBytes);
+        if (remaining > 0) buffers.push(chunk.subarray(0, remaining));
+        terminateProcessTree(child, true);
+        return { bytes: maxBuffer, overflowed: true };
+      }
+      buffers.push(chunk);
+      return { bytes: currentBytes + chunk.length, overflowed: false };
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      const captured = capture(stdoutBuffers, chunk, stdoutBytes, stdoutOverflowed);
+      stdoutBytes = captured.bytes;
+      stdoutOverflowed = captured.overflowed;
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const captured = capture(stderrBuffers, chunk, stderrBytes, stderrOverflowed);
+      stderrBytes = captured.bytes;
+      stderrOverflowed = captured.overflowed;
+    });
+
+    const cancelProcessTree = () => {
+      cancelled = true;
+      terminateProcessTree(child, true);
+    };
+    cancellationSignal?.addEventListener("abort", cancelProcessTree, { once: true });
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminateProcessTree(child, false);
+      escalation = setTimeout(() => {
+        if (!settled) terminateProcessTree(child, true);
+      }, 1000);
+    }, effectiveTimeoutMs);
+
+    const settle = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (escalation) clearTimeout(escalation);
+      cancellationSignal?.removeEventListener("abort", cancelProcessTree);
+      const overflowed = stdoutOverflowed || stderrOverflowed;
+      const stderrSuffix = overflowed ? "\n[output exceeded maxBuffer]" : "";
+      const result: RunResult = {
+        command,
+        cwd,
+        executable,
+        args,
+        exitCode: timedOut || cancelled ? null : overflowed || launchError ? 1 : exitCode,
+        signal,
+        stdout: decodeOutput(Buffer.concat(stdoutBuffers)),
+        stderr: `${decodeOutput(Buffer.concat(stderrBuffers))}${stderrSuffix}`,
+        timedOut,
+        cancelled: cancelled && !timedOut,
+        timeoutMs: effectiveTimeoutMs,
+        truncated: overflowed
+      };
+      if (overflowed) result.errorCode = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      else if (typeof launchError?.code === "string") result.errorCode = launchError.code;
+      resolve(result);
+    };
+
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      launchError = error;
+    });
+    child.once("close", (exitCode, signal) => settle(exitCode, signal));
   });
 }
 
@@ -181,6 +246,28 @@ function launchFailureResult(input: {
   };
 }
 
+function cancelledBeforeLaunchResult(
+  command: string,
+  cwd: string,
+  executable: string,
+  args: string[],
+  effectiveTimeoutMs: number
+): RunResult {
+  return {
+    command,
+    cwd,
+    executable,
+    args,
+    exitCode: null,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    cancelled: true,
+    timeoutMs: effectiveTimeoutMs
+  };
+}
+
 export async function runSvn(args: string[], cwd: string): Promise<RunResult> {
   return runExecutable(svnExecutable(), nonInteractiveSvnArgs(args), { cwd });
 }
@@ -189,7 +276,15 @@ export async function runSvnStreamingLines(
   args: string[],
   cwd: string,
   onStdoutLine: (line: string) => void,
-  options: { stdoutLineLimit?: number; stdoutMaxLineBytes?: number; stdoutMaxCaptureBytes?: number; timeout?: number; signal?: AbortSignal } = {}
+  options: {
+    stdoutLineLimit?: number;
+    stdoutMaxLineBytes?: number;
+    stdoutMaxCaptureBytes?: number;
+    stdoutCallbackLineLimit?: number;
+    stdoutCallbackMaxBytes?: number;
+    timeout?: number;
+    signal?: AbortSignal;
+  } = {}
 ): Promise<RunResult> {
   return runExecutableStreamingLines(svnExecutable(), nonInteractiveSvnArgs(args), { cwd, ...options }, onStdoutLine);
 }
@@ -197,7 +292,17 @@ export async function runSvnStreamingLines(
 export async function runExecutableStreamingLines(
   executable: string,
   args: string[],
-  options: { cwd: string; stdoutLineLimit?: number; stdoutMaxLineBytes?: number; stdoutMaxCaptureBytes?: number; timeout?: number; stderrMaxBuffer?: number; signal?: AbortSignal },
+  options: {
+    cwd: string;
+    stdoutLineLimit?: number;
+    stdoutMaxLineBytes?: number;
+    stdoutMaxCaptureBytes?: number;
+    stdoutCallbackLineLimit?: number;
+    stdoutCallbackMaxBytes?: number;
+    timeout?: number;
+    stderrMaxBuffer?: number;
+    signal?: AbortSignal;
+  },
   onStdoutLine: (line: string) => void
 ): Promise<RunResult> {
   const cwd = path.resolve(options.cwd);
@@ -205,6 +310,9 @@ export async function runExecutableStreamingLines(
   const stdoutLineLimit = options.stdoutLineLimit ?? 200;
   const effectiveTimeoutMs = options.timeout ?? timeoutMs();
   const cancellationSignal = options.signal ?? requestCancellation.getStore();
+  if (cancellationSignal?.aborted) {
+    return cancelledBeforeLaunchResult(command, cwd, executable, args, effectiveTimeoutMs);
+  }
 
   return new Promise((resolve) => {
     let child;
@@ -213,6 +321,7 @@ export async function runExecutableStreamingLines(
         cwd,
         env: stableToolEnv(),
         windowsHide: true,
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         ...(cancellationSignal ? { signal: cancellationSignal } : {})
       });
@@ -225,26 +334,34 @@ export async function runExecutableStreamingLines(
     const stderrMaxBuffer = options.stderrMaxBuffer ?? DEFAULT_MAX_BUFFER;
     const stdoutMaxLineBytes = Math.max(1, options.stdoutMaxLineBytes ?? DEFAULT_MAX_STDOUT_LINE_BYTES);
     const stdoutMaxCaptureBytes = Math.max(1, options.stdoutMaxCaptureBytes ?? DEFAULT_MAX_STDOUT_CAPTURE_BYTES);
+    const stdoutCallbackLineLimit = Math.max(1, options.stdoutCallbackLineLimit ?? DEFAULT_MAX_STDOUT_CALLBACK_LINES);
+    const stdoutCallbackMaxBytes = Math.max(1, options.stdoutCallbackMaxBytes ?? DEFAULT_MAX_STDOUT_CALLBACK_BYTES);
     let stdoutCapturedBytes = 0;
+    let stdoutCallbackBytes = 0;
+    let stdoutCallbackLines = 0;
     let stdoutFragments: Buffer[] = [];
     let stdoutLineBytes = 0;
     let stdoutLineTruncated = false;
     let stdoutTruncated = false;
+    let stdoutCaptureClosed = false;
+    let stdoutCallbackClosed = false;
+    let stdoutCallbackTruncated = false;
     let timedOut = false;
     let settled = false;
     let stderrBytes = 0;
     let stderrTruncated = false;
+    let launchError: NodeJS.ErrnoException | null = null;
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      settle({
-        exitCode: null,
-        signal: "SIGTERM",
-        timedOut: true,
-        cancelled: false
-      });
+      terminateProcessTree(child, false);
+      escalation = setTimeout(() => {
+        if (!settled) terminateProcessTree(child, true);
+      }, 1000);
     }, effectiveTimeoutMs);
+    let escalation: NodeJS.Timeout | null = null;
+    const cancelProcessTree = () => terminateProcessTree(child, true);
+    cancellationSignal?.addEventListener("abort", cancelProcessTree, { once: true });
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (settled) {
@@ -260,20 +377,14 @@ export async function runExecutableStreamingLines(
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
-      settle({
-        exitCode: 1,
-        signal: null,
-        stderrOverride: error.message,
-        timedOut,
-        cancelled: cancellationSignal?.aborted === true && !timedOut,
-        errorCode: error.code
-      });
+      launchError = error;
     });
 
     child.on("close", (code, signal) => {
       settle({
-        exitCode: code,
+        exitCode: launchError ? 1 : code,
         signal,
+        ...(launchError ? { stderrOverride: launchError.message, errorCode: launchError.code } : {}),
         timedOut,
         cancelled: cancellationSignal?.aborted === true && !timedOut
       });
@@ -292,6 +403,8 @@ export async function runExecutableStreamingLines(
       }
       settled = true;
       clearTimeout(timeout);
+      if (escalation) clearTimeout(escalation);
+      cancellationSignal?.removeEventListener("abort", cancelProcessTree);
       consumeStdout(Buffer.alloc(0), true);
       const stderrText =
         decodeOutput(Buffer.concat(stderrBuffers)) + (stderrTruncated ? "\n[stderr truncated]" : "");
@@ -300,7 +413,7 @@ export async function runExecutableStreamingLines(
         cwd,
         executable,
         args,
-        exitCode: input.exitCode,
+        exitCode: input.timedOut || input.cancelled ? null : input.exitCode,
         signal: input.signal,
         stdout: stdoutLines.join("\n"),
         stderr: input.stderrOverride ?? stderrText,
@@ -308,7 +421,8 @@ export async function runExecutableStreamingLines(
         cancelled: input.cancelled,
         timeoutMs: effectiveTimeoutMs,
         errorCode: input.errorCode,
-        truncated: stderrTruncated || stdoutTruncated
+        truncated: stderrTruncated || stdoutTruncated,
+        callbackTruncated: stdoutCallbackTruncated
       });
     }
 
@@ -377,25 +491,70 @@ export async function runExecutableStreamingLines(
     }
 
     function emitStdoutLine(): void {
+      if (stdoutCallbackClosed && stdoutCaptureClosed) {
+        stdoutFragments = [];
+        stdoutLineBytes = 0;
+        stdoutLineTruncated = false;
+        return;
+      }
       const lineBytes = Buffer.concat(stdoutFragments, stdoutLineBytes);
       const trimmed = lineBytes.length > 0 && lineBytes[lineBytes.length - 1] === 0x0d
         ? lineBytes.subarray(0, lineBytes.length - 1)
         : lineBytes;
       const line = decodeOutput(trimmed) + (stdoutLineTruncated ? " [line truncated]" : "");
-      onStdoutLine(line);
-      if (stdoutLines.length < stdoutLineLimit) {
-        if (stdoutCapturedBytes + line.length <= stdoutMaxCaptureBytes) {
+      const lineBytesForCapture = Buffer.byteLength(line, "utf8");
+      if (!stdoutCallbackClosed
+          && stdoutCallbackLines < stdoutCallbackLineLimit
+          && stdoutCallbackBytes + lineBytesForCapture <= stdoutCallbackMaxBytes) {
+        onStdoutLine(line);
+        stdoutCallbackLines += 1;
+        stdoutCallbackBytes += lineBytesForCapture;
+      } else if (!stdoutCallbackClosed) {
+        stdoutCallbackClosed = true;
+        stdoutCallbackTruncated = true;
+        stdoutTruncated = true;
+      }
+      if (!stdoutCaptureClosed && stdoutLines.length < stdoutLineLimit) {
+        if (stdoutCapturedBytes + lineBytesForCapture <= stdoutMaxCaptureBytes) {
           stdoutLines.push(line);
-          stdoutCapturedBytes += line.length;
+          stdoutCapturedBytes += lineBytesForCapture;
         } else {
           stdoutTruncated = true;
+          stdoutCaptureClosed = true;
         }
+      } else if (stdoutLines.length >= stdoutLineLimit) {
+        stdoutTruncated = true;
+        stdoutCaptureClosed = true;
       }
       stdoutFragments = [];
       stdoutLineBytes = 0;
       stdoutLineTruncated = false;
     }
   });
+}
+
+function terminateProcessTree(child: ChildProcess, force: boolean): void {
+  const pid = child.pid;
+  if (!pid) return;
+  if (process.platform === "win32") {
+    const taskkill = path.join(process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows", "System32", "taskkill.exe");
+    execFile(
+      taskkill,
+      ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
+      { windowsHide: true },
+      () => undefined
+    );
+    return;
+  }
+  try {
+    process.kill(-pid, force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    try {
+      child.kill(force ? "SIGKILL" : "SIGTERM");
+    } catch {
+      // The process already exited.
+    }
+  }
 }
 
 export async function runSvnVersion(target: string, cwd: string): Promise<RunResult> {

@@ -36,8 +36,13 @@ const propgetParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   textNodeName: "text",
+  parseTagValue: false,
+  trimValues: false,
   processEntities: svnXmlEntityLimits
 });
+
+const EVIDENCE_PER_FILE_LIMIT = 200;
+const EVIDENCE_PREVIEW_CHAR_LIMIT = 512;
 
 export async function getWcContext(cwdInput?: string, pathHints: string[] = []): Promise<{ ok: true; cwd: string; info: WcInfo; wcRoot: string } | { ok: false; envelope: Envelope }> {
   if (!cwdInput && !pathHints.some((hint) => path.isAbsolute(hint))) {
@@ -381,9 +386,10 @@ export async function svnDiff(input: {
   const revisionArgs = input.revision
     ? [isRevisionRange(input.revision) ? "-r" : "-c", input.revision]
     : [];
+  const diffTargets = revisionArgs.length > 0 ? effectivePaths.map(escapeSvnTarget) : effectivePaths;
   const args = ignoreEol
-    ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...effectivePaths]
-    : ["diff", ...revisionArgs, "--internal-diff", "--", ...effectivePaths];
+    ? ["diff", ...revisionArgs, "--internal-diff", "-x", "--ignore-eol-style", "--", ...diffTargets]
+    : ["diff", ...revisionArgs, "--internal-diff", "--", ...diffTargets];
   const diffAccumulator = createDiffAccumulator(lineLimit, lineOffset);
   const run = await runSvnStreamingLines(args, context.cwd, diffAccumulator.pushLine, { stdoutLineLimit: lineLimit });
   const rawDiff = run.exitCode === 0
@@ -401,7 +407,7 @@ export async function svnDiff(input: {
   const detail = diffAccumulator.detail();
   const storedEvidence = run.exitCode === 0
     ? processEvidenceStore.put("svn_diff", evidenceScope, redactText(detail.text), {
-        summary: diff,
+        summary: boundedEvidenceDiffSummary(diff),
         sourceTruncated: detail.truncated || Boolean(run.truncated)
       })
     : null;
@@ -437,6 +443,7 @@ export async function svnDiff(input: {
       truncated: diff.truncated
     }),
     ...diff,
+    totals_complete: run.callbackTruncated !== true,
     wc_root: context.wcRoot,
     page_offset: lineOffset,
     ...(evidencePage?.nextCursor ? { next_cursor: evidencePage.nextCursor } : {}),
@@ -1169,11 +1176,52 @@ async function repositoryLogTargets(cwd: string, paths: string[]): Promise<{
     return { targets: paths, mode: "working-copy-path", note: "" };
   }
 
+  if (urls.length > 1) {
+    const roots = entries.map((entry) => entry.repo_root).filter((root): root is string => Boolean(root));
+    const repositoryRoot = roots.length === urls.length && roots.every((root) => root === roots[0]) ? roots[0] : null;
+    if (!repositoryRoot || !urls.every((url) => url === repositoryRoot || url.startsWith(`${repositoryRoot}/`))) {
+      return { targets: paths, mode: "working-copy-path", note: "" };
+    }
+    return {
+      targets: [repositoryRoot, ...urls.map((url) => url === repositoryRoot ? "." : url.slice(repositoryRoot.length + 1))],
+      mode: "repository-url",
+      note: "queried one repository root URL with relative targets at HEAD"
+    };
+  }
+
   return {
     targets: urls,
     mode: "repository-url",
     note: "queried repository URL at HEAD to avoid working-copy peg revision log gaps"
   };
+}
+
+export function boundedEvidenceDiffSummary(diff: DiffSummary): DiffSummary {
+  return {
+    ...diff,
+    diff_excerpt: "",
+    per_file: diff.per_file.slice(0, EVIDENCE_PER_FILE_LIMIT).map((file) => {
+      const firstHunk = boundedEvidencePreview(file.first_hunk);
+      const firstMeaningfulLine = boundedEvidencePreview(file.first_meaningful_line);
+      return {
+        ...file,
+        ...(firstHunk === undefined ? {} : { first_hunk: firstHunk.value }),
+        ...(firstMeaningfulLine === undefined ? {} : { first_meaningful_line: firstMeaningfulLine.value }),
+        ...(firstHunk?.truncated === true || firstMeaningfulLine?.truncated === true
+          ? { preview_truncated: true }
+          : {})
+      };
+    }),
+    per_file_truncated: diff.per_file_truncated || diff.per_file.length > EVIDENCE_PER_FILE_LIMIT
+  };
+}
+
+function boundedEvidencePreview(value: string | undefined): { value: string; truncated: boolean } | undefined {
+  if (value === undefined) return undefined;
+  if (value.length <= EVIDENCE_PREVIEW_CHAR_LIMIT) return { value, truncated: false };
+  let end = EVIDENCE_PREVIEW_CHAR_LIMIT;
+  if (/[\uD800-\uDBFF]/.test(value[end - 1] ?? "")) end -= 1;
+  return { value: `${value.slice(0, end)}...`, truncated: true };
 }
 
 type WcProbe = {

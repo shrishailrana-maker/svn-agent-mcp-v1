@@ -152,6 +152,12 @@ describe("SVN text and XML parsers", () => {
     ]);
   });
 
+  it("preserves a broken or stolen update lock status", () => {
+    expect(parseUpdateText("  B  locked.txt\n").changed_paths).toEqual([
+      { status: "B", path: "locked.txt" }
+    ]);
+  });
+
   it("labels unknown status items without colliding with known SVN codes", () => {
     const parsed = parseStatusXml(
       '<status><target path="."><entry path="future.txt"><wc-status item="mystery" /></entry></target></status>'

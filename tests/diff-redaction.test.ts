@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { createEnvelope, noteFromRun, redactArgv, redactText, summarizeText } from "../src/envelope.js";
 import { createDiffAccumulator, parseDiffText } from "../src/parse/diffText.js";
-import { defaultDiffLineLimit, isRevisionRange } from "../src/tools/readonly.js";
+import { boundedEvidenceDiffSummary, defaultDiffLineLimit, isRevisionRange } from "../src/tools/readonly.js";
 import type { RunResult } from "../src/types.js";
 
 describe("diff parsing and command redaction", () => {
@@ -106,6 +106,30 @@ describe("diff parsing and command redaction", () => {
       path: "big.txt", added: 2, removed: 1, binary: false, hunks: 0,
       first_meaningful_line: `+${"a".repeat(30)}`
     }]);
+  });
+
+  it("bounds per-file preview strings before storing diff evidence metadata", () => {
+    const summary = boundedEvidenceDiffSummary({
+      per_file: [{
+        path: "big.txt", added: 1, removed: 0, binary: false, hunks: 1,
+        first_hunk: "@@ -1 +1 @@", first_meaningful_line: `+${"x".repeat(1024 * 1024)}`
+      }],
+      per_file_truncated: false,
+      diff_excerpt: "",
+      truncated: false,
+      total_files: 1,
+      total_lines: 1,
+      total_chars: 1024 * 1024,
+      total_hunks: 1,
+      total_added: 1,
+      total_removed: 0,
+      binary_files: 0,
+      property_files: 0
+    });
+
+    expect(summary.per_file[0]?.preview_truncated).toBe(true);
+    expect(summary.per_file[0]?.first_meaningful_line?.length).toBeLessThan(600);
+    expect(Buffer.byteLength(JSON.stringify(summary), "utf8")).toBeLessThan(10_000);
   });
 
   it("marks property changes without counting property values as source lines", () => {

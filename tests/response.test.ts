@@ -643,6 +643,40 @@ describe("public MCP response shaping", () => {
       conflicts: [{ path: "src/a.ts", type: "text" }]
     });
     expect(JSON.stringify(standard)).not.toContain(root);
+
+    const manyPayload = {
+      ...payload,
+      changed_paths: Array.from({ length: 1_000 }, (_, index) => ({
+        status: "M",
+        path: `${root}\\src\\file-${index}.ts`
+      }))
+    };
+    const boundedProjection = toToolResult("svn_status", manyPayload, {
+      responseMode: "standard",
+      request: { fields: ["changedPaths"], maxItems: 10, cursor: "10" }
+    }).structuredContent;
+    expect(boundedProjection.changedPaths as unknown[]).toHaveLength(10);
+    expect((boundedProjection.changedPaths as Array<Record<string, unknown>>)[0]?.path).toBe("src/file-10.ts");
+    expect(boundedProjection).toMatchObject({ truncated: true, nextCursor: "20" });
+
+    const boundedConflicts = toToolResult("svn_status", {
+      ...payload,
+      conflicts: Array.from({ length: 300 }, (_, index) => ({
+        path: `${root}\\src\\conflict-${index}.ts`,
+        type: "text" as const
+      }))
+    }, {
+      responseMode: "standard",
+      request: { fields: ["conflicts"], conflictCursor: "100" }
+    }).structuredContent;
+    expect(boundedConflicts.conflicts as unknown[]).toHaveLength(100);
+    expect((boundedConflicts.conflicts as Array<Record<string, unknown>>)[0]?.path)
+      .toBe("src/conflict-100.ts");
+    expect(boundedConflicts).toMatchObject({
+      conflictCount: 300,
+      conflictsTruncated: true,
+      nextConflictCursor: "200"
+    });
   });
 
   it("preserves durable operation metadata through compact errors and field projection", () => {
@@ -702,6 +736,12 @@ describe("public MCP response shaping", () => {
     expect(unchanged).toMatchObject({ ok: true, verdict: "NO_CHANGE", unchangedSinceCursor: true });
     expect(unchanged).not.toHaveProperty("items");
 
+    const receiptUnchanged = toToolResult("svn_status", payload, {
+      responseMode: "receipt",
+      request: { paths: ["src"], afterCursor: first.snapshotToken }
+    }).structuredContent;
+    expect(receiptUnchanged).toMatchObject({ ok: true, verdict: "NO_CHANGE", unchangedSinceCursor: true });
+
     const changed = toToolResult("svn_status", {
       ...payload,
       changed_paths: [{ status: "M", path: `${root}\\src\\b.ts` }]
@@ -752,6 +792,15 @@ describe("public MCP response shaping", () => {
       responseMode: "compact",
       request: { paths: ["src"] }
     }).structuredContent;
+    const snapshotReceiptUnchanged = toToolResult("svn_snapshot", payload, {
+      responseMode: "receipt",
+      request: { paths: ["src"], afterCursor: snapshotFirst.snapshotToken }
+    }).structuredContent;
+    expect(snapshotReceiptUnchanged).toMatchObject({
+      ok: true,
+      verdict: "NO_CHANGE",
+      unchangedSinceCursor: true
+    });
     const advancedSnapshot = toToolResult("svn_snapshot", {
       ...payload,
       revision: 43,
@@ -1051,6 +1100,23 @@ describe("public MCP response shaping", () => {
     expect(longLine.lineTruncated).toBe(true);
     expect(longLine.truncated).toBe(true);
     expect(longLine).not.toHaveProperty("nextCursor");
+
+    const oversizedPreview = toToolResult("svn_diff", {
+      ...payload,
+      per_file: [{
+        path: "src/huge.ts",
+        added: 1,
+        removed: 0,
+        binary: false,
+        hunks: 1,
+        first_hunk: "@@ -1 +1 @@",
+        first_meaningful_line: `+${"x".repeat(1024 * 1024)}`
+      }]
+    }, { responseMode: "compact" }).structuredContent;
+    expect(Buffer.byteLength(JSON.stringify(oversizedPreview), "utf8")).toBeLessThanOrEqual(28 * 1024);
+    expect((oversizedPreview.files as Array<Record<string, unknown>>)[0]).toMatchObject({ previewTruncated: true });
+    expect(String((oversizedPreview.files as Array<Record<string, unknown>>)[0]?.firstMeaningfulLine).length)
+      .toBeLessThan(600);
 
     const manyFiles = toToolResult("svn_diff", {
       ...payload,

@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
-import { escapeSvnTarget, runSvn } from "./runner.js";
+import { currentRequestCancellationSignal, escapeSvnTarget, runSvn } from "./runner.js";
 import { parseInfoXml } from "./parse/infoXml.js";
 import { svnXmlEntityLimits } from "./parse/xmlOptions.js";
-import { pathIdentityKey, repositoryEolPolicy, repoRelativePath } from "./guards.js";
+import { MAX_POLICY_BYTES, pathIdentityKey, repositoryEolPolicy, repoRelativePath } from "./guards.js";
+import { sha256File } from "./fileHash.js";
 import { normalizeStatusLookup, scopedStatusMap } from "./tools/readonly.js";
 import type { DiffFileSummary } from "./types.js";
 
@@ -53,18 +54,18 @@ export async function captureCurrentWorkflowPathStates(
       revisionByPath.set(pathIdentityKey(candidate), entry.revision ?? null);
     }
   }
-  const states = absolutePaths.map((target) => {
+  const states = await Promise.all(absolutePaths.map(async (target) => {
     const targetStatus = normalizeStatusLookup(status.map, target) ?? "";
     return {
       path: repoRelativePath(target, wcRoot),
       status: targetStatus,
       baseRevision: revisionByPath.get(pathIdentityKey(target)) ?? null,
-      ...fileIdentity(target),
+      ...await fileIdentity(target),
       propertyHash: targetStatus === "D" || targetStatus === "!"
         ? sha256(JSON.stringify({ unavailableForStatus: targetStatus }))
         : properties.hashes.get(pathIdentityKey(target)) ?? emptyPropertyHash()
     };
-  });
+  }));
   return { ok: true, states };
 }
 
@@ -108,15 +109,16 @@ async function capturePropertyHashes(
   }
 }
 
-export function fileIdentity(target: string): { kind: WorkflowPathState["kind"]; contentHash: string | null } {
+export async function fileIdentity(target: string): Promise<{ kind: WorkflowPathState["kind"]; contentHash: string | null }> {
   try {
-    const stat = fs.statSync(target);
+    const stat = await fs.promises.stat(target);
     if (stat.isFile()) {
-      return { kind: "file", contentHash: createHash("sha256").update(fs.readFileSync(target)).digest("hex") };
+      return { kind: "file", contentHash: await sha256File(target, currentRequestCancellationSignal()) };
     }
     if (stat.isDirectory()) return { kind: "directory", contentHash: null };
     return { kind: "other", contentHash: null };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return { kind: "missing", contentHash: null };
   }
 }
@@ -126,7 +128,10 @@ export function workflowPolicyIdentity(wcRoot: string): string {
   const policyPath = path.join(wcRoot, ".svn-mcp-policy.json");
   let policyFile = "";
   try {
-    policyFile = fs.readFileSync(policyPath, "utf8");
+    const stat = fs.statSync(policyPath);
+    policyFile = stat.isFile() && stat.size <= MAX_POLICY_BYTES
+      ? fs.readFileSync(policyPath, "utf8")
+      : `unreadable-policy:${stat.size}`;
   } catch {
     policyFile = "";
   }
@@ -206,4 +211,8 @@ function sha256(value: string): string {
 
 function asArray<T>(value: T | T[] | undefined): T[] {
   return value === undefined ? [] : Array.isArray(value) ? value : [value];
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }

@@ -123,6 +123,18 @@ describe("runner executable resolution", () => {
     expect(run.truncated).toBe(true);
   });
 
+  it("marks buffered output overflow as truncated", async () => {
+    const run = await runExecutable(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(1000))"],
+      { cwd: process.cwd(), maxBuffer: 16 }
+    );
+
+    expect(run.exitCode).toBe(1);
+    expect(run.errorCode).toBe("ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+    expect(run.truncated).toBe(true);
+  });
+
   it("caps a streaming stdout line and marks the truncation", async () => {
     const lines: string[] = [];
     const run = await runExecutableStreamingLines(
@@ -175,6 +187,17 @@ describe("runner executable resolution", () => {
     expect(streamed.errorCode).toBeDefined();
   });
 
+  it("contains asynchronous executable launch failures", async () => {
+    const missing = path.join(os.tmpdir(), `missing-svn-agent-${process.pid}`);
+    const buffered = await runExecutable(missing, [], { cwd: process.cwd() });
+    expect(buffered).toMatchObject({ exitCode: 1 });
+    expect(buffered.errorCode).toBeDefined();
+
+    const streamed = await runExecutableStreamingLines(missing, [], { cwd: process.cwd() }, () => undefined);
+    expect(streamed).toMatchObject({ exitCode: 1 });
+    expect(streamed.errorCode).toBeDefined();
+  });
+
   it("caps total captured stdout while still streaming every line to the callback", async () => {
     const lines: string[] = [];
     const run = await runExecutableStreamingLines(
@@ -187,6 +210,34 @@ describe("runner executable resolution", () => {
     expect(run.exitCode).toBe(0);
     expect(lines).toHaveLength(5);
     expect(run.stdout).toBe(`${"x".repeat(10)}\n${"x".repeat(10)}`);
+    expect(run.truncated).toBe(true);
+  });
+
+  it("keeps stdout capture contiguous after a UTF-8 byte-budget truncation", async () => {
+    const lines: string[] = [];
+    const run = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "process.stdout.write('éé\\nsmall\\n')"],
+      { cwd: process.cwd(), stdoutMaxCaptureBytes: 3 },
+      (line) => lines.push(line)
+    );
+
+    expect(lines).toEqual(["éé", "small"]);
+    expect(run.stdout).toBe("");
+    expect(run.truncated).toBe(true);
+  });
+
+  it("marks stdout truncated when the captured line limit is reached", async () => {
+    const lines: string[] = [];
+    const run = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "process.stdout.write('first\\nsecond\\n')"],
+      { cwd: process.cwd(), stdoutLineLimit: 1 },
+      (line) => lines.push(line)
+    );
+
+    expect(lines).toEqual(["first", "second"]);
+    expect(run.stdout).toBe("first");
     expect(run.truncated).toBe(true);
   });
 
@@ -219,6 +270,32 @@ describe("runner executable resolution", () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(run.cancelled).toBe(true);
     expect(run.timedOut).toBe(false);
+  });
+
+  it("does not launch a buffered child for an already-aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const run = await runExecutable(process.execPath, ["-e", "process.exit(9)"], {
+      cwd: process.cwd(),
+      signal: controller.signal
+    });
+
+    expect(run).toMatchObject({ exitCode: null, cancelled: true, timedOut: false });
+  });
+
+  it("bounds streamed callback work and marks totals incomplete", async () => {
+    const lines: string[] = [];
+    const run = await runExecutableStreamingLines(
+      process.execPath,
+      ["-e", "for (let i = 0; i < 10; i += 1) process.stdout.write(`line-${i}\\n`)"],
+      { cwd: process.cwd(), stdoutCallbackLineLimit: 2 },
+      (line) => lines.push(line)
+    );
+
+    expect(lines).toEqual(["line-0", "line-1"]);
+    expect(run.callbackTruncated).toBe(true);
+    expect(run.truncated).toBe(true);
   });
 
   it("cancels streaming child processes through an AbortSignal", async () => {

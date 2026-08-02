@@ -24,8 +24,9 @@ export function parseUpdateText(text: string): { changed_paths: ChangedPath[]; c
     }
     const contentStatus = columns[0] ?? " ";
     const propStatus = columns[1] ?? " ";
+    const lockStatus = columns[2] ?? " ";
     const treeStatus = columns[3] ?? " ";
-    const status = firstStatus([contentStatus, propStatus, treeStatus]);
+    const status = firstStatus([contentStatus, propStatus, lockStatus, treeStatus]);
     if (!status || !path) {
       continue;
     }
@@ -68,7 +69,7 @@ function isUpdateStatusColumns(columns: string): boolean {
 
 function firstStatus(columns: string[]): string | null {
   for (const status of columns) {
-    if (/^[UGCEADMR~!]$/.test(status)) {
+    if (/^[UGCEADMRB~!]$/.test(status)) {
       return status;
     }
   }

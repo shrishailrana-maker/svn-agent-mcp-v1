@@ -64,6 +64,19 @@ describe("bounded operation evidence store", () => {
     });
   });
 
+  it("counts metadata against entry limits and keeps UTF-8 truncation valid", () => {
+    const store = new EvidenceStore({ maxEntryBytes: 10, maxTotalBytes: 32 });
+    expect(() => store.put("svn_diff", "scope", "text", { value: "x".repeat(40) })).toThrow(/metadata exceeds/);
+
+    const stored = store.put("svn_diff", "scope", "😀😀😀", {});
+    const fetched = store.get(stored.operationId, "svn_diff", "scope");
+    expect(fetched.ok).toBe(true);
+    if (fetched.ok) {
+      expect(Buffer.from(fetched.text, "utf8").toString("utf8")).toBe(fetched.text);
+      expect(fetched.text).not.toContain("�");
+    }
+  });
+
   it("keeps concurrent operation IDs distinct and rejects malformed IDs", () => {
     const store = new EvidenceStore();
     const ids = Array.from({ length: 20 }, (_, index) =>

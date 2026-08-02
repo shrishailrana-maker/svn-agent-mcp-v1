@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { ChangedPath, WcInfo } from "./types.js";
 
 const overridableNeverCommitGlobs = [
@@ -54,13 +55,14 @@ type LoadedRepositoryPolicy = {
   regular: boolean;
   mtimeMs: number;
   size: number;
+  fingerprint?: string;
 };
 
 const MAX_POLICY_GLOBS = 128;
 const MAX_POLICY_GLOB_LENGTH = 256;
 const MAX_POLICY_DOUBLESTAR_SEGMENTS = 4;
 const MAX_POLICY_GLOB_WILDCARDS = 8;
-const MAX_POLICY_BYTES = 64 * 1024;
+export const MAX_POLICY_BYTES = 64 * 1024;
 const policyCache = new Map<string, LoadedRepositoryPolicy>();
 const defaultEolExcludes = ["**/*.patch", "**/*.diff"];
 
@@ -354,9 +356,20 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedRepositoryPolicy {
   const policyPath = path.join(wcRoot, ".svn-mcp-policy.json");
   const cacheKey = pathIdentityKey(wcRoot);
   const stat = safePolicyStat(policyPath);
+  let policyText: string | null = null;
+  let fingerprint: string | undefined;
+  if (stat.exists && stat.regular && stat.size <= MAX_POLICY_BYTES) {
+    try {
+      policyText = fs.readFileSync(policyPath, "utf8");
+      fingerprint = createHash("sha256").update(policyText).digest("hex");
+    } catch {
+      policyText = null;
+    }
+  }
   const cached = policyCache.get(cacheKey);
   if (cached && cached.exists === stat.exists && cached.regular === stat.regular
-    && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size
+    && cached.fingerprint === fingerprint) {
     return cached;
   }
 
@@ -402,7 +415,7 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedRepositoryPolicy {
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(policyPath, "utf8")) as RepositoryPolicy;
+    const parsed = JSON.parse(policyText ?? fs.readFileSync(policyPath, "utf8")) as RepositoryPolicy;
     const allow = stringArray(parsed.neverCommit?.allow);
     const deny = stringArray(parsed.neverCommit?.deny);
     const configuredEolExcludes = stringArray(parsed.eolExclude);
@@ -423,7 +436,8 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedRepositoryPolicy {
       exists: true,
       regular: true,
       mtimeMs: stat.mtimeMs,
-      size: stat.size
+      size: stat.size,
+      ...(fingerprint ? { fingerprint } : {})
     };
     policyCache.set(cacheKey, loaded);
     return loaded;
@@ -437,7 +451,8 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedRepositoryPolicy {
       exists: true,
       regular: true,
       mtimeMs: stat.mtimeMs,
-      size: stat.size
+      size: stat.size,
+      ...(fingerprint ? { fingerprint } : {})
     };
     policyCache.set(cacheKey, invalid);
     return invalid;

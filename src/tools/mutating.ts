@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { resolveCommitScope } from "../commitScope.js";
+import { sha256File } from "../fileHash.js";
 import { prepareEolNormalization, type EolNormalizationResult } from "../eol.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
@@ -37,7 +38,7 @@ import {
   workflowStatesEqual,
   type WorkflowPathState
 } from "../workflowState.js";
-import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
+import { currentRequestCancellationSignal, escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ChangedPath, Conflict, RunResult, ToolEnvelope } from "../types.js";
 import {
   getWcContext,
@@ -46,7 +47,6 @@ import {
   revisionSelectorError,
   scopedStatusMap,
   svnDiff,
-  svnLog,
   svnStatus
 } from "./readonly.js";
 
@@ -119,15 +119,19 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths.map(escapeSvnTarget)];
   try {
     const run = await runSvn(args, guard.cwd);
-    if (run.exitCode !== 0) {
+    const rolledBack = run.exitCode !== 0;
+    if (rolledBack) {
       preparedEol?.rollback();
     }
     return {
       ...envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) }),
       ...(preparedEol && eolTarget
         ? {
-            eol_normalization: summarizeEolNormalization(preparedEol.results, eolTarget),
-            eol_files: compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
+            eol_normalization: {
+              ...summarizeEolNormalization(preparedEol.results, eolTarget),
+              ...(rolledBack ? { converted: 0, verified: 0, rolled_back: true } : {})
+            },
+            eol_files: rolledBack ? [] : compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
           }
         : {})
     };
@@ -356,6 +360,12 @@ export async function svnCommit(input: {
     };
   }
   const commitPaths = commitPathsWithAddedParents(scopedPaths, guard.wcRoot, status.map);
+  for (const target of commitPaths) {
+    const hit = neverCommitHit(target, guard.wcRoot);
+    if (hit) {
+      return failEnvelope("svn commit", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
+    }
+  }
 
   const warnings: string[] = [];
   const version = await runSvnVersion(guard.wcRoot, guard.cwd);
@@ -370,37 +380,56 @@ export async function svnCommit(input: {
     path: repoRelativePath(target, guard.wcRoot),
     status: status.map.get(pathIdentityKey(target)) ?? "M"
   }));
-  const contentHashes = hashCommitTargets(scopedPaths, guard.wcRoot);
+  const contentHashes = await hashCommitTargets(scopedPaths, guard.wcRoot);
+
+  if (input.precommitToken) {
+    const binding = await validatePrecommitBinding(
+      input.precommitToken,
+      guard.cwd,
+      guard.wcRoot,
+      guard.repoRoot,
+      scopedPaths
+    );
+    if (!binding.ok) return binding.envelope;
+  }
 
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
 
   try {
     const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths.map(escapeSvnTarget)], guard.cwd);
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
-    const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: scopedPaths }) : null;
-    const postStatusClean = postStatus ? postStatus.changed_paths.length === 0 : false;
-    const postVersionRun = run.exitCode === 0 ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
+    const commitSucceeded = run.exitCode === 0 && revision !== null;
+    const deletedPaths = new Set(preCommitChanges
+      .filter((entry) => entry.status === "D")
+      .map((entry) => pathIdentityKey(path.resolve(guard.wcRoot, entry.path))));
+    const postStatusPaths = scopedPaths.filter((target) => !deletedPaths.has(pathIdentityKey(target)));
+    const postStatus = commitSucceeded && postStatusPaths.length > 0
+      ? await svnStatus({ cwd: guard.cwd, paths: postStatusPaths })
+      : null;
+    const postStatusClean = commitSucceeded && (postStatusPaths.length === 0
+      || Boolean(postStatus?.ok && postStatus.changed_paths.length === 0 && postStatus.conflicts.length === 0));
+    const postVersionRun = commitSucceeded ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
     const postVersion = postVersionRun?.exitCode === 0 ? parseSvnVersion(postVersionRun.stdout) : null;
     const noteParts = [
-      run.exitCode === 0 ? "" : noteFromRun(run),
+      run.exitCode !== 0 ? noteFromRun(run) : revision === null ? "svn reported success without a committed revision" : "",
       ...warnings,
-      run.exitCode === 0 && !postStatusClean ? "post-status has residue" : ""
+      commitSucceeded && !postStatusClean ? "post-status has residue" : ""
     ].filter(Boolean);
 
     return {
       ...envelopeFromRun({
         run,
-        ok: run.exitCode === 0,
+        ok: commitSucceeded,
         revision,
-        changed_paths: run.exitCode === 0 ? preCommitChanges : [],
+        changed_paths: commitSucceeded ? preCommitChanges : [],
         conflicts: postStatus?.conflicts ?? [],
         note: noteParts.join("; ")
       }),
       revision,
       committed_revision: revision,
-      committed_paths: run.exitCode === 0 ? committedPaths : [],
+      committed_paths: commitSucceeded ? committedPaths : [],
       explicit_paths: explicitPaths,
-      committed_count: run.exitCode === 0 ? committedPaths.length : 0,
+      committed_count: commitSucceeded ? committedPaths.length : 0,
       path_count: explicitPaths.length,
       base_revision: baseVersion?.range && !baseVersion.mixed ? baseVersion.range.max : null,
       base_revision_range: baseVersion?.range ?? null,
@@ -422,23 +451,24 @@ export async function svnCommit(input: {
   }
 }
 
-function hashCommitTargets(targets: string[], wcRoot: string): Array<Record<string, unknown>> {
-  return targets.map((target) => {
+async function hashCommitTargets(targets: string[], wcRoot: string): Promise<Array<Record<string, unknown>>> {
+  return Promise.all(targets.map(async (target) => {
     const relative = repoRelativePath(target, wcRoot);
     try {
-      const stat = fs.statSync(target);
+      const stat = await fs.promises.stat(target);
       if (!stat.isFile()) {
         return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "not a regular file" };
       }
       return {
         path: relative,
         algorithm: "sha256",
-        hash: createHash("sha256").update(fs.readFileSync(target)).digest("hex")
+        hash: await sha256File(target, currentRequestCancellationSignal())
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
       return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "path unavailable" };
     }
-  });
+  }));
 }
 
 async function validatePrecommitBinding(
@@ -556,7 +586,7 @@ function baselineCollisionReceipt(
   const baselineByPath = new Map(baselineStates.map((state) => [pathIdentityKey(path.resolve(wcRoot, state.path)), state]));
   const beforeByPath = new Map(beforeStates.map((state) => [pathIdentityKey(path.resolve(wcRoot, state.path)), state]));
   const changed = changedPaths.map((entry) => path.resolve(cwd, entry.path));
-  const conflicted = conflicts.map((entry) => path.resolve(cwd, entry.path));
+  const conflicted = conflicts.filter((entry) => entry.path.trim().length > 0).map((entry) => path.resolve(cwd, entry.path));
   const pathStates = targets.map((target) => {
     const baseline = baselineByPath.get(pathIdentityKey(target));
     const before = beforeByPath.get(pathIdentityKey(target));
@@ -747,8 +777,9 @@ export async function svnUpdate(input: {
       .map((target) => repoRelativePath(target, context.wcRoot));
   }
 
+  let observedRemoteHead: number | null | undefined;
   if (input.expectedRemoteHead !== undefined) {
-    const observedRemoteHead = await remoteHeadForTargets(
+    observedRemoteHead = await remoteHeadForTargets(
       context.cwd,
       updateTargets.length > 0 ? updateTargets : [context.info.repo_root ?? context.wcRoot]
     ) ?? await remoteHeadForTargets(context.cwd, [context.info.repo_root ?? context.wcRoot]);
@@ -827,7 +858,7 @@ export async function svnUpdate(input: {
     ...baselineReceipt,
     ...(skippedAddedPaths.length > 0 ? { skipped_added_paths: skippedAddedPaths } : {}),
     ...(input.expectedRemoteHead !== undefined
-      ? { expected_remote_head: input.expectedRemoteHead, observed_remote_head: input.expectedRemoteHead }
+      ? { expected_remote_head: input.expectedRemoteHead, observed_remote_head: observedRemoteHead ?? null }
       : {})
   };
 }
@@ -1046,6 +1077,11 @@ export async function svnPropsetEolStyle(input: {
   const style = input.style ?? "native";
   const targetsToSet: string[] = [];
   for (const target of guard.paths) {
+    const stat = statTargetForMutation("svn propset", guard.cwd, target);
+    if (!stat.ok) return stat.envelope;
+    if (!stat.stat.isFile()) {
+      return failEnvelope("svn propset", guard.cwd, `svn:eol-style requires a regular file: ${repoRelativePath(target, guard.wcRoot)}`);
+    }
     const hit = neverCommitHit(target, guard.wcRoot);
     if (hit) {
       return failEnvelope("svn propset", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
@@ -1137,6 +1173,8 @@ export async function svnExport(input: {
   if (readonlyMode()) {
     return failEnvelope("svn export", cwd, "READONLY instance");
   }
+  const credentialError = credentialedUrlError(input.src);
+  if (credentialError) return failEnvelope("svn export", cwd, credentialError);
 
   const args = ["export"];
   if (input.revision) {
@@ -1175,6 +1213,8 @@ export async function svnImport(input: { cwd?: string; src: string; url: string;
   if (readonlyMode()) {
     return failEnvelope("svn import", cwd, "READONLY instance");
   }
+  const credentialError = credentialedUrlError(input.url);
+  if (credentialError) return failEnvelope("svn import", cwd, credentialError);
 
   const existsError = assertExistingTargets([path.resolve(cwd, input.src)]);
   if (existsError) {
@@ -1462,70 +1502,9 @@ export async function recoverCommittedOperation(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
 }, createdAt: number): Promise<ToolEnvelope | null> {
-  if (input.expandDescendants) return null;
-  const cwd = resolveCwd(input.cwd);
-  if (input.paths.some((candidate) => {
-    try {
-      return fs.statSync(path.resolve(cwd, candidate)).isDirectory();
-    } catch {
-      return false;
-    }
-  })) {
-    return null;
-  }
-
-  const status = await svnStatus({ cwd, paths: input.paths });
-  if (!status.ok || status.changed_paths.length > 0 || status.conflicts.length > 0) return null;
-  const expectedMessage = normalizedCommitMessage(input.message);
-  let recoveredRevision: number | null = null;
-  for (const target of input.paths) {
-    const history = await svnLog({ cwd, paths: [target], limit: 1, verbose: true });
-    const entry = (history.entries as Array<{
-      rev: number;
-      date: string;
-      msg: string;
-      changed_paths: Array<{ path: string; status: string }>;
-    }> | undefined)?.[0];
-    if (!history.ok || !entry || normalizedCommitMessage(entry.msg) !== expectedMessage
-        || entry.changed_paths.length === 0 || !Number.isFinite(Date.parse(entry.date))
-        || Date.parse(entry.date) < createdAt - 60_000) {
-      return null;
-    }
-    if (recoveredRevision !== null && entry.rev !== recoveredRevision) return null;
-    recoveredRevision = entry.rev;
-  }
-  if (recoveredRevision === null) return null;
-
-  const context = await getWcContext(input.cwd, input.paths);
-  if (!context.ok) return null;
-  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.paths);
-  if (!resolved.ok) return null;
-  const version = await runSvnVersion(context.wcRoot, context.cwd);
-  const versionState = version.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
-  const committedPaths = resolved.paths.map((target) => repoRelativePath(target, context.wcRoot));
-  return {
-    ...createEnvelope({
-      ok: true,
-      command: "svn commit (recovered from history)",
-      cwd: context.cwd,
-      revision: recoveredRevision,
-      note: "commit recovered from matching post-start SVN history and clean scoped status"
-    }),
-    committed_revision: recoveredRevision,
-    committed_paths: committedPaths,
-    explicit_paths: committedPaths,
-    committed_count: committedPaths.length,
-    path_count: committedPaths.length,
-    remote_head_revision: recoveredRevision,
-    eol_verdict: "not_checked",
-    content_hashes: hashCommitTargets(resolved.paths, context.wcRoot),
-    content_hashes_truncated: false,
-    post_status: [],
-    post_status_clean: true,
-    working_copy_mixed: versionState?.mixed ?? null,
-    revision_range: versionState?.range ?? null,
-    risk_signals: []
-  };
+  void input;
+  void createdAt;
+  return null;
 }
 
 function writeSecureTemp(prefix: string, filename: string, value: string): { dir: string; file: string } {
@@ -1544,19 +1523,30 @@ function stripLeadingBom(value: string): string {
 }
 
 function combineRuns(runs: Awaited<ReturnType<typeof runSvn>>[], cwd: string): Awaited<ReturnType<typeof runSvn>> {
+  const failed = runs.find((run) => run.exitCode !== 0 || run.timedOut || run.cancelled);
   return {
     command: runs.map((run) => run.command).join(" && "),
     cwd,
     executable: runs[0]?.executable ?? "svn",
     args: runs.flatMap((run) => run.args),
-    exitCode: 0,
-    signal: null,
+    exitCode: failed?.exitCode ?? 0,
+    signal: failed?.signal ?? null,
     stdout: runs.map((run) => run.stdout).filter(Boolean).join("\n"),
     stderr: runs.map((run) => run.stderr).filter(Boolean).join("\n"),
     timedOut: runs.some((run) => run.timedOut),
     cancelled: runs.some((run) => run.cancelled),
     truncated: runs.some((run) => run.truncated)
   };
+}
+
+function credentialedUrlError(value: string): string | null {
+  if (!isSvnUrl(value)) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.username || parsed.password ? "repository URLs must not contain credentials; use cached SVN authentication" : null;
+  } catch {
+    return "invalid repository URL";
+  }
 }
 
 function isValidRevision(value: string): boolean {

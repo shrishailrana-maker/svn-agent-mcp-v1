@@ -46,7 +46,10 @@ export class WorkflowEvidenceRegistry {
   }
 }
 
-export const processWorkflowEvidence = new WorkflowEvidenceRegistry();
+export const processWorkflowEvidence = new WorkflowEvidenceRegistry(new EvidenceStore({
+  maxEntries: 128,
+  maxTotalBytes: 64 * 1024 * 1024
+}));
 
 export function workflowScope(wcRoot: string, absolutePaths: string[]): string {
   const value = JSON.stringify({

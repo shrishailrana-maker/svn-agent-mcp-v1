@@ -50,6 +50,7 @@ export interface RunResult {
   timeoutMs?: number | undefined;
   errorCode?: string | undefined;
   truncated?: boolean | undefined;
+  callbackTruncated?: boolean | undefined;
 }
 
 export interface DiffFileSummary {
@@ -61,6 +62,7 @@ export interface DiffFileSummary {
   hunks: number;
   first_hunk?: string;
   first_meaningful_line?: string;
+  preview_truncated?: boolean;
 }
 
 export interface DiffSummary {

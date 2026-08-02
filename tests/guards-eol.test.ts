@@ -201,6 +201,24 @@ describe("guards and EOL sniffing", () => {
     });
   });
 
+  it("refreshes repository policy after a same-size mtime-preserving rewrite", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-policy-cache-"));
+    const policyPath = path.join(root, ".svn-mcp-policy.json");
+    try {
+      fs.writeFileSync(policyPath, JSON.stringify({ neverCommit: { deny: ["src/a.txt"] } }), "utf8");
+      const originalTimes = fs.statSync(policyPath);
+      expect(neverCommitHit(path.join(root, "src", "a.txt"), root)).toBe("src/a.txt");
+
+      fs.writeFileSync(policyPath, JSON.stringify({ neverCommit: { deny: ["src/b.txt"] } }), "utf8");
+      fs.utimesSync(policyPath, originalTimes.atime, originalTimes.mtime);
+
+      expect(neverCommitHit(path.join(root, "src", "a.txt"), root)).toBeNull();
+      expect(neverCommitHit(path.join(root, "src", "b.txt"), root)).toBe("src/b.txt");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns realpath-expanded paths for SVN command targets", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-realpath-"));
     try {

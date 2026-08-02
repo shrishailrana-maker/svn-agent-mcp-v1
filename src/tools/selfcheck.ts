@@ -65,7 +65,8 @@ export async function inspectRuntimeLayout(root: string, version: string, platfo
   const currentTarget = await readLinkTarget(currentPath);
   const currentRelease = currentTarget ? path.basename(currentTarget) : null;
   const releaseRoot = path.join(root, "releases", `v${version}`);
-  const currentMatchesPackage = currentRelease === `v${version}`;
+  const currentMatchesPackage = currentTarget !== null
+    && await samePhysicalPath(currentTarget, releaseRoot, platform);
   const releaseBinFileCount = await countFiles(path.join(releaseRoot, "bin"));
   const releaseDistFileCount = await countFiles(path.join(releaseRoot, "dist"));
   const common = { currentPath, currentTarget, currentRelease, releaseRoot };
@@ -116,7 +117,9 @@ async function runtimePayloadComplete(
   distFileCount: number,
   platform: NodeJS.Platform
 ): Promise<boolean> {
-  if (distFileCount < 60 || !await fileExists(path.join(runtimeRoot, "dist", "index.js"))) {
+  if (distFileCount < 60
+      || !await fileExists(path.join(runtimeRoot, "dist", "index.js"))
+      || !await fileExists(path.join(runtimeRoot, "package.json"))) {
     return false;
   }
   if (platform !== "win32") {
@@ -136,7 +139,7 @@ export async function findProjectRoot(start = path.dirname(fileURLToPath(import.
     try {
       const packageJson = JSON.parse(await fs.readFile(candidate, "utf8")) as { name?: unknown };
       if (packageJson.name === "svn-agent-mcp") {
-        return current;
+        return await preparedSourceRoot(current) ?? current;
       }
     } catch {
       // Continue to the parent when the manifest is missing, unreadable, or malformed.
@@ -149,6 +152,20 @@ export async function findProjectRoot(start = path.dirname(fileURLToPath(import.
   }
 }
 
+async function preparedSourceRoot(candidate: string): Promise<string | null> {
+  const releasesRoot = path.dirname(candidate);
+  if (path.basename(releasesRoot).toLowerCase() !== "releases" || !/^v\d+\.\d+\.\d+/.test(path.basename(candidate))) {
+    return null;
+  }
+  const sourceRoot = path.dirname(releasesRoot);
+  try {
+    const packageJson = JSON.parse(await fs.readFile(path.join(sourceRoot, "package.json"), "utf8")) as { name?: unknown };
+    return packageJson.name === "svn-agent-mcp" ? sourceRoot : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readLinkTarget(value: string): Promise<string | null> {
   try {
     const target = await fs.readlink(value);
@@ -156,6 +173,20 @@ async function readLinkTarget(value: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function samePhysicalPath(left: string, right: string, platform: NodeJS.Platform): Promise<boolean> {
+  const canonical = async (value: string) => {
+    try {
+      return await fs.realpath(value);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const [leftPath, rightPath] = await Promise.all([canonical(left), canonical(right)]);
+  return platform === "win32"
+    ? leftPath.toLowerCase() === rightPath.toLowerCase()
+    : leftPath === rightPath;
 }
 
 function isNodeModulesPackage(root: string): boolean {

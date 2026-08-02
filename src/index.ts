@@ -4,10 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
-import { failEnvelope } from "./envelope.js";
+import { failEnvelope, redactText } from "./envelope.js";
 import { readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
@@ -126,8 +127,8 @@ function boundedIntegerSchema(name: string, minimum: number, maximum: number, ex
     .max(maximum, { error: (issue) => message(issue.input) });
 }
 
-export function createServer(): McpServer {
-  const profile = configuredToolProfile();
+export function createServer(profileOverride?: ToolProfile): McpServer {
+  const profile = profileOverride ?? configuredToolProfile();
   const enabledNames = toolNamesForProfile(profile);
   const server = new McpServer({
     name: serverName,
@@ -148,9 +149,11 @@ export function createServer(): McpServer {
 
   const noNul = /^[^\x00]*$/;
   const filesystemPath = z.string().min(1).max(4096).regex(noNul, "must not contain NUL");
-  const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL");
+  const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL")
+    .refine((value) => !repositoryUrlHasCredentials(value), "repository URL must not contain credentials");
   const commitMessage = z.string().min(1).max(16000).regex(noNul, "must not contain NUL");
-  const cwd = filesystemPath.optional().describe("Absolute WC directory; required for relative paths.");
+  const cwd = filesystemPath.refine((value) => path.isAbsolute(value), "cwd must be absolute")
+    .optional().describe("Absolute WC directory; required for relative paths.");
   const paths = z.array(filesystemPath).min(1).max(500, {
     error: (issue) => `paths count ${Array.isArray(issue.input) ? issue.input.length : "invalid"}; allowed 1..500`
   }).describe("One to 500 explicit paths inside one WC.");
@@ -194,7 +197,8 @@ export function createServer(): McpServer {
     async (args, extra) => handleTool("svn_self_check", args, extra.signal, async () => ({
       ...await svnSelfCheck(compactArgs(args), serverVersion),
       tool_profile: profile,
-      advertised_tool_count: enabledNames?.size ?? 25
+      advertised_tool_count: enabledNames?.size
+        ?? [...profileRegistrations.keys()].filter((name) => !hiddenLegacyToolNames.has(name)).length
     }))
   );
 
@@ -233,7 +237,7 @@ export function createServer(): McpServer {
     },
     async (args, extra) => handleTool("svn_status", args, extra.signal, () => svnStatus({
       ...compactArgs(args),
-      includeRevisionState: args.responseMode !== "full" && args.responseMode !== "standard"
+      includeRevisionState: true
     }))
   );
 
@@ -892,10 +896,24 @@ export async function handleTool(
 ) {
   try {
     return await withRequestCancellation(signal, async () => publicToolResult(tool, await operation(), request));
-  } catch {
+  } catch (error) {
     const cwd = typeof request.cwd === "string" ? request.cwd : process.cwd();
     const note = signal.aborted ? "svn request cancelled" : "unexpected MCP tool failure";
+    if (!signal.aborted) {
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      console.error(`[svn-agent-mcp] ${tool} failed unexpectedly: ${redactText(detail)}`);
+    }
     return publicToolResult(tool, failEnvelope(tool, cwd, note), request);
+  }
+}
+
+function repositoryUrlHasCredentials(value: string): boolean {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return Boolean(parsed.username || parsed.password);
+  } catch {
+    return false;
   }
 }
 
