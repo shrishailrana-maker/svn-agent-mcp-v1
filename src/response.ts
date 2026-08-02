@@ -262,6 +262,7 @@ function compactBlame(payload: ToolEnvelope, request: Record<string, unknown>): 
     path: payload.path ?? request.path,
     lines: recordArray(payload.lines).slice(0, 500),
     hasMore: payload.has_more === true,
+    ...(payload.ignore_eol === false ? { eolChangesIncluded: true } : {}),
     ...(payload.next_cursor ? { nextCursor: payload.next_cursor } : {})
   };
 }
@@ -470,6 +471,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
     const base = {
       ok: true,
       files,
+      ...(payload.eol_only === true ? { eolOnly: true, note: "EOL-only, no content change" } : {}),
       ...(fileSummaryTruncated ? { fileSummaryTruncated: true } : {}),
       ...(pagedFiles
         ? {
@@ -478,7 +480,7 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
             ...(filesTruncated ? { nextFileCursor: String(nextFileOffset) } : {})
           }
         : {}),
-      ...(payload.ignore_eol === false ? { ignoreEol: false } : {})
+      ...(payload.ignore_eol === false ? { ignoreEol: false, eolChangesIncluded: true } : {})
     };
 
     if (mode === "summary") {
@@ -680,8 +682,35 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   if (payload.post_status_clean !== undefined) {
     receipt.postStatusClean = payload.post_status_clean;
   }
-  if (tool === "svn_commit" && payload.post_status_clean === false && payload.changed_paths.length > 0) {
-    receipt.residue = payload.changed_paths.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
+  if (tool === "svn_add" && payload.eol_normalization && typeof payload.eol_normalization === "object") {
+    receipt.eolNormalization = payload.eol_normalization;
+  }
+  if (tool === "svn_commit") {
+    const committedPaths = stringArray(payload.committed_paths);
+    const hasPostStatus = Array.isArray(payload.post_status);
+    const postStatus = hasPostStatus ? changedPathArray(payload.post_status) : payload.changed_paths;
+    if (payload.committed_revision !== undefined) {
+      receipt.committedRevision = payload.committed_revision;
+    }
+    if (payload.committed_paths !== undefined) {
+      receipt.committedPaths = committedPaths.slice(0, 100);
+      receipt.committedCount = payload.committed_count ?? committedPaths.length;
+      receipt.pathCount = payload.path_count ?? committedPaths.length;
+    }
+    assignDefined(receipt, "baseRevision", payload.base_revision);
+    assignDefined(receipt, "baseRevisionRange", payload.base_revision_range);
+    assignDefined(receipt, "remoteHeadRevision", payload.remote_head_revision);
+    assignDefined(receipt, "eolVerdict", payload.eol_verdict);
+    assignDefined(receipt, "workingCopyMixed", payload.working_copy_mixed);
+    if (payload.content_hashes !== undefined) {
+      receipt.contentHashes = recordArray(payload.content_hashes).slice(0, 100);
+    }
+    if (committedPaths.length > 100) {
+      receipt.committedPathsTruncated = true;
+    }
+    if (payload.post_status_clean === false && postStatus.length > 0) {
+      receipt.residue = postStatus.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
+    }
   }
   if (tool === "svn_update" && payload.changed_paths.length > 0) {
     receipt.counts = countByStatus(payload.changed_paths.map((item) => ({ status: normalizeStatus(item.status) })));
@@ -705,6 +734,23 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
 }
 
 function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  if (payload.batch === true) {
+    const files = recordArray(payload.files);
+    const failures = files.filter((file) => file.ok !== true).slice(0, 100).map((file) => ({
+      path: file.path,
+      before: file.before,
+      after: file.after,
+      failure: file.failure
+    }));
+    return {
+      ok: payload.ok,
+      action: "eol_fix_verified",
+      counts: payload.counts,
+      ...(failures.length > 0 ? { failures } : {}),
+      ...(files.length > failures.length && failures.length >= 100 ? { failuresTruncated: true } : {}),
+      ...(!payload.ok ? { note: payload.note } : {})
+    };
+  }
   const before = compactEolState(payload.before);
   const after = compactEolState(payload.after);
   if (!payload.ok) {
@@ -832,6 +878,21 @@ function sumCounts(value: unknown): number {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function assignDefined(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
+function changedPathArray(value: unknown): ChangedPath[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is ChangedPath => Boolean(item)
+        && typeof item === "object"
+        && typeof (item as Record<string, unknown>).path === "string"
+        && typeof (item as Record<string, unknown>).status === "string")
+    : [];
 }
 
 function uniqueStrings(values: string[]): string[] {

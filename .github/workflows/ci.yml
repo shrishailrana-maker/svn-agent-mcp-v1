@@ -60,6 +60,10 @@ jobs:
       - name: Test through MCP client
         run: npm run test:client
 
+      - name: Enforce compact response budgets
+        if: runner.os == 'Windows'
+        run: npm run check:response-budgets
+
       - name: Test packed npm installation
         run: npm run test:package
 

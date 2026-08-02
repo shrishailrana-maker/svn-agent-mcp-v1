@@ -1,23 +1,27 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prepareEolNormalization, type EolNormalizationResult } from "../eol.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   assertExistingTargets,
   findExistingDirectoryTarget,
+  eolPolicyExcludes,
   isCommittableStatus,
   isInsideOrEqual,
-  messageFormatWarning,
   neverCommitHit,
   neverCommitNote,
   pathIdentityKey,
   readonlyMode,
   repoRelativePath,
+  repositoryEolPolicy,
   requireExplicitPaths,
   realPathOfNearestExisting,
   resolveCwd,
   resolveTargetsInsideWc,
   riskySignals,
+  validateCommitMessage,
   validatePropertyName
 } from "../guards.js";
 import { parseCommittedRevision } from "../parse/commitText.js";
@@ -75,9 +79,144 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   }
 
   const hasDirectory = [...targetStats.values()].some((stat) => stat.isDirectory());
+  const eolPolicy = repositoryEolPolicy(guard.wcRoot);
+  if (eolPolicy.invalid) {
+    return failEnvelope("svn add", guard.cwd, eolPolicy.invalid);
+  }
+  const eolTarget = eolPolicy.target;
+  let preparedEol: Awaited<ReturnType<typeof prepareAddedFileEol>> | null = null;
+  try {
+    preparedEol = eolTarget
+      ? await prepareAddedFileEol(guard.cwd, guard.wcRoot, guard.paths, targetStats, eolTarget, eolPolicy.excludes)
+      : null;
+  } catch (error) {
+    return failEnvelope(
+      "svn add",
+      guard.cwd,
+      error instanceof Error ? error.message : "EOL add preflight failed"
+    );
+  }
+  if (preparedEol && eolTarget && !preparedEol.ok) {
+    preparedEol.dispose();
+    return {
+      ...failEnvelope("svn add", guard.cwd, preparedEol.note ?? "EOL normalization failed"),
+      eol_normalization: summarizeEolNormalization(preparedEol.results, eolTarget),
+      eol_files: compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
+    };
+  }
   const args = ["add", "--parents", "--depth", hasDirectory ? "infinity" : "empty", "--", ...guard.paths.map(escapeSvnTarget)];
-  const run = await runSvn(args, guard.cwd);
-  return envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) });
+  try {
+    const run = await runSvn(args, guard.cwd);
+    if (run.exitCode !== 0) {
+      preparedEol?.rollback();
+    }
+    return {
+      ...envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) }),
+      ...(preparedEol && eolTarget
+        ? {
+            eol_normalization: summarizeEolNormalization(preparedEol.results, eolTarget),
+            eol_files: compactEolNormalizationFiles(preparedEol.results, guard.wcRoot)
+          }
+        : {})
+    };
+  } finally {
+    preparedEol?.dispose();
+  }
+}
+
+async function prepareAddedFileEol(
+  cwd: string,
+  wcRoot: string,
+  targets: string[],
+  targetStats: Map<string, fs.Stats>,
+  target: "crlf" | "lf",
+  excludes: string[]
+) {
+  const status = await scopedStatusMap(cwd, wcRoot, targets);
+  if (!status.envelope.ok) {
+    return {
+      ok: false,
+      results: [],
+      note: status.envelope.note || "unable to identify new files for EOL normalization",
+      rollback: () => undefined,
+      dispose: () => undefined
+    };
+  }
+  const unversionedRoots = [...status.map.entries()]
+    .filter(([, code]) => code === "?")
+    .map(([candidate]) => candidate);
+  const files = collectAddedFiles(targets, targetStats, unversionedRoots);
+  return prepareEolNormalization({
+    files,
+    target,
+    cwd,
+    excluded: (filePath) => eolPolicyExcludes(filePath, wcRoot, excludes)
+  });
+}
+
+function collectAddedFiles(targets: string[], targetStats: Map<string, fs.Stats>, unversionedRoots: string[]): string[] {
+  const files: string[] = [];
+  const queue: string[] = [];
+  for (const target of targets) {
+    const stat = targetStats.get(target);
+    if (stat?.isFile() && isUnderUnversionedRoot(target, unversionedRoots)) {
+      files.push(target);
+    } else if (stat?.isDirectory()) {
+      queue.push(target);
+    }
+  }
+
+  let scanned = 0;
+  while (queue.length > 0) {
+    const directory = queue.shift();
+    if (!directory) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      scanned += 1;
+      if (scanned > DESCENDANT_SCAN_LIMIT) {
+        throw new Error(`EOL add scan exceeds ${DESCENDANT_SCAN_LIMIT} entries`);
+      }
+      if (entry.name.toLowerCase() === ".svn") {
+        continue;
+      }
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(candidate);
+      } else if (entry.isFile() && isUnderUnversionedRoot(candidate, unversionedRoots)) {
+        files.push(candidate);
+      }
+    }
+  }
+  return files;
+}
+
+function isUnderUnversionedRoot(candidate: string, roots: string[]): boolean {
+  const key = pathIdentityKey(candidate);
+  return roots.some((root) => key === root || key.startsWith(root + path.sep));
+}
+
+function summarizeEolNormalization(
+  results: Array<{ converted?: boolean; verified?: boolean; skipped?: string; failure?: string }>,
+  target: "crlf" | "lf"
+): Record<string, unknown> {
+  return {
+    target,
+    converted: results.filter((result) => result.converted === true).length,
+    verified: results.filter((result) => result.verified === true).length,
+    skipped: results.filter((result) => result.skipped !== undefined).length,
+    failed: results.filter((result) => result.failure !== undefined).length
+  };
+}
+
+function compactEolNormalizationFiles(
+  results: EolNormalizationResult[],
+  wcRoot: string
+): Array<Record<string, unknown>> {
+  return results.map((result) => ({
+    ...result,
+    path: typeof result.path === "string" ? repoRelativePath(result.path, wcRoot) : result.path
+  }));
 }
 
 export async function svnCommit(input: {
@@ -94,6 +233,17 @@ export async function svnCommit(input: {
   }
   if (!input.message.trim()) {
     return failEnvelope("svn commit", guard.cwd, "non-empty commit message required");
+  }
+  const messageValidation = validateCommitMessage(input.message);
+  if (!messageValidation.valid) {
+    return {
+      ...failEnvelope("svn commit", guard.cwd, messageValidation.warningDetail),
+      warning_code: messageValidation.warningCode,
+      failed_rule: messageValidation.failedRule,
+      warning_detail: messageValidation.warningDetail,
+      suggested_message: messageValidation.suggestedMessage,
+      blocking: messageValidation.blocking
+    };
   }
   if (!input.allowRoot && guard.paths.some((target) => pathIdentityKey(target) === pathIdentityKey(guard.wcRoot))) {
     return failEnvelope("svn commit", guard.cwd, "working-copy root commit requires allowRoot:true");
@@ -148,14 +298,19 @@ export async function svnCommit(input: {
   const commitPaths = commitPathsWithAddedParents(guard.paths, guard.wcRoot, status.map);
 
   const warnings: string[] = [];
-  const messageWarning = messageFormatWarning(input.message);
-  if (messageWarning) {
-    warnings.push(messageWarning);
-  }
   const version = await runSvnVersion(guard.wcRoot, guard.cwd);
-  if (version.exitCode === 0 && version.stdout.includes(":")) {
+  const baseVersion = version.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
+  if (baseVersion?.mixed) {
     warnings.push("mixed revision working copy");
   }
+  const observedRemoteHeadBefore = await remoteHeadForTargets(guard.cwd, guard.paths);
+  const committedPaths = commitPaths.map((target) => repoRelativePath(target, guard.wcRoot));
+  const explicitPaths = guard.paths.map((target) => repoRelativePath(target, guard.wcRoot));
+  const preCommitChanges = commitPaths.map((target) => ({
+    path: repoRelativePath(target, guard.wcRoot),
+    status: status.map.get(pathIdentityKey(target)) ?? "M"
+  }));
+  const contentHashes = hashCommitTargets(guard.paths, guard.wcRoot);
 
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
 
@@ -164,6 +319,8 @@ export async function svnCommit(input: {
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
     const postStatus = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: input.paths }) : null;
     const postStatusClean = postStatus ? postStatus.changed_paths.length === 0 : false;
+    const postVersionRun = run.exitCode === 0 ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
+    const postVersion = postVersionRun?.exitCode === 0 ? parseSvnVersion(postVersionRun.stdout) : null;
     const noteParts = [
       run.exitCode === 0 ? "" : noteFromRun(run),
       ...warnings,
@@ -175,17 +332,51 @@ export async function svnCommit(input: {
         run,
         ok: run.exitCode === 0,
         revision,
-        changed_paths: postStatus?.changed_paths ?? [],
+        changed_paths: run.exitCode === 0 ? preCommitChanges : [],
         conflicts: postStatus?.conflicts ?? [],
         note: noteParts.join("; ")
       }),
       revision,
+      committed_revision: revision,
+      committed_paths: run.exitCode === 0 ? committedPaths : [],
+      explicit_paths: explicitPaths,
+      committed_count: run.exitCode === 0 ? committedPaths.length : 0,
+      path_count: explicitPaths.length,
+      base_revision: baseVersion?.range && !baseVersion.mixed ? baseVersion.range.max : null,
+      base_revision_range: baseVersion?.range ?? null,
+      observed_remote_head_before: observedRemoteHeadBefore,
+      remote_head_revision: revision ?? observedRemoteHeadBefore,
+      eol_verdict: "not_checked",
+      content_hashes: contentHashes,
+      content_hashes_truncated: false,
+      post_status: postStatus?.changed_paths ?? [],
       post_status_clean: postStatusClean,
+      working_copy_mixed: postVersion?.mixed ?? null,
+      revision_range: postVersion?.range ?? null,
       risk_signals: riskSignals
     };
   } finally {
     fs.rmSync(messageTemp.dir, { recursive: true, force: true });
   }
+}
+
+function hashCommitTargets(targets: string[], wcRoot: string): Array<Record<string, unknown>> {
+  return targets.map((target) => {
+    const relative = repoRelativePath(target, wcRoot);
+    try {
+      const stat = fs.statSync(target);
+      if (!stat.isFile()) {
+        return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "not a regular file" };
+      }
+      return {
+        path: relative,
+        algorithm: "sha256",
+        hash: createHash("sha256").update(fs.readFileSync(target)).digest("hex")
+      };
+    } catch {
+      return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "path unavailable" };
+    }
+  });
 }
 
 export async function svnMove(input: { cwd?: string; src: string; dest: string }): Promise<ToolEnvelope> {

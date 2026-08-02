@@ -1,4 +1,9 @@
 {
+  "normalizeEol": "crlf",
+  "eolExclude": [
+    "**/*.patch",
+    "**/*.diff"
+  ],
   "neverCommit": {
     "allow": [
       "bin/**",

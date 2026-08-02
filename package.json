@@ -41,6 +41,8 @@
     "test:package": "node scripts/smoke-packed-install.mjs",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "benchmark:responses": "node scripts/benchmark-responses.mjs",
+    "check:response-budgets": "node scripts/benchmark-responses.mjs --check",
+    "runtime:patch-utf8": "node scripts/patch-windows-runtime-manifest.mjs",
     "prepare:local": "npm run build && npm run generate:api-contract && npm run release:prepare",
     "release:prepare": "node scripts/prepare-release.mjs",
     "clean": "node scripts/clean.mjs"

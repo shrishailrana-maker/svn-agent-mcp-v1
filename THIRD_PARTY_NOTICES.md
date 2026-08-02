@@ -21,6 +21,10 @@ APR Util, OpenSSL, Subversion, and Zlib license files are reproduced under
 `third_party_licenses/apache-subversion-windows/`. The Apache Subversion 1.14.5 `NOTICE` file is
 included there as well. The package contains no separate OpenSSL runtime DLLs.
 
+This project modifies the embedded application manifest in `bin/svn.exe` to request the Windows
+UTF-8 active code page. The executable code and all other bundled files remain from the named
+VisualSVN archive. The source manifest and reproducible maintenance script are under `scripts/`.
+
 Microsoft Visual C++ runtime support files in `bin/` are copied unmodified from the VisualSVN
 archive. Microsoft redistributable runtime license terms apply to those files.
 

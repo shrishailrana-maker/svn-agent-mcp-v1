@@ -35,16 +35,20 @@ export const sensitiveNeverCommitGlobs = [
 
 export const neverCommitGlobs = [...overridableNeverCommitGlobs, ...sensitiveNeverCommitGlobs];
 
-type NeverCommitPolicy = {
+type RepositoryPolicy = {
   neverCommit?: {
     allow?: string[];
     deny?: string[];
   };
+  normalizeEol?: "crlf" | "lf" | "none";
+  eolExclude?: string[];
 };
 
-type LoadedNeverCommitPolicy = {
+type LoadedRepositoryPolicy = {
   allow: string[];
   deny: string[];
+  normalizeEol: "crlf" | "lf" | null;
+  eolExclude: string[];
   invalid?: string;
   exists: boolean;
   regular: boolean;
@@ -57,7 +61,8 @@ const MAX_POLICY_GLOB_LENGTH = 256;
 const MAX_POLICY_DOUBLESTAR_SEGMENTS = 4;
 const MAX_POLICY_GLOB_WILDCARDS = 8;
 const MAX_POLICY_BYTES = 64 * 1024;
-const policyCache = new Map<string, LoadedNeverCommitPolicy>();
+const policyCache = new Map<string, LoadedRepositoryPolicy>();
+const defaultEolExcludes = ["**/*.patch", "**/*.diff"];
 
 const buildSystemNames = new Set([
   "directory.build.props",
@@ -269,12 +274,70 @@ export function wcRootFromInfo(info: WcInfo[]): string | null {
 }
 
 export function messageFormatWarning(message: string): string | null {
+  return validateCommitMessage(message).valid ? null : "commit message format warning";
+}
+
+export function repositoryEolPolicy(wcRoot: string): {
+  target: "crlf" | "lf" | null;
+  excludes: string[];
+  invalid?: string;
+} {
+  const policy = loadNeverCommitPolicy(wcRoot);
+  return {
+    target: policy.normalizeEol,
+    excludes: policy.eolExclude,
+    ...(policy.invalid ? { invalid: policy.invalid } : {})
+  };
+}
+
+export function eolPolicyExcludes(absPath: string, wcRoot: string, excludes: string[]): boolean {
+  const relative = repoRelativePath(absPath, wcRoot).toLowerCase();
+  return excludes.some((glob) => matchesGlob(relative, glob));
+}
+
+export type CommitMessageValidation =
+  | { valid: true }
+  | {
+      valid: false;
+      warningCode: "COMMIT_MESSAGE_FORMAT";
+      failedRule: string;
+      warningDetail: string;
+      suggestedMessage: string;
+      blocking: true;
+    };
+
+export function validateCommitMessage(message: string): CommitMessageValidation {
   const normalized = message.replace(/\r\n/g, "\n").trimEnd();
   const lines = normalized.split("\n");
   const hasSummary = Boolean(lines[0]?.trim());
   const hasBlankSecondLine = lines.length > 1 && lines[1] === "";
   const hasBullet = lines.some((line, index) => index >= 2 && line.startsWith("- "));
-  return hasSummary && hasBlankSecondLine && hasBullet ? null : "commit message format warning";
+  if (hasSummary && hasBlankSecondLine && hasBullet) {
+    return { valid: true };
+  }
+
+  const failures = [
+    !hasSummary ? "subject" : "",
+    !hasBlankSecondLine ? "blank second line" : "",
+    !hasBullet ? "verification bullet" : ""
+  ].filter(Boolean);
+  const subject = lines[0]?.trim() || "Describe the change";
+
+  return {
+    valid: false,
+    warningCode: "COMMIT_MESSAGE_FORMAT",
+    failedRule: `missing ${joinRuleNames(failures)}`,
+    warningDetail: "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
+    suggestedMessage: `${subject}\n\n- Describe verification performed`,
+    blocking: true
+  };
+}
+
+function joinRuleNames(values: string[]): string {
+  if (values.length <= 1) {
+    return values[0] ?? "required component";
+  }
+  return `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
 }
 
 function matchesGlob(relative: string, glob: string): boolean {
@@ -287,7 +350,7 @@ function matchesGlob(relative: string, glob: string): boolean {
   return globToRegExp(lowerGlob).test(lowerRelative);
 }
 
-function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
+function loadNeverCommitPolicy(wcRoot: string): LoadedRepositoryPolicy {
   const policyPath = path.join(wcRoot, ".svn-mcp-policy.json");
   const cacheKey = pathIdentityKey(wcRoot);
   const stat = safePolicyStat(policyPath);
@@ -298,7 +361,10 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
   }
 
   if (!stat.exists) {
-    const empty = { allow: [], deny: [], exists: false, regular: false, mtimeMs: 0, size: 0 };
+    const empty = {
+      allow: [], deny: [], normalizeEol: null, eolExclude: defaultEolExcludes,
+      exists: false, regular: false, mtimeMs: 0, size: 0
+    };
     policyCache.set(cacheKey, empty);
     return empty;
   }
@@ -307,6 +373,8 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
     const invalid = {
       allow: [],
       deny: [],
+      normalizeEol: null,
+      eolExclude: defaultEolExcludes,
       invalid: "policy-error: .svn-mcp-policy.json must be a regular file",
       exists: true,
       regular: false,
@@ -321,6 +389,8 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
     const invalid = {
       allow: [],
       deny: [],
+      normalizeEol: null,
+      eolExclude: defaultEolExcludes,
       invalid: `policy-error: .svn-mcp-policy.json is too large (max ${MAX_POLICY_BYTES} bytes)`,
       exists: true,
       regular: true,
@@ -332,13 +402,23 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(policyPath, "utf8")) as NeverCommitPolicy;
+    const parsed = JSON.parse(fs.readFileSync(policyPath, "utf8")) as RepositoryPolicy;
     const allow = stringArray(parsed.neverCommit?.allow);
     const deny = stringArray(parsed.neverCommit?.deny);
-    const invalid = validatePolicyGlobs([...allow, ...deny]);
+    const configuredEolExcludes = stringArray(parsed.eolExclude);
+    const eolExclude = [...defaultEolExcludes, ...configuredEolExcludes];
+    const normalizeEol = parsed.normalizeEol === undefined || parsed.normalizeEol === "none"
+      ? null
+      : parsed.normalizeEol;
+    const invalidEol = normalizeEol !== null && normalizeEol !== "crlf" && normalizeEol !== "lf"
+      ? "policy-error: normalizeEol must be crlf, lf, or none"
+      : undefined;
+    const invalid = invalidEol ?? validatePolicyGlobs([...allow, ...deny, ...configuredEolExcludes]);
     const loaded = {
       allow,
       deny,
+      normalizeEol: invalidEol ? null : normalizeEol,
+      eolExclude,
       ...(invalid ? { invalid } : {}),
       exists: true,
       regular: true,
@@ -351,6 +431,8 @@ function loadNeverCommitPolicy(wcRoot: string): LoadedNeverCommitPolicy {
     const invalid = {
       allow: [],
       deny: [],
+      normalizeEol: null,
+      eolExclude: defaultEolExcludes,
       invalid: "policy-error: invalid .svn-mcp-policy.json",
       exists: true,
       regular: true,

@@ -102,6 +102,213 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("rejects an invalid commit message before creating a repository revision", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "message.txt"), "content\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["message.txt"] })).ok).toBe(true);
+
+      const before = await svnInfo({ cwd: fixture.wc });
+      const commit = await svnCommit({ cwd: fixture.wc, paths: ["message.txt"], message: "Short only" });
+      const after = await svnInfo({ cwd: fixture.wc });
+
+      expect(commit).toMatchObject({
+        ok: false,
+        warning_code: "COMMIT_MESSAGE_FORMAT",
+        failed_rule: "missing blank second line and verification bullet",
+        blocking: true
+      });
+      expect(commit.suggested_message).toBe("Short only\n\n- Describe verification performed");
+      expect(after.remote_head_revision).toBe(before.remote_head_revision);
+      expect(statusByPath((await svnStatus({ cwd: fixture.wc, paths: ["message.txt"] })).changed_paths, fixture.wc).get("message.txt")).toBe("A");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns committed paths and a bounded revision receipt after a clean commit", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "receipt.txt"), "content\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["receipt.txt"] })).ok).toBe(true);
+
+      const commit = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["receipt.txt"],
+        message: commitMessage("Add receipt fixture")
+      });
+
+      expect(commit).toMatchObject({
+        ok: true,
+        committed_revision: commit.revision,
+        committed_paths: ["receipt.txt"],
+        committed_count: 1,
+        path_count: 1,
+        post_status_clean: true,
+        working_copy_mixed: true,
+        remote_head_revision: commit.revision,
+        eol_verdict: "not_checked"
+      });
+      expect(commit.changed_paths).toEqual([{ path: "receipt.txt", status: "A" }]);
+      expect(commit.post_status).toEqual([]);
+      expect(commit.content_hashes).toEqual([
+        expect.objectContaining({ path: "receipt.txt", algorithm: "sha256", hash: expect.stringMatching(/^[a-f0-9]{64}$/) })
+      ]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves Unicode and spaces in SVN path arguments and parsed results", async () => {
+    const fixture = createTempWorkingCopy();
+    const original = "docs/Δ résumé 文件.txt";
+    const moved = "docs/Ω renamed 文件.txt";
+    try {
+      fs.mkdirSync(path.join(fixture.wc, "docs"));
+      fs.writeFileSync(path.join(fixture.wc, original), "unicode\r\n", "utf8");
+
+      const unicodeAdd = await svnAdd({ cwd: fixture.wc, paths: [original] });
+      expect(unicodeAdd).toMatchObject({ ok: true });
+      const addedStatus = await svnStatus({ cwd: fixture.wc, paths: [original] });
+      expect(statusByPath(addedStatus.changed_paths, fixture.wc).get(original)).toBe("A");
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: [original],
+        name: "custom:unicode",
+        value: "Δ résumé 文件"
+      })).ok).toBe(true);
+      const property = await svnPropget({ cwd: fixture.wc, paths: [original], name: "custom:unicode" });
+      expect(property.ok).toBe(true);
+      expect(JSON.stringify(property.properties)).toContain("Δ résumé 文件");
+
+      const first = await svnCommit({ cwd: fixture.wc, paths: [original], message: commitMessage("Add Unicode path") });
+      expect(first.ok).toBe(true);
+      expect(first.committed_paths).toEqual(expect.arrayContaining([original]));
+
+      fs.writeFileSync(path.join(fixture.wc, original), "UNICODE\r\n", "utf8");
+      const diff = await svnDiff({ cwd: fixture.wc, paths: [original] });
+      expect(diff.ok).toBe(true);
+      expect(diff.per_file).toHaveLength(1);
+      expect(normalizeStatusPath(diff.per_file[0].path, fixture.wc)).toBe(original);
+
+      expect((await svnMove({ cwd: fixture.wc, src: original, dest: moved })).ok).toBe(true);
+      const second = await svnCommit({
+        cwd: fixture.wc,
+        paths: [original, moved],
+        message: commitMessage("Move Unicode path"),
+        riskAck: true
+      });
+      expect(second.ok).toBe(true);
+      expect(second.committed_paths).toEqual(expect.arrayContaining([original, moved]));
+      const pinned = await svnUpdate({ cwd: fixture.wc, paths: [moved], revision: String(second.revision) });
+      expect(pinned).toMatchObject({ ok: true, requested_revision: String(second.revision) });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes new text files during svn_add from repository policy and skips byte-exact inputs", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, ".svn-mcp-policy.json"), JSON.stringify({
+        normalizeEol: "crlf",
+        eolExclude: ["**/*.patch"]
+      }), "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "new.txt"), "one\ntwo\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "exact.patch"), "one\ntwo\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "binary.dat"), Buffer.from([0x00, 0x0a, 0xff]));
+
+      const added = await svnAdd({ cwd: fixture.wc, paths: ["new.txt", "exact.patch", "binary.dat"] });
+
+      expect(added).toMatchObject({
+        ok: true,
+        eol_normalization: {
+          target: "crlf",
+          converted: 1,
+          verified: 1,
+          skipped: 2,
+          failed: 0
+        }
+      });
+      expect(fs.readFileSync(path.join(fixture.wc, "new.txt"), "utf8")).toBe("one\r\ntwo\r\n");
+      expect(fs.readFileSync(path.join(fixture.wc, "exact.patch"), "utf8")).toBe("one\ntwo\n");
+      expect(fs.readFileSync(path.join(fixture.wc, "binary.dat"))).toEqual(Buffer.from([0x00, 0x0a, 0xff]));
+      expect(added.eol_files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: "new.txt", before: "lf", after: "crlf", verified: true }),
+        expect.objectContaining({ path: "exact.patch", skipped: "policy-excluded" }),
+        expect.objectContaining({ path: "binary.dat", skipped: "binary" })
+      ]));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs explicit EOL batches and reports partial failures without scanning directories", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "lf.txt"), "one\ntwo\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "correct.txt"), "one\r\ntwo\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "binary.dat"), Buffer.from([0x00, 0x0a, 0xff]));
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["lf.txt", "correct.txt", "binary.dat"] })).ok).toBe(true);
+
+      const fixed = await eolFixVerified({
+        cwd: fixture.wc,
+        paths: ["lf.txt", "correct.txt", "binary.dat"],
+        target: "crlf"
+      });
+
+      expect(fixed).toMatchObject({ ok: false, batch: true, counts: { passed: 2, failed: 1, total: 3 } });
+      expect(fs.readFileSync(path.join(fixture.wc, "lf.txt"), "utf8")).toBe("one\r\ntwo\r\n");
+      expect(fixed.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: "lf.txt", ok: true, before: "lf", after: "crlf" }),
+        expect.objectContaining({ path: "correct.txt", ok: true, before: "crlf", after: "crlf" }),
+        expect.objectContaining({ path: "binary.dat", ok: false, failure: "binary file refused" })
+      ]));
+      const text = (fixed.files as Array<Record<string, unknown>>).find((file) => file.path === "lf.txt");
+      expect(text?.normalized_content_hash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps diffs and blame EOL-blind by default with an explicit diagnostic opt-out", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "eol-history.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      const committed = await svnCommit({ cwd: fixture.wc, paths: [relativePath], message: commitMessage("Add EOL history") });
+      expect(committed.ok).toBe(true);
+
+      fs.writeFileSync(file, "one\ntwo\n", "utf8");
+      const defaultDiff = await svnDiff({ cwd: fixture.wc, paths: [relativePath] });
+      expect(defaultDiff).toMatchObject({ ok: true, ignore_eol: true, eol_only: true, diff_excerpt: "" });
+
+      const diagnosticDiff = await svnDiff({ cwd: fixture.wc, paths: [relativePath], showEolChanges: true });
+      expect(diagnosticDiff).toMatchObject({ ok: true, ignore_eol: false, eol_changes_included: true });
+      expect(diagnosticDiff.per_file.length).toBeGreaterThan(0);
+
+      fs.writeFileSync(file, "ONE\ntwo\n", "utf8");
+      const contentDefault = await svnDiff({ cwd: fixture.wc, paths: [relativePath] });
+      const contentDiagnostic = await svnDiff({ cwd: fixture.wc, paths: [relativePath], showEolChanges: true });
+      expect(contentDefault.per_file[0]).toMatchObject({ added: 1, removed: 1 });
+      expect(contentDiagnostic.per_file[0]).toMatchObject({ added: 2, removed: 2 });
+      expect(contentDefault.diff_excerpt).toContain("+ONE");
+      expect(contentDiagnostic.diff_excerpt).toContain("+ONE");
+
+      const defaultBlame = await svnBlame({ cwd: fixture.wc, path: relativePath });
+      expect(defaultBlame).toMatchObject({ ok: true, ignore_eol: true });
+      expectSvnArgs(defaultBlame.command, "blame --xml -x --ignore-eol-style --");
+
+      const diagnosticBlame = await svnBlame({ cwd: fixture.wc, path: relativePath, showEolChanges: true });
+      expect(diagnosticBlame).toMatchObject({ ok: true, ignore_eol: false, eol_changes_included: true });
+      expect(diagnosticBlame.command).not.toContain("--ignore-eol-style");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("blocks precommit and commit for conflicted paths", async () => {
     const fixture = createTempWorkingCopy();
     try {

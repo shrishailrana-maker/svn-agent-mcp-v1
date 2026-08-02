@@ -222,6 +222,7 @@ export async function svnDiff(input: {
   cwd?: string;
   paths: string[];
   ignoreEol?: boolean;
+  showEolChanges?: boolean;
   lineLimit?: number;
   cursor?: string;
   revision?: string;
@@ -273,7 +274,7 @@ export async function svnDiff(input: {
 
   const lineLimit = input.lineLimit ?? defaultDiffLineLimit();
   const lineOffset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
-  const ignoreEol = input.ignoreEol ?? true;
+  const ignoreEol = input.showEolChanges ? false : input.ignoreEol ?? true;
   const revisionArgs = input.revision
     ? [isRevisionRange(input.revision) ? "-r" : "-c", input.revision]
     : [];
@@ -293,17 +294,32 @@ export async function svnDiff(input: {
   const eolDiagnostic = run.exitCode !== 0 && isInconsistentEolRun(run)
     ? await eolCheck({ cwd: context.cwd, paths: resolved.paths })
     : null;
+  const ignoredDiffEmpty = run.exitCode === 0
+    && ignoreEol
+    && diff.per_file.length === 0
+    && diff.diff_excerpt.length === 0;
+  const ignoredStatus = ignoredDiffEmpty ? await svnStatus({ cwd: context.cwd, paths: resolved.paths }) : null;
+  const eolOnly = ignoredStatus?.ok === true
+    && ignoredStatus.changed_paths.some((entry) => entry.status === "M");
   return {
     ...envelopeFromRun({
       run,
       ok: run.exitCode === 0,
-      note: run.exitCode === 0 ? "" : noteFromRun(run),
+      note: run.exitCode === 0
+        ? eolOnly
+          ? "EOL-only, no content change"
+          : input.showEolChanges
+            ? "EOL changes included"
+            : ""
+        : noteFromRun(run),
       truncated: diff.truncated
     }),
     ...diff,
     page_offset: lineOffset,
     ...(diff.truncated ? { next_cursor: String(lineOffset + excerptLineCount(diff.diff_excerpt)) } : {}),
     ignore_eol: ignoreEol,
+    eol_only: eolOnly,
+    ...(input.showEolChanges ? { eol_changes_included: true } : {}),
     ...(eolDiagnostic
       ? {
           recovery_tool: "eol_fix_verified",
@@ -449,6 +465,7 @@ export async function svnBlame(input: {
   revision?: string;
   maxLines?: number;
   cursor?: string;
+  showEolChanges?: boolean;
 }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (!input.path.trim()) {
@@ -476,6 +493,7 @@ export async function svnBlame(input: {
     "blame",
     "--xml",
     ...(input.revision ? ["-r", input.revision] : []),
+    ...(!input.showEolChanges ? ["-x", "--ignore-eol-style"] : []),
     "--",
     escapeSvnTarget(target)
   ], context.cwd);
@@ -496,6 +514,8 @@ export async function svnBlame(input: {
   return {
     ...createEnvelope({ ok: true, command: run.command, cwd: context.cwd, truncated: hasMore }),
     path: repoRelativePath(target, context.wcRoot),
+    ignore_eol: !input.showEolChanges,
+    ...(input.showEolChanges ? { eol_changes_included: true } : {}),
     lines,
     page_offset: offset,
     has_more: hasMore,

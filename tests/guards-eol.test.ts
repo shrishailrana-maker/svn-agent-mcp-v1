@@ -2,7 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals } from "../src/guards.js";
+import { isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals, validateCommitMessage } from "../src/guards.js";
 import { svnImport } from "../src/tools/mutating.js";
 import { sniffEol } from "../src/eol.js";
 
@@ -191,6 +191,14 @@ describe("guards and EOL sniffing", () => {
   it("warns on non-template commit messages", () => {
     expect(messageFormatWarning("Short\n\n- verification")).toBeNull();
     expect(messageFormatWarning("Short only")).toBe("commit message format warning");
+    expect(validateCommitMessage("Short only")).toEqual({
+      valid: false,
+      warningCode: "COMMIT_MESSAGE_FORMAT",
+      failedRule: "missing blank second line and verification bullet",
+      warningDetail: "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
+      suggestedMessage: "Short only\n\n- Describe verification performed",
+      blocking: true
+    });
   });
 
   it("returns realpath-expanded paths for SVN command targets", () => {

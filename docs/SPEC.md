@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.25 — public implementation contract. Single source of truth.**
+**Spec version 1.26 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-07-31.
+hostnames, or product-specific role assignments. Date: 2026-08-02.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -48,7 +48,7 @@ working copy multiplies the cost.
 | P1: permission-prompt stalls | Allowlist read-only tools; only mutations prompt | §10.4 |
 | P1: policy re-derivation + drift | Policy baked into the MCP as defaults & guards; read-only clients hard-READONLY | §7 |
 | P1: raw-diff dumping into context | Structured JSON envelope, per-file ± counts, line-capped excerpts | §6.4, §8.3 |
-| P2: LF files born from file-creation tools | Client write hook or MCP repair normalizes CRLF/no-BOM | §10.1 |
+| P2: LF files born from file-creation tools | Repo policy makes `svn_add` normalize and verify new text files | §8.4 |
 | P2: new files missing eol-style prop | Repo-root inherited `svn:auto-props` (SVN ≥1.8) | §10.2 |
 | P2: remediation loop when it does happen | `eol_fix_verified`: fix + proof re-diff in one call | §8.3 |
 | P3: Defender tax | Optional path exclusion for a chosen working-copy root (operator decision) | §10.3 |
@@ -79,9 +79,8 @@ workflow).
 - Each tool call operates against a caller-provided `cwd` or an inferred working copy from absolute
   paths. Relative paths require explicit per-call `cwd`. A single MCP registration may service many
   SVN working copies on the same machine.
-- Project text policy is discovered from SVN properties and local bytes. The default Windows
-  remediation target is CRLF + `svn:eol-style=native`, no BOM, but this must not hard-code one
-  repository's language or folder names.
+- Project text policy is discovered from `.svn-mcp-policy.json`, SVN properties, and local bytes.
+  A repository may set `normalizeEol` to `crlf`, `lf`, or `none` and exclude byte-exact fixtures.
 - MCP installation home is chosen by the deployer, for example `<MCP_HOME>\svn-agent`.
 - Node 24.18.0 or newer within the Node 24 LTS line and npm 11.16.0 or newer are required.
 
@@ -96,7 +95,7 @@ workflow).
 | D5 | Branch/switch/merge/relocate/delete: **out of v0.1** | Not needed for daily flow; each is high-risk |
 | D6 | Versioning: **semver**, first release `v0.1.0`; `current` junction → `releases\v0.1.0` | One pin, easy rollback |
 | D7 | Env overrides win; use compatible bundled tools next and native `PATH` tools otherwise | Windows stays self-contained while macOS/Linux use their normal package-managed toolchain |
-| D8 | Commit message format checked, **warn not refuse** | Format is policy but judgment; a hard block would fight legitimate cases |
+| D8 | Commit message format is validated before SVN and invalid messages are refused with typed remediation | Prevent successful commits followed by unusable warnings |
 | D9 | Commit message via temp **`-F` file outside the WC**, never `-m` | Encodes the shared SVN policy |
 | D10 | `svn_update` needs explicit `paths[]` or `updateAll:true`; optional exact `revision`; always `--accept postpone` | Update is operator-gated and can be release-pinned; conflicts must surface, never auto-resolve |
 | D11 | XML output (`--xml`) for status/info/log parsing with finite entity-expansion limits; regex only where svn has no XML (diff, update, commit) | Locale-proof, stable parsing without unbounded entity expansion |
@@ -117,10 +116,9 @@ These are restated here so the implementer does not need deployment-specific rul
    delete-heavy, security-sensitive, scope-unclear) stop for operator approval before commit.
 5. Read-only instances never commit, stage, revert, update, or change SVN state. They
    may report the intended fix or commit plan for a write-capable client.
-6. EOL: preserve existing encoding/EOL; never normalize whole trees; EOL-only churn is not a
-   code change (check = empty MCP `svn_diff`); fix a single failing file with MCP
-   `eol_fix_verified`, which invokes `unix2dos`/`dos2unix` directly; never rewrite bytes via
-   PowerShell/in-process.
+6. EOL: preserve tracked files unless explicitly repaired. A repository may configure automatic
+   normalization for files explicitly passed to `svn_add`; binary and excluded byte-exact files
+   are never converted. EOL-only churn is not a code change.
 7. For managed project working copies, never commit: `bin/`, `obj/`, `.vs/`, generated output,
    `*.db`, `scratch/**`, secrets, keys, certificates, tool caches, or unrelated drive-by changes.
    These guards are segment-aware so nested build output such as `src/App/bin/Debug/**` is also
@@ -320,10 +318,11 @@ in `note`. The MCP also returns `svnversion`, `revision_range:{min,max}`, `local
 mixed-revision working copy from dirty local edits. Compact callers may project the corresponding
 camel-case fields instead of receiving every metadata field.
 
-**`svn_diff`** — `{ cwd?, paths: string[], revision?: RevisionSelector, ignoreEol?: boolean = true, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
+**`svn_diff`** — `{ cwd?, paths: string[], revision?: RevisionSelector, ignoreEol?: boolean = true, showEolChanges?: boolean = false, lineLimit?: number = 200, diffMode?: "summary"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor? }`
 argv (default): `svn diff --internal-diff -x --ignore-eol-style -- <paths…>` — the generic
 commit-prep standard. `ignoreEol:false` → `svn diff --internal-diff -- <paths…>` (raw, for EOL
-diagnosis). Extra fields: `per_file: [{path, added, removed, binary}]` (parsed from unified
+diagnosis); `showEolChanges:true` is the clearer diagnostic opt-out. A pure EOL working change
+returns `eol_only:true` with no diff body. Extra fields: `per_file: [{path, added, removed, binary}]` (parsed from unified
 diff; `binary:true` when svn prints "Cannot display"), `diff_excerpt` (first `lineLimit`
 lines), `truncated`, `ignore_eol:boolean`. Property-only changes set `property_changed:true` and
 do not inflate source line counts. `lineLimit` is capped at 2,000. Compact response mode supports
@@ -356,7 +355,9 @@ their entries and are not aggregated at the top level.
 Returns one character-bounded page of one contained working-copy file at an optional revision.
 `hasMore` and `nextCursor` make truncation explicit; binary content is identified and omitted.
 
-**`svn_blame`** — `{ cwd?, path: string, revision?: Revision, maxLines?: number = 100, cursor? }`
+**`svn_blame`** — `{ cwd?, path: string, revision?: Revision, maxLines?: number = 100, cursor?, showEolChanges?: boolean = false }`
+Runs XML blame with `-x --ignore-eol-style` by default so historical EOL rewrites do not steal line
+attribution. `showEolChanges:true` explicitly includes that churn.
 Runs XML blame for one contained path and returns bounded `{line, revision, author, date}` entries.
 It omits file text by design; callers use `svn_cat` only for the file page they actually need.
 
@@ -450,10 +451,10 @@ Working-copy-root and existing-directory targets use the same `allowRoot` and
 `allowDirectoryTargets` acknowledgements as `svn_commit`, so `READY` does not contradict those
 target-scope guards for the same requested slice.
 
-**`eol_fix_verified`** — `{ cwd?, path: string, target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false }` *(mutating; refused under READONLY)*
+**`eol_fix_verified`** — `{ cwd?, path?: string, paths?: string[], target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false }` *(mutating; refused under READONLY)*
 One call = read `svn:eol-style`, infer the target (`native` → platform native, `LF` → lf,
 `CRLF` → crlf, no property → platform native), execute the real converter via `execFile`
-(`unix2dos` for crlf / `dos2unix` for lf; `--remove-bom` when `removeBom`) on **one file**,
+(`unix2dos` for crlf / `dos2unix` for lf; `--remove-bom` when `removeBom`) on one file,
 then automatically re-run the ignore-EOL diff on it. Clients normally pass only `{path}` when
 using absolute paths; `cwd` is optional and mainly for relative paths.
 Extra: `{ before: {kind, has_bom}, after: {kind, has_bom}, target, eol_style, converter,
@@ -464,6 +465,9 @@ other tool (fixing is always an explicit caller decision). Missing paths, non-fi
 and `sniff:"skipped-too-large"` files return structured refusals; oversized files require
 explicit `allowLarge:true`. No PowerShell scripts, byte rewrites, pipes, redirects, or shell
 quoting are involved.
+`paths` accepts up to 500 explicit files and returns one aggregate receipt. Passing files are
+counted; failures retain bounded per-file evidence. Directories and implicit working-copy scans are
+refused. SHA256 over canonical LF/no-BOM content proves EOL conversion preserved content.
 
 ### 8.4 Mutating tools (all refused under READONLY)
 
@@ -472,10 +476,14 @@ argv: `svn add --parents --depth empty -- <paths…>` (files); intermediate pare
 scheduled as needed without recursively adding siblings. A directory path requires
 `allowRecursive:true` (then `--parents --depth infinity`). G4 enforced — can't add what may never be committed
 (`scratch/**` is reserved for local scratch files; never add).
+When repository policy sets `normalizeEol:"crlf"` or `"lf"`, new text files in the explicit add
+scope are backed up, converted, and content-hash verified before SVN scheduling. Any failure restores
+all converted files and prevents the add. Binary files and `eolExclude` globs (defaulting to
+`**/*.patch` and `**/*.diff`) are skipped and reported.
 
 **`svn_commit`** — `{ cwd?, paths: string[], message: string, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
-≥1 `- ` bullet; deviation → warning appended to `note`, not refusal) → write message to temp
+≥1 `- ` bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
 `svn commit -F <tmpfile> --depth empty -- <paths…>` → delete tmpfile (always, incl. on failure) →
 parse `Committed revision N.` → run scoped `svn status --xml -- <paths…>`.
@@ -586,7 +594,8 @@ scans the source tree for never-commit descendants before invoking SVN. `svn_imp
 
 ### 10.1 EOL handling
 
-EOL remediation belongs inside this MCP. Callers should call `eol_fix_verified` with a file path;
+EOL remediation belongs inside this MCP. New files are normalized automatically when repository
+policy enables `normalizeEol`; callers use batch-capable `eol_fix_verified` for tracked files.
 the MCP infers the target from `svn:eol-style`, runs bundled `unix2dos`/`dos2unix` directly via
 `execFile`, and rechecks the ignored-EOL diff. Do not install or generate PowerShell EOL
 hooks/scripts for this workflow.

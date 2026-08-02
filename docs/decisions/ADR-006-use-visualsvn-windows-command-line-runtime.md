@@ -29,6 +29,12 @@ Retain the archive SHA256, every bundled file's SHA256, the archive's complete l
 and the Apache Subversion notice in the source and npm package. Keep dos2unix 7.5.6 as the EOL
 converter payload under its own reproduced license.
 
+Embed the standard Windows UTF-8 active-code-page application manifest in `svn.exe`. The selected
+upstream executable otherwise converts non-ASCII argv through the system ANSI code page, which can
+turn Greek and CJK working-copy paths into question marks. Keep the source manifest and maintenance
+script in `scripts/`, record the modification in third-party notices, and checksum the resulting
+distributed executable.
+
 macOS and Linux continue to resolve package-managed Subversion and dos2unix commands from `PATH`.
 
 ## Consequences
@@ -36,6 +42,7 @@ macOS and Linux continue to resolve package-managed Subversion and dos2unix comm
 - Windows remains self-contained without carrying the obsolete SlikSVN OpenSSL DLLs.
 - Runtime provenance and redistribution terms are auditable from the repository and npm package.
 - A future binary refresh must replace the complete upstream archive payload, regenerate checksums,
-  rerun the MCP client and package-install smoke tests, and update the archive hash and notices.
+  reapply the UTF-8 manifest, rerun the Unicode/client/package smoke tests, and update checksums,
+  the archive hash, and notices.
 - Individual DLL substitution remains prohibited because it would create an unsupported mixed
   runtime.

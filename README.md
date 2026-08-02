@@ -160,6 +160,21 @@ to refuse if repository HEAD moved since the caller's probe. Use
 mixed-revision working copy. The default remains backward compatible and reports mixed revisions
 without blocking ordinary precommit work.
 
+Repositories can make EOL handling automatic for new files:
+
+```json
+{
+  "normalizeEol": "crlf",
+  "eolExclude": ["**/*.patch", "**/*.diff"]
+}
+```
+
+With this in `.svn-mcp-policy.json`, `svn_add` normalizes and verifies new text files in the same
+call, skips binaries and excluded byte-exact fixtures, and refuses before scheduling if verification
+fails. `eol_fix_verified` also accepts a bounded explicit `paths` batch for tracked-file repairs.
+`svn_diff` and `svn_blame` ignore EOL-only churn by default; use `showEolChanges:true` only for EOL
+diagnostics.
+
 ## Commands
 
 | Command | Description |
@@ -173,6 +188,7 @@ without blocking ordinary precommit work.
 | `npm test` | Run the Jest test suite |
 | `npm run test:package` | Pack, install, and self-check the real npm artifact in isolation |
 | `npm run benchmark:responses` | Compare compact MCP, full MCP, and equivalent raw SVN output sizes |
+| `npm run check:response-budgets` | Fail when representative compact responses or schemas exceed token budgets |
 | `npm run prepare:local` | Build and prepare the local `current` runtime |
 | `npm run release:prepare` | Copy `dist/` and `bin/` into `releases/v<version>` and repoint `current` |
 | `npm run clean` | Remove root `dist/` with the Node clean script |

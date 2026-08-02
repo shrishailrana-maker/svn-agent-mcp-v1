@@ -4,6 +4,31 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Added repository-driven `normalizeEol` handling to `svn_add`; configured text files are
+  transactionally normalized and verified before scheduling, while binary and policy-excluded
+  byte-exact files are reported as skipped.
+- Added bounded multi-file `eol_fix_verified` input with aggregate counts, per-file failures, and
+  normalized-content SHA256 proof.
+- Added actionable numeric-limit validation and a CI response/schema budget gate.
+
+### Changed
+
+- `svn_blame` now ignores EOL-only churn by default, matching the existing `svn_diff` default;
+  both tools expose `showEolChanges:true` for diagnostics, and pure EOL diffs return `eolOnly:true`.
+- Commit-message format validation now blocks before `svn commit` and returns a typed failed rule
+  plus a bounded suggested message.
+- Successful commit receipts now separate exact committed paths from post-commit residue and add
+  bounded revision, remote-head, mixed-state, EOL-availability, and content-hash evidence.
+
+### Fixed
+
+- Embedded a Windows UTF-8 active-code-page manifest in the bundled VisualSVN `svn.exe`, preserving
+  Greek, accented, CJK, and spaced path arguments without a shell or machine-wide locale change.
+- Added a post-large-diff client call to prove oversized SVN output cannot corrupt the next MCP
+  JSON-RPC frame.
+
 ## [1.3.0] - 2026-07-31
 
 ### Added

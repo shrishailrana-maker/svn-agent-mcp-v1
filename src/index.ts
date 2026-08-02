@@ -37,6 +37,15 @@ export const serverName = "svn";
 export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 
+function boundedIntegerSchema(name: string, minimum: number, maximum: number, example: number) {
+  const message = (value: unknown) =>
+    `${name}=${String(value)}; allowed ${minimum}..${maximum}; example ${name}:${example}`;
+  return z.number()
+    .int({ error: (issue) => message(issue.input) })
+    .min(minimum, { error: (issue) => message(issue.input) })
+    .max(maximum, { error: (issue) => message(issue.input) });
+}
+
 export function createServer(): McpServer {
   const server = new McpServer({
     name: serverName,
@@ -48,8 +57,12 @@ export function createServer(): McpServer {
   const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL");
   const commitMessage = z.string().min(1).max(16000).regex(noNul, "must not contain NUL");
   const cwd = filesystemPath.optional().describe("Absolute WC directory; required for relative paths.");
-  const paths = z.array(filesystemPath).min(1).max(500).describe("Explicit paths inside one WC.");
-  const optionalPaths = z.array(filesystemPath).max(500).optional().describe("Optional paths inside one WC.");
+  const paths = z.array(filesystemPath).min(1).max(500, {
+    error: (issue) => `paths count ${Array.isArray(issue.input) ? issue.input.length : "invalid"}; allowed 1..500`
+  }).describe("One to 500 explicit paths inside one WC.");
+  const optionalPaths = z.array(filesystemPath).max(500, {
+    error: (issue) => `paths count ${Array.isArray(issue.input) ? issue.input.length : "invalid"}; allowed 0..500`
+  }).optional().describe("Zero to 500 optional paths inside one WC.");
   const allowRootCommit = z.boolean().optional().describe("Acknowledge a working-copy-root commit target.");
   const allowDirectoryTargets = z.boolean().optional().describe(
     "Acknowledge that an existing directory target commits only the directory node; descendants require explicit paths."
@@ -61,7 +74,7 @@ export function createServer(): McpServer {
   const propertyName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
   const responseMode = z.enum(["compact", "standard", "full"]).optional();
   const response = { responseMode };
-  const cursor = z.string().max(32).regex(/^\d+$/).optional();
+  const cursor = z.string().max(32).regex(/^\d+$/, "cursor must be a decimal offset with at most 32 digits").optional();
   // svn_log cursors may carry the range floor as "next:floor".
   const logCursor = z.string().max(65).regex(/^\d+(?::\d+)?$/).optional();
   const infoField = z.enum([
@@ -69,6 +82,16 @@ export function createServer(): McpServer {
     "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
   ]);
   const propertyField = z.enum(["path", "name", "value"]);
+  const maxItems = boundedIntegerSchema("maxItems", 1, 500, 100).optional();
+  const lineLimit = boundedIntegerSchema("lineLimit", 1, 2000, 200).optional();
+  const maxChars = boundedIntegerSchema("maxChars", 256, 64000, 3000).optional();
+  const maxHunksPerFile = boundedIntegerSchema("maxHunksPerFile", 1, 20, 3).optional();
+  const maxFiles = boundedIntegerSchema("maxFiles", 1, 500, 100).optional();
+  const logLimit = boundedIntegerSchema("limit", 1, 100, 10).optional();
+  const maxMessageChars = boundedIntegerSchema("maxMessageChars", 32, 8000, 240).optional();
+  const maxChangedPaths = boundedIntegerSchema("maxChangedPaths", 1, 500, 100).optional();
+  const maxLines = boundedIntegerSchema("maxLines", 1, 500, 100).optional();
+  const maxValueChars = boundedIntegerSchema("maxValueChars", 256, 64000, 4096).optional();
 
   server.registerTool(
     "svn_self_check",
@@ -100,7 +123,7 @@ export function createServer(): McpServer {
         statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
-        maxItems: z.number().int().min(1).max(500).optional(),
+        maxItems,
         cursor,
         ...response
       }
@@ -134,7 +157,7 @@ export function createServer(): McpServer {
         statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
-        maxItems: z.number().int().min(1).max(500).optional(),
+        maxItems,
         cursor,
         ...response
       }
@@ -150,11 +173,12 @@ export function createServer(): McpServer {
         cwd,
         paths,
         ignoreEol: z.boolean().optional(),
-        lineLimit: z.number().int().min(1).max(2000).optional(),
+        showEolChanges: z.boolean().optional().describe("Include EOL-only changes; default false."),
+        lineLimit,
         diffMode: z.enum(["summary", "compact", "full"]).optional(),
-        maxChars: z.number().int().min(256).max(64000).optional(),
-        maxHunksPerFile: z.number().int().min(1).max(20).optional(),
-        maxFiles: z.number().int().min(1).max(500).optional(),
+        maxChars,
+        maxHunksPerFile,
+        maxFiles,
         fileCursor: cursor,
         cursor,
         revision: revisionSelector,
@@ -171,12 +195,12 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths: optionalPaths,
-        limit: z.number().int().min(1).max(100).optional(),
+        limit: logLimit,
         verbose: z.boolean().optional(),
         fullMessage: z.boolean().optional(),
         changedPaths: z.boolean().optional(),
-        maxMessageChars: z.number().int().min(32).max(8000).optional(),
-        maxChangedPaths: z.number().int().min(1).max(500).optional(),
+        maxMessageChars,
+        maxChangedPaths,
         cursor: logCursor,
         revision: revisionSelector,
         ...response
@@ -193,7 +217,7 @@ export function createServer(): McpServer {
         cwd,
         path: filesystemPath,
         revision,
-        maxChars: z.number().int().min(256).max(64000).optional(),
+        maxChars,
         cursor,
         ...response
       }
@@ -209,8 +233,9 @@ export function createServer(): McpServer {
         cwd,
         path: filesystemPath,
         revision,
-        maxLines: z.number().int().min(1).max(500).optional(),
+        maxLines,
         cursor,
+        showEolChanges: z.boolean().optional().describe("Include EOL-only attribution churn; default false."),
         ...response
       }
     },
@@ -226,7 +251,7 @@ export function createServer(): McpServer {
         paths,
         includePassing: z.boolean().optional(),
         countOnly: z.boolean().optional(),
-        maxItems: z.number().int().min(1).max(500).optional(),
+        maxItems,
         cursor,
         ...response
       }
@@ -243,9 +268,9 @@ export function createServer(): McpServer {
         paths,
         name: propertyName,
         fields: z.array(propertyField).max(3).optional(),
-        maxValueChars: z.number().int().min(256).max(64000).optional(),
+        maxValueChars,
         countOnly: z.boolean().optional(),
-        maxItems: z.number().int().min(1).max(500).optional(),
+        maxItems,
         cursor,
         ...response
       }
@@ -260,9 +285,9 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths,
-        lineLimit: z.number().int().min(1).max(2000).optional(),
+        lineLimit,
         includeDiff: z.boolean().optional(),
-        maxChars: z.number().int().min(256).max(64000).optional(),
+        maxChars,
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
         requireUniformRevision: z.boolean().optional().describe(
@@ -277,10 +302,11 @@ export function createServer(): McpServer {
   server.registerTool(
     "eol_fix_verified",
     {
-      description: "Normalize and verify one file's EOL.",
+      description: "Normalize and verify one or a bounded batch of explicit files.",
       inputSchema: {
         cwd,
-        path: filesystemPath,
+        path: filesystemPath.optional().describe("One explicit file; use either path or paths."),
+        paths: paths.optional().describe("One to 500 explicit files; directories are refused."),
         target: z.enum(["crlf", "lf"]).optional(),
         removeBom: z.boolean().optional(),
         dryRun: z.boolean().optional(),
@@ -353,7 +379,7 @@ export function createServer(): McpServer {
         paths: optionalPaths,
         updateAll: z.boolean().optional(),
         revision: revision.describe("Exact revision to update to; ranges are refused."),
-        expectedRemoteHead: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe(
+        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional().describe(
           "With a numeric revision, refuse before updating unless repository HEAD still equals this revision."
         ),
         ...response

@@ -15,6 +15,23 @@ const svn = svnExecutable();
 const svnadmin = svnAdminExecutable();
 const svnversion = svnVersionExecutable();
 const server = path.join(root, "dist", "index.js");
+const enforceBudgets = process.argv.includes("--check");
+const schemaBudgets = {
+  allInputSchemas: 20000,
+  selectedInputSchemas: 5500,
+  allToolDefinitions: 24000,
+  selectedToolDefinitions: 6500
+};
+const compactBudgets = {
+  "clean status": 250,
+  "status count only": 250,
+  "1,001-path status": 1800,
+  "10-revision log": 1500,
+  "500-line file diff": 4000,
+  "one-file precommit": 1000,
+  "self-check": 400,
+  "add receipt": 250
+};
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 fs.mkdirSync(temporaryRoot, { recursive: true });
@@ -68,6 +85,7 @@ try {
   ].join("\n");
   const cases = [
     ["clean status", "svn_status", { cwd: cleanWorkingCopy }, raw(svn, ["status"], cleanWorkingCopy)],
+    ["status count only", "svn_status", { cwd: workingCopy, countOnly: true }, raw(svn, ["status"], workingCopy)],
     ["1,001-path status", "svn_status", { cwd: workingCopy, maxItems: 25 }, raw(svn, ["status"], workingCopy)],
     ["10-revision log", "svn_log", { cwd: workingCopy, limit: 10 }, raw(svn, ["log", "-l", "10", pathToFileURL(repository).href], workingCopy)],
     ["500-line file diff", "svn_diff", { cwd: workingCopy, paths: ["seed.txt"], lineLimit: 200 }, raw(svn, ["diff", "--internal-diff", "-x", "--ignore-eol-style", seed], workingCopy)],
@@ -93,7 +111,11 @@ try {
   const compactAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-compact.txt"], responseMode: "compact" });
   measurements.push(measurement("add receipt", compactAdd, fullAdd, rawAdd));
 
-  process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, measurements }, null, 2)}\n`);
+  const failures = budgetFailures(schemaSizes, measurements);
+  process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, measurements, budgetFailures: failures }, null, 2)}\n`);
+  if (enforceBudgets && failures.length > 0) {
+    process.exitCode = 1;
+  }
 } finally {
   await client.close().catch(() => undefined);
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
@@ -130,4 +152,23 @@ function raw(executable, args, cwd = root) {
 
 function run(executable, args, cwd = root) {
   execFileSync(executable, args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe" });
+}
+
+function budgetFailures(schemaSizes, measurements) {
+  const failures = [];
+  for (const [name, maximum] of Object.entries(schemaBudgets)) {
+    if (schemaSizes[name] > maximum) {
+      failures.push(`schema ${name}: ${schemaSizes[name]} > ${maximum}`);
+    }
+  }
+  for (const result of measurements) {
+    const maximum = compactBudgets[result.case];
+    if (maximum !== undefined) {
+      result.compactBudgetChars = maximum;
+      if (result.compactChars > maximum) {
+        failures.push(`${result.case}: ${result.compactChars} > ${maximum}`);
+      }
+    }
+  }
+  return failures;
 }

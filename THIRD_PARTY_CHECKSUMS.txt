@@ -1,6 +1,6 @@
 # SHA256 checksums for bundled third-party binaries
 #
-# Generated from the files under bin/ for release v1.2.0.
+# Generated from the files under bin/ for the current public distribution.
 
 213cdeffc15c734e42565c90512491113652de9e52694ae335131d0e24f91df7  bin/api-ms-win-core-console-l1-1-0.dll
 45a155e9b60f068fbc3ea8dd73552905afeae49270bea6bbccb4aad0aa696f2d  bin/api-ms-win-core-console-l1-2-0.dll
@@ -64,7 +64,7 @@ bcc347a52726e139d3cfec484503dd178859ad3d6d47771dda3dbbc61766ebfc  bin/libsvn_fs_
 1c95f7db69e732b995122b12502387867c8c13dd9574f8b0e5a12d10c2da4930  bin/msvcp140_2.dll
 f8a381e45f6f3dcab092b5e256c8304906b3c523dc721bcc126dd899167e0ba6  bin/msvcp140_codecvt_ids.dll
 faaa4870bf745444022f409bd494095b7b3796637cf9994ad9faf7a43f393b88  bin/msvcp140.dll
-514bbd1a03109aba979b9ecb7fad46a43e3f29da6741adb827d36cabf0690b6d  bin/svn.exe
+626bbab5b6b823944ac07996e6ab6c79166a9b3cc59a554bc980300707856a38  bin/svn.exe
 553f415884b3868b0054d9050bd47892762e25f2b78a4570d61ae7f139b05308  bin/svnadmin.exe
 7b35859f7e653a02c3e11a0ee126d7c27c4380ad4467301554f00677a0d85587  bin/svnbench.exe
 59791853f1151233ad774ef1814bffaefbe5b72fe0dfb52360869bd28daac541  bin/svndumpfilter.exe

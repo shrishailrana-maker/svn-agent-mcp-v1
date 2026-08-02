@@ -42,6 +42,21 @@ try {
     assert(updateTool?.inputSchema?.properties?.expectedRemoteHead, "svn_update expectedRemoteHead guard is missing");
     const precommitTool = tools.tools.find((tool) => tool.name === "svn_precommit");
     assert(precommitTool?.inputSchema?.properties?.requireUniformRevision, "precommit uniform-revision gate is missing");
+    const diffTool = tools.tools.find((tool) => tool.name === "svn_diff");
+    assert(diffTool?.inputSchema?.properties?.lineLimit?.maximum === 2000, "diff lineLimit maximum is not published");
+    assert(diffTool?.inputSchema?.properties?.maxHunksPerFile?.maximum === 20, "diff hunk maximum is not published");
+    let validationMessage = "";
+    try {
+      const invalid = await client.callTool({
+        name: "svn_diff",
+        arguments: { cwd: workingCopy, paths: ["x"], lineLimit: 2001 }
+      });
+      validationMessage = JSON.stringify(invalid);
+    } catch (error) {
+      validationMessage = error instanceof Error ? error.message : String(error);
+    }
+    assert(validationMessage.includes("lineLimit=2001") && validationMessage.includes("allowed 1..2000"),
+      `diff limit validation was not actionable: ${validationMessage}`);
     passed.push("input-bounds");
 
     const selfCheck = await call(client, "svn_self_check", { cwd: workingCopy, responseMode: "compact" });
@@ -164,6 +179,13 @@ try {
     assert(String(largeDiff.excerpt).length <= 8_000, "compact full diff exceeded its excerpt cap");
     assert(largeDiff.truncated === true && /^\d+$/.test(largeDiff.nextCursor), "large diff omitted continuation");
     passed.push("large-diff");
+
+    const statusAfterLargeDiff = await callOk(client, "svn_status", {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"]
+    });
+    assert(statusAfterLargeDiff.ok === true, "MCP stream did not recover after a large diff response");
+    passed.push("large-diff-stream-recovery");
 
     const snapshot = await callOk(client, "svn_snapshot", { cwd: workingCopy, paths: ["client-smoke.txt"] });
     assert(snapshot.counts.modified === 1, "snapshot omitted the modified file");

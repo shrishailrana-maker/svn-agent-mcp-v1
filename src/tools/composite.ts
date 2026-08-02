@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
-import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, sniffEol } from "../eol.js";
+import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, normalizedContentHash, sniffEol } from "../eol.js";
 import {
   assertExistingTargets,
   findExistingDirectoryTarget,
@@ -242,6 +242,59 @@ function blockedPrecommit(envelope: ToolEnvelope): ToolEnvelope {
 
 export async function eolFixVerified(input: {
   cwd?: string;
+  path?: string;
+  paths?: string[];
+  target?: "crlf" | "lf";
+  removeBom?: boolean;
+  dryRun?: boolean;
+  allowLarge?: boolean;
+}): Promise<ToolEnvelope> {
+  const requested = input.paths ?? (input.path ? [input.path] : []);
+  const cwd = resolveCwd(input.cwd);
+  if (input.path && input.paths) {
+    return failEnvelope("eol_fix_verified", cwd, "use path or paths, not both");
+  }
+  if (requested.length === 0) {
+    return failEnvelope("eol_fix_verified", cwd, "explicit path or paths required");
+  }
+  if (requested.length > 500) {
+    return failEnvelope("eol_fix_verified", cwd, `paths count ${requested.length} exceeds maximum 500`);
+  }
+  if (input.path) {
+    return eolFixOneVerified({ ...input, path: input.path });
+  }
+
+  const files: Array<Record<string, unknown>> = [];
+  for (const filePath of requested) {
+    const result = await eolFixOneVerified({ ...input, path: filePath });
+    files.push({
+      path: filePath,
+      ok: result.ok,
+      before: eolKind(result.before),
+      after: eolKind(result.after),
+      target: result.target,
+      pure_eol_churn: result.pure_eol_churn === true,
+      normalized_content_hash: result.normalized_content_hash,
+      ...(result.ok ? {} : { failure: result.note })
+    });
+  }
+  const passed = files.filter((file) => file.ok === true).length;
+  const failed = files.length - passed;
+  return {
+    ...createEnvelope({
+      ok: failed === 0,
+      command: "eol_fix_verified",
+      cwd,
+      note: failed === 0 ? "batch EOL verification complete" : `${failed} EOL path(s) failed`
+    }),
+    batch: true,
+    counts: { passed, failed, total: files.length },
+    files
+  };
+}
+
+async function eolFixOneVerified(input: {
+  cwd?: string;
   path: string;
   target?: "crlf" | "lf";
   removeBom?: boolean;
@@ -288,6 +341,8 @@ export async function eolFixVerified(input: {
       before
     };
   }
+  const originalBytes = fs.readFileSync(filePath);
+  const normalizedHashBefore = normalizedContentHash(originalBytes);
 
   const prop = await runSvn(["propget", "--", "svn:eol-style", escapeSvnTarget(filePath)], context.cwd);
   const eolStyle = prop.exitCode === 0 ? prop.stdout.trim() || null : null;
@@ -306,6 +361,7 @@ export async function eolFixVerified(input: {
       target,
       eol_style: eolStyle,
       converter,
+      normalized_content_hash: normalizedHashBefore,
       pure_eol_churn: false
     };
   }
@@ -331,6 +387,22 @@ export async function eolFixVerified(input: {
   }
 
   const after = await sniffEol(filePath);
+  const normalizedHashAfter = normalizedContentHash(fs.readFileSync(filePath));
+  const contentPreserved = normalizedHashAfter === normalizedHashBefore;
+  const targetVerified = (after.kind === target || after.kind === "none") && !after.has_bom;
+  if (!contentPreserved || !targetVerified) {
+    fs.writeFileSync(filePath, originalBytes);
+    return {
+      ...failEnvelope("eol_fix_verified", context.cwd, "normalized content or EOL verification failed; original restored"),
+      before,
+      after,
+      target,
+      eol_style: eolStyle,
+      converter,
+      normalized_content_hash: normalizedHashAfter,
+      pure_eol_churn: false
+    };
+  }
   const diff = await svnDiff({ cwd: context.cwd, paths: [filePath], ignoreEol: true, lineLimit: defaultDiffLineLimit() });
   const pureEolChurn = diff.ok && !diff.per_file_truncated && diff.per_file.every((file) =>
     file.added === 0 && file.removed === 0 && !file.binary && !file.property_changed
@@ -347,10 +419,15 @@ export async function eolFixVerified(input: {
     target,
     eol_style: eolStyle,
     converter,
+    normalized_content_hash: normalizedHashAfter,
     verification_command: diff.command,
     diff_ignored_eol: true,
     pure_eol_churn: pureEolChurn
   };
+}
+
+function eolKind(value: unknown): unknown {
+  return value && typeof value === "object" ? (value as Record<string, unknown>).kind : undefined;
 }
 
 function pathIsFile(filePath: string): boolean {
