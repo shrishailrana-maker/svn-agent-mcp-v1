@@ -140,6 +140,9 @@
           "file",
           "operationId"
         ],
+        "eol_fix_verified": [
+          "operationId"
+        ],
         "svn_log": [
           "changedPathsSummary",
           "maxTopLevelDirectories",
@@ -152,7 +155,8 @@
           "cursor",
           "conflictCursor",
           "taskPaths",
-          "targetOverlapOnly"
+          "targetOverlapOnly",
+          "operationId"
         ],
         "svn_commit": [
           "operation",
@@ -162,7 +166,11 @@
           "requireUniformRevision",
           "expandDescendants",
           "allowRoot",
-          "allowDirectoryTargets"
+          "allowDirectoryTargets",
+          "operationId"
+        ],
+        "svn_resolve": [
+          "operationId"
         ]
       },
       "limits": {

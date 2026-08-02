@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -118,12 +119,32 @@ try {
     assert(precommit.ready === true, "precommit did not report ready");
     passed.push("precommit");
 
-    const committed = await callOk(client, "svn_commit", {
+    const commitOperationId = randomUUID();
+    const commitInput = {
       cwd: workingCopy,
       paths: ["client-smoke.txt"],
-      message: "MCP client smoke\n\n- Exercise the public protocol\n- Verify guarded commit behavior\n"
-    });
+      message: "MCP client smoke\n\n- Exercise the public protocol\n- Verify guarded commit behavior\n",
+      operationId: commitOperationId
+    };
+    const committed = await callOk(client, "svn_commit", commitInput);
     assert(Number.isInteger(committed.revision), "commit omitted its revision");
+    const commitReplay = await callOk(client, "svn_commit", commitInput);
+    assert(
+      commitReplay.revision === committed.revision
+        && commitReplay.operationId === commitOperationId
+        && commitReplay.idempotentReplay === true,
+      `commit retry did not replay the durable receipt: ${JSON.stringify(commitReplay)}`
+    );
+    const commitMismatch = await call(client, "svn_commit", {
+      ...commitInput,
+      message: "Different client smoke\n\n- Prove operation binding\n- Refuse mismatched retry\n"
+    });
+    assert(
+      commitMismatch.ok === false
+        && commitMismatch.code === "OPERATION_ID_CONFLICT"
+        && commitMismatch.operationId === commitOperationId,
+      `commit operation ID was not bound to its original payload: ${JSON.stringify(commitMismatch)}`
+    );
     passed.push("commit");
 
     fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");

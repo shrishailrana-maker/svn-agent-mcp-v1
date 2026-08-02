@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
@@ -112,13 +113,16 @@ describe("SVN tool integration against a temp repository", () => {
       const diff = await svnDiff({ cwd: fixture.wc, paths: ["app.txt"] });
       expectSvnArgs(diff.command, "diff --internal-diff -x --ignore-eol-style --");
 
-      const fixed = await eolFixVerified({ cwd: fixture.wc, path: "app.txt" });
+      const eolOperationId = randomUUID();
+      const fixed = await eolFixVerified({ cwd: fixture.wc, path: "app.txt", operationId: eolOperationId });
       expect(fixed.ok).toBe(true);
       expect(fixed.command.toLowerCase()).toContain("unix2dos");
       expect(fixed.command.toLowerCase()).not.toContain("powershell");
       expect(fixed.converter).toBe("unix2dos");
       expectSvnArgs(String(fixed.verification_command), "diff --internal-diff -x --ignore-eol-style --");
       expect(fixed.pure_eol_churn).toBe(false);
+      const fixedReplay = await eolFixVerified({ cwd: fixture.wc, path: "app.txt", operationId: eolOperationId });
+      expect(fixedReplay).toMatchObject({ ok: true, operation_id: eolOperationId, idempotent_replay: true });
 
       const ready = await svnPrecommit({ cwd: fixture.wc, paths: ["app.txt"] });
       expect(ready.verdict).toBe("READY");
@@ -167,10 +171,12 @@ describe("SVN tool integration against a temp repository", () => {
       fs.writeFileSync(path.join(fixture.wc, "receipt.txt"), "content\r\n", "utf8");
       expect((await svnAdd({ cwd: fixture.wc, paths: ["receipt.txt"] })).ok).toBe(true);
 
+      const operationId = randomUUID();
       const commit = await svnCommit({
         cwd: fixture.wc,
         paths: ["receipt.txt"],
-        message: commitMessage("Add receipt fixture")
+        message: commitMessage("Add receipt fixture"),
+        operationId
       });
 
       expect(commit).toMatchObject({
@@ -189,6 +195,25 @@ describe("SVN tool integration against a temp repository", () => {
       expect(commit.content_hashes).toEqual([
         expect.objectContaining({ path: "receipt.txt", algorithm: "sha256", hash: expect.stringMatching(/^[a-f0-9]{64}$/) })
       ]);
+      const replay = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["receipt.txt"],
+        message: commitMessage("Add receipt fixture"),
+        operationId
+      });
+      expect(replay).toMatchObject({
+        ok: true,
+        revision: commit.revision,
+        operation_id: operationId,
+        idempotent_replay: true
+      });
+      const mismatch = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["receipt.txt"],
+        message: commitMessage("Different receipt fixture"),
+        operationId
+      });
+      expect(mismatch).toMatchObject({ ok: false, code: "OPERATION_ID_CONFLICT", operation_id: operationId });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -378,6 +403,22 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(commit.ok).toBe(false);
       expect(String(commit.note)).toMatch(/non-committable status \(C\)|unresolved conflicts/);
+
+      const resolveOperationId = randomUUID();
+      const resolved = await svnResolve({
+        cwd: fixture.wc,
+        path: "conflict.txt",
+        accept: "working",
+        operationId: resolveOperationId
+      });
+      expect(resolved).toMatchObject({ ok: true, operation_id: resolveOperationId });
+      const resolvedReplay = await svnResolve({
+        cwd: fixture.wc,
+        path: "conflict.txt",
+        accept: "working",
+        operationId: resolveOperationId
+      });
+      expect(resolvedReplay).toMatchObject({ ok: true, operation_id: resolveOperationId, idempotent_replay: true });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1775,11 +1816,13 @@ describe("SVN tool integration against a temp repository", () => {
       const invalidRange = await svnUpdate({ cwd: fixture.wc, updateAll: true, revision: `${probedHead}:${advancedHead}` });
       expect(invalidRange).toMatchObject({ ok: false, note: "invalid revision selector" });
 
+      const updateOperationId = randomUUID();
       const pinned = await svnUpdate({
         cwd: fixture.wc,
         updateAll: true,
         revision: String(probedHead),
-        expectedRemoteHead: advancedHead
+        expectedRemoteHead: advancedHead,
+        operationId: updateOperationId
       });
       expect(pinned).toMatchObject({
         ok: true,
@@ -1792,6 +1835,19 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expectSvnArgs(pinned.command, `update -r ${probedHead} --accept postpone`);
       expect(fs.readFileSync(localFile, "utf8")).toBe("two\r\n");
+      const pinnedReplay = await svnUpdate({
+        cwd: fixture.wc,
+        updateAll: true,
+        revision: String(probedHead),
+        expectedRemoteHead: advancedHead,
+        operationId: updateOperationId
+      });
+      expect(pinnedReplay).toMatchObject({
+        ok: true,
+        resulting_revision: probedHead,
+        operation_id: updateOperationId,
+        idempotent_replay: true
+      });
 
       const rangeLog = await svnLog({
         cwd: fixture.wc,

@@ -39,6 +39,13 @@ Please do not publish exploit details until a fix or mitigation is available.
   not a substitute for keeping credentials out of versioned file content and commit messages.
 - Commit/import messages and generic property values are passed through mode-0600 temporary files
   outside the working copy and removed in `finally`, rather than embedded in displayed commands.
+- Optional mutation operation receipts are stored outside working copies with atomic replacement,
+  restricted file modes, bounded record sizes, and no raw successful stdout/stderr. IDs are bound to
+  normalized inputs; unreadable, mismatched, concurrent, or ambiguous stale receipts fail closed.
+  The physical store path is refused inside an SVN working copy. Terminal and stale orphan files
+  are pruned within fixed limits; retained unfinished or unreadable records cause a capacity refusal
+  rather than deletion. The receipt store is local to one host and must not be treated as a
+  cross-machine lock.
 - SVN and conversion processes inherit the host environment so native credential caches, proxy
   settings, home directories, and configured SSH transports continue to work. Treat MCP process
   environment variables as trusted operator configuration and do not place secrets in debug logs.

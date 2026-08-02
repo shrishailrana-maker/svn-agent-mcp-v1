@@ -544,7 +544,9 @@ describe("public MCP response shaping", () => {
       committed_paths: ["src/a.ts"],
       base_revision: 44,
       remote_head_revision: 45,
-      operation_id: "commit-45"
+      operation_id: "11111111-1111-4111-8111-111111111111",
+      idempotent_replay: true,
+      operation_recovered: true
     }, { responseMode: "receipt" }).structuredContent;
     expect(commit).toEqual({
       ok: true,
@@ -553,7 +555,9 @@ describe("public MCP response shaping", () => {
       remoteHeadRevision: 45,
       changedPaths: ["src/a.ts"],
       conflictCount: 0,
-      operationId: "commit-45"
+      operationId: "11111111-1111-4111-8111-111111111111",
+      idempotentReplay: true,
+      operationRecovered: true
     });
     for (const result of [snapshot, precommit, update, commit]) {
       expect(JSON.stringify(result).length).toBeLessThan(400);
@@ -587,6 +591,36 @@ describe("public MCP response shaping", () => {
       conflicts: [{ path: "src/a.ts", type: "text" }]
     });
     expect(JSON.stringify(standard)).not.toContain(root);
+  });
+
+  it("preserves durable operation metadata through compact errors and field projection", () => {
+    const root = "E:\\dev\\example";
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const error = toToolResult("svn_update", {
+      ...createEnvelope({ ok: false, command: "svn update", cwd: root, note: "recorded failure" }),
+      operation_id: operationId,
+      idempotent_replay: true,
+      operation_recovered: true
+    }, { responseMode: "compact" }).structuredContent;
+    expect(error).toMatchObject({ operationId, idempotentReplay: true, operationRecovered: true });
+
+    const projected = toToolResult("svn_update", {
+      ...createEnvelope({ ok: true, command: "svn update", cwd: root, revision: 42 }),
+      operation_id: operationId,
+      idempotent_replay: true,
+      operation_recovered: true,
+      resulting_revision: 42
+    }, {
+      responseMode: "compact",
+      request: { fields: ["resultingRevision"] }
+    }).structuredContent;
+    expect(projected).toMatchObject({
+      ok: true,
+      resultingRevision: 42,
+      operationId,
+      idempotentReplay: true,
+      operationRecovered: true
+    });
   });
 
   it("returns minimal unchanged status and snapshot receipts from scoped snapshot tokens", () => {

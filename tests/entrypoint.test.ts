@@ -47,6 +47,10 @@ describe("server entrypoint launch detection", () => {
       expect(diff?.inputSchema.properties).not.toHaveProperty("operationId");
       expect(advancedInputNames.svn_status).toContain("afterCursor");
       expect(advancedInputNames.svn_diff).toContain("operationId");
+      expect(advancedInputNames.svn_update).toContain("operationId");
+      expect(advancedInputNames.svn_commit).toContain("operationId");
+      expect(advancedInputNames.eol_fix_verified).toContain("operationId");
+      expect(advancedInputNames.svn_resolve).toContain("operationId");
     } finally {
       await client.close();
     }

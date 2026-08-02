@@ -203,6 +203,17 @@ then runs the normal guarded precommit checks. It never commits. Its compact rec
 resulting revision, conflicts, updated paths, and exact final commit scope. Keeping preparation as
 a mode of the existing commit workflow avoids loading another tool schema.
 
+Mutation retries can include a UUID `operationId` on `svn_update`, `svn_commit` (including prepare),
+`eol_fix_verified`, and `svn_resolve`. The server binds that ID to normalized inputs and stores a
+bounded receipt outside the working copy. An identical retry replays the prior result after a client
+timeout or MCP restart; a concurrent or changed request with the same ID is refused. The receipt is
+local to one machine, not a distributed lock between machines. `SVN_MCP_OPERATION_DIR` can relocate
+the store when an operator needs a different profile-data location.
+The resolved store path is refused when it sits inside any SVN working copy. Terminal receipts and
+orphan lock/temp files are pruned within fixed count, byte, age, and record-size limits; retained
+unfinished or unreadable records are never deleted to make room, so new operations fail closed when
+those records exhaust capacity.
+
 Repositories can make EOL handling automatic for new files:
 
 ```json

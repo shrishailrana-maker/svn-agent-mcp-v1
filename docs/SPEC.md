@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.30 — public implementation contract. Single source of truth.**
+**Spec version 1.31 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -191,6 +191,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
 | `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 25 canonical tools), `docs` (8), or `review` (11) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
+| `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
 
 ### 6.3 Path & cwd rules
 
@@ -242,6 +243,21 @@ expired, wrong-scope, or wrong-kind identifiers return typed errors. Neither tok
 server restart or stores repository evidence outside server memory.
 Conflict evidence uses an independent `conflictCursor`, pages at most 100 explicit paths, and always
 reports total count and truncation. This keeps safety evidence reachable without unbounded receipts.
+
+Mutation `operationId` values are distinct from process-local read evidence. Update, commit/prepare,
+EOL repair, and conflict resolution accept an optional UUID that is bound to normalized request
+inputs and persisted in a bounded host-local store outside every working copy. Identical terminal
+requests replay their compact receipt after process restart. Concurrent reuse, changed inputs,
+unreadable records, and incomplete receipts fail closed. An unfinished stale commit may be recovered
+only from clean scoped status plus matching post-start SVN history; other stale outcomes remain
+explicitly ambiguous and are never re-executed automatically. Unfinished receipts are retained.
+Abandoned receipt-file locks are reclaimed after 30 seconds; live contention returns a typed
+`OPERATION_STORE_FAILED` refusal rather than throwing through the MCP boundary.
+The physical receipt directory is refused under any `.svn` working-copy ancestor. Terminal receipts
+and stale orphan lock/temp files are pruned within the configured fixed record, byte, age, and
+per-record caps. In-progress, unreadable, and fresh orphan records are retained; if they exhaust a
+cap, a new operation is refused rather than deleting ambiguity evidence.
+These records coordinate retries on one host only and are not a distributed lock between machines.
 
 ### 6.5 Tool profiles
 
@@ -524,7 +540,7 @@ under that directory. The expansion is capped at 500 paths, physically rechecked
 containment, sorted, returned as `expanded_paths`, and subjected to every normal guard. A clean
 directory returns `NOTHING_TO_COMMIT`. Without this flag, directory-node behavior is unchanged.
 
-**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision? }` *(mutating update; refused under READONLY; never commits)*
+**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision?, operationId?: UUID }` *(mutating update; refused under READONLY; never commits)*
 One call preflights root, directory, containment, expansion, and never-commit guards, records scoped
 local status, runs `svn update -r <revision> --accept postpone -- <paths...>`, refuses a changed
 expected remote HEAD, refuses any update result outside the explicit file or directory scope, stops
@@ -541,7 +557,7 @@ The hidden `svn_prepare_commit` route has the same implementation for known full
 It is omitted from discovery so preparation and later safe-commit orchestration can share the one
 canonical `svn_commit` schema.
 
-**`eol_fix_verified`** — `{ cwd?, path?: string, paths?: string[], target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false }` *(mutating; refused under READONLY)*
+**`eol_fix_verified`** — `{ cwd?, path?: string, paths?: string[], target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false, operationId?: UUID }` *(mutating; refused under READONLY)*
 One call = read `svn:eol-style`, infer the target (`native` → platform native, `LF` → lf,
 `CRLF` → crlf, no property → platform native), execute the real converter via `execFile`
 (`unix2dos` for crlf / `dos2unix` for lf; `--remove-bom` when `removeBom`) on one file,
@@ -572,7 +588,7 @@ scope are backed up, converted, and content-hash verified before SVN scheduling.
 all converted files and prevents the add. Binary files and `eolExclude` globs (defaulting to
 `**/*.patch` and `**/*.diff`) are skipped and reported.
 
-**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false }`
+**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -605,7 +621,7 @@ The legacy `svn_move`, `svn_rename`, and `svn_copy` routes remain callable in th
 compatibility but are omitted from tool discovery. They have the same guards and behavior as the
 corresponding `svn_path_change` action.
 
-**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, maxItems?, cursor?, taskPaths?, targetOverlapOnly? }`
+**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, maxItems?, cursor?, taskPaths?, targetOverlapOnly?, operationId?: UUID }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
 requirement in §5.2 remains the caller's responsibility). argv:
 `svn update [-r <revision>] --accept postpone [paths…]`. Revision ranges are refused. An optional
@@ -635,7 +651,7 @@ requires `dryRun:false` and `riskAck:true`; directories additionally require
 `allowRecursive:true`. The working-copy root is always refused, `--force` is never emitted, and a
 successful schedule-delete is followed by scoped status verification for `D` entries.
 
-**`svn_resolve`** — `{ cwd?, path: string, accept: "working"|"mine-full"|"theirs-full"|"base" }`
+**`svn_resolve`** — `{ cwd?, path: string, accept: "working"|"mine-full"|"theirs-full"|"base", operationId?: UUID }`
 argv: `svn resolve --accept <accept> <path>`. Single path; `accept` has **no default** — the
 caller must state the resolution. Intended only after an operator asked for conflict resolution.
 The legacy `svn_resolved` route remains callable in the full profile as a deprecated compatibility
@@ -808,6 +824,17 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.31 / Unreleased — 2026-08-02
+
+- Adds optional durable UUID operation receipts for update, commit/prepare, EOL repair, and conflict
+  resolution without adding advertised schemas.
+- Binds each ID to normalized inputs, replays identical terminal results across MCP restarts, and
+  refuses concurrent, mismatched, unreadable, incomplete, or ambiguous stale operations.
+- Allows narrowly proven commit recovery from clean scoped status and matching post-start history;
+  unfinished receipts are never automatically removed or blindly re-executed.
+- Physically excludes working-copy storage, cleans bounded terminal/orphan evidence, and refuses new
+  work rather than pruning protected ambiguous records when store capacity is exhausted.
 
 ### Spec 1.30 / Unreleased — 2026-08-02
 

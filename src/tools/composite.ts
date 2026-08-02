@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { resolveCommitScope } from "../commitScope.js";
+import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import { converterForEolTarget, convertEol, isBinaryKind, normalizeEolTarget, normalizedContentHash, sniffEol } from "../eol.js";
 import {
@@ -278,7 +279,31 @@ export async function svnPrepareCommit(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
+  operationId?: string;
 }): Promise<ToolEnvelope> {
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const cwd = resolveCwd(input.cwd);
+    return withDurableOperation({
+      operationId,
+      kind: "svn_prepare_commit",
+      fingerprint: stableOperationFingerprint({
+        kind: "svn_prepare_commit",
+        cwd: pathIdentityKey(cwd),
+        paths: normalizedCompositePaths(cwd, input.paths),
+        revision: input.revision,
+        expectedRemoteHead: input.expectedRemoteHead ?? null,
+        lineLimit: input.lineLimit ?? null,
+        allowRoot: input.allowRoot ?? false,
+        allowDirectoryTargets: input.allowDirectoryTargets ?? false,
+        expandDescendants: input.expandDescendants ?? false,
+        requireUniformRevision: input.requireUniformRevision ?? false
+      }),
+      command: "svn commit --prepare",
+      cwd,
+      execute: () => svnPrepareCommit(coreInput)
+    });
+  }
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
     return prepareCommitFailure(failEnvelope("svn_prepare_commit", cwd, "READONLY instance"), "READONLY");
@@ -448,6 +473,7 @@ export async function svnCommitWorkflow(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
+  operationId?: string;
 }): Promise<ToolEnvelope> {
   if (input.operation === "prepare") {
     if (!input.revision) {
@@ -465,7 +491,8 @@ export async function svnCommitWorkflow(input: {
       ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
       ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
       ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
-      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
+      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+      ...(input.operationId === undefined ? {} : { operationId: input.operationId })
     });
   }
   if (input.message === undefined) {
@@ -478,7 +505,8 @@ export async function svnCommitWorkflow(input: {
     ...(input.riskAck === undefined ? {} : { riskAck: input.riskAck }),
     ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
     ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
-    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants })
+    ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+    ...(input.operationId === undefined ? {} : { operationId: input.operationId })
   });
 }
 
@@ -511,7 +539,29 @@ export async function eolFixVerified(input: {
   removeBom?: boolean;
   dryRun?: boolean;
   allowLarge?: boolean;
+  operationId?: string;
 }): Promise<ToolEnvelope> {
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const cwd = resolveCwd(input.cwd);
+    const requested = input.paths ?? (input.path ? [input.path] : []);
+    return withDurableOperation({
+      operationId,
+      kind: "eol_fix_verified",
+      fingerprint: stableOperationFingerprint({
+        kind: "eol_fix_verified",
+        cwd: pathIdentityKey(cwd),
+        paths: normalizedCompositePaths(cwd, requested),
+        target: input.target ?? null,
+        removeBom: input.removeBom ?? true,
+        dryRun: input.dryRun ?? false,
+        allowLarge: input.allowLarge ?? false
+      }),
+      command: "eol_fix_verified",
+      cwd,
+      execute: () => eolFixVerified(coreInput)
+    });
+  }
   const requested = input.paths ?? (input.path ? [input.path] : []);
   const cwd = resolveCwd(input.cwd);
   if (input.path && input.paths) {
@@ -699,4 +749,8 @@ function pathIsFile(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizedCompositePaths(cwd: string, paths: string[]): string[] {
+  return paths.map((candidate) => pathIdentityKey(path.resolve(cwd, candidate))).sort();
 }

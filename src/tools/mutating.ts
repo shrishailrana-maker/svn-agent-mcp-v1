@@ -26,6 +26,7 @@ import {
 } from "../guards.js";
 import { parseCommittedRevision } from "../parse/commitText.js";
 import { parseUpdateText } from "../parse/updateText.js";
+import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
 import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 import {
@@ -35,6 +36,7 @@ import {
   revisionSelectorError,
   scopedStatusMap,
   svnDiff,
+  svnLog,
   svnStatus
 } from "./readonly.js";
 
@@ -227,7 +229,31 @@ export async function svnCommit(input: {
   allowRoot?: boolean;
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
+  operationId?: string;
 }): Promise<ToolEnvelope> {
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const cwd = resolveCwd(input.cwd);
+    const fingerprint = stableOperationFingerprint({
+      kind: "svn_commit",
+      cwd: pathIdentityKey(cwd),
+      paths: normalizedOperationPaths(cwd, input.paths),
+      messageHash: createHash("sha256").update(normalizedCommitMessage(input.message)).digest("hex"),
+      riskAck: input.riskAck ?? false,
+      allowRoot: input.allowRoot ?? false,
+      allowDirectoryTargets: input.allowDirectoryTargets ?? false,
+      expandDescendants: input.expandDescendants ?? false
+    });
+    return withDurableOperation({
+      operationId,
+      kind: "svn_commit",
+      fingerprint,
+      command: "svn commit",
+      cwd,
+      execute: () => svnCommit(coreInput),
+      recoverStale: ({ createdAt }) => recoverCommittedOperation(coreInput, createdAt)
+    });
+  }
   const guard = await mutatingPathGuard("svn commit", input.cwd, input.paths, { requireExisting: false });
   if (!guard.ok) {
     return guard.envelope;
@@ -424,7 +450,31 @@ export async function svnUpdate(input: {
   taskPaths?: string[];
   targetOverlapOnly?: boolean;
   depth?: "empty";
+  operationId?: string;
 }): Promise<ToolEnvelope> {
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const cwd = resolveCwd(input.cwd);
+    const fingerprint = stableOperationFingerprint({
+      kind: "svn_update",
+      cwd: pathIdentityKey(cwd),
+      paths: normalizedOperationPaths(cwd, input.paths ?? []),
+      updateAll: input.updateAll ?? false,
+      revision: input.revision ?? null,
+      expectedRemoteHead: input.expectedRemoteHead ?? null,
+      taskPaths: normalizedOperationPaths(cwd, input.taskPaths ?? []),
+      targetOverlapOnly: input.targetOverlapOnly ?? false,
+      depth: input.depth ?? null
+    });
+    return withDurableOperation({
+      operationId,
+      kind: "svn_update",
+      fingerprint,
+      command: "svn update",
+      cwd,
+      execute: () => svnUpdate(coreInput)
+    });
+  }
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) {
     return failEnvelope("svn update", cwd, "READONLY instance");
@@ -669,7 +719,25 @@ export async function svnResolve(input: {
   cwd?: string;
   path: string;
   accept: "working" | "mine-full" | "theirs-full" | "base";
+  operationId?: string;
 }): Promise<ToolEnvelope> {
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const cwd = resolveCwd(input.cwd);
+    return withDurableOperation({
+      operationId,
+      kind: "svn_resolve",
+      fingerprint: stableOperationFingerprint({
+        kind: "svn_resolve",
+        cwd: pathIdentityKey(cwd),
+        path: normalizedOperationPaths(cwd, [input.path])[0],
+        accept: input.accept
+      }),
+      command: "svn resolve",
+      cwd,
+      execute: () => svnResolve(coreInput)
+    });
+  }
   const guard = await mutatingPathGuard("svn resolve", input.cwd, [input.path], { requireExisting: true });
   if (!guard.ok) {
     return guard.envelope;
@@ -1115,6 +1183,89 @@ export function statTargetForMutation(
 
 function writeMessageTemp(prefix: string, message: string): { dir: string; file: string } {
   return writeSecureTemp(prefix, "message.txt", normalizeMessageFile(message));
+}
+
+function normalizedOperationPaths(cwd: string, paths: string[]): string[] {
+  return paths.map((candidate) => pathIdentityKey(path.resolve(cwd, candidate))).sort();
+}
+
+function normalizedCommitMessage(message: string): string {
+  return normalizeMessageFile(message).trimEnd();
+}
+
+async function recoverCommittedOperation(input: {
+  cwd?: string;
+  paths: string[];
+  message: string;
+  riskAck?: boolean;
+  allowRoot?: boolean;
+  allowDirectoryTargets?: boolean;
+  expandDescendants?: boolean;
+}, createdAt: number): Promise<ToolEnvelope | null> {
+  if (input.expandDescendants) return null;
+  const cwd = resolveCwd(input.cwd);
+  if (input.paths.some((candidate) => {
+    try {
+      return fs.statSync(path.resolve(cwd, candidate)).isDirectory();
+    } catch {
+      return false;
+    }
+  })) {
+    return null;
+  }
+
+  const status = await svnStatus({ cwd, paths: input.paths });
+  if (!status.ok || status.changed_paths.length > 0 || status.conflicts.length > 0) return null;
+  const expectedMessage = normalizedCommitMessage(input.message);
+  let recoveredRevision: number | null = null;
+  for (const target of input.paths) {
+    const history = await svnLog({ cwd, paths: [target], limit: 1, verbose: true });
+    const entry = (history.entries as Array<{
+      rev: number;
+      date: string;
+      msg: string;
+      changed_paths: Array<{ path: string; status: string }>;
+    }> | undefined)?.[0];
+    if (!history.ok || !entry || normalizedCommitMessage(entry.msg) !== expectedMessage
+        || entry.changed_paths.length === 0 || !Number.isFinite(Date.parse(entry.date))
+        || Date.parse(entry.date) < createdAt - 60_000) {
+      return null;
+    }
+    if (recoveredRevision !== null && entry.rev !== recoveredRevision) return null;
+    recoveredRevision = entry.rev;
+  }
+  if (recoveredRevision === null) return null;
+
+  const context = await getWcContext(input.cwd, input.paths);
+  if (!context.ok) return null;
+  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.paths);
+  if (!resolved.ok) return null;
+  const version = await runSvnVersion(context.wcRoot, context.cwd);
+  const versionState = version.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
+  const committedPaths = resolved.paths.map((target) => repoRelativePath(target, context.wcRoot));
+  return {
+    ...createEnvelope({
+      ok: true,
+      command: "svn commit (recovered from history)",
+      cwd: context.cwd,
+      revision: recoveredRevision,
+      note: "commit recovered from matching post-start SVN history and clean scoped status"
+    }),
+    committed_revision: recoveredRevision,
+    committed_paths: committedPaths,
+    explicit_paths: committedPaths,
+    committed_count: committedPaths.length,
+    path_count: committedPaths.length,
+    remote_head_revision: recoveredRevision,
+    eol_verdict: "not_checked",
+    content_hashes: hashCommitTargets(resolved.paths, context.wcRoot),
+    content_hashes_truncated: false,
+    post_status: [],
+    post_status_clean: true,
+    working_copy_mixed: versionState?.mixed ?? null,
+    revision_range: versionState?.range ?? null,
+    risk_signals: []
+  };
 }
 
 function writeSecureTemp(prefix: string, filename: string, value: string): { dir: string; file: string } {

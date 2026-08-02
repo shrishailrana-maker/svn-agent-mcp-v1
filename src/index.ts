@@ -78,12 +78,14 @@ export const advancedInputNames = {
   svn_status: ["afterCursor", "conflictCursor"],
   svn_snapshot: ["afterCursor", "conflictCursor"],
   svn_diff: ["file", "operationId"],
+  eol_fix_verified: ["operationId"],
   svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
-  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly"],
+  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly", "operationId"],
   svn_commit: [
     "operation", "revision", "expectedRemoteHead", "lineLimit", "requireUniformRevision",
-    "expandDescendants", "allowRoot", "allowDirectoryTargets"
-  ]
+    "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId"
+  ],
+  svn_resolve: ["operationId"]
 } as const;
 
 const docsToolNames = [
@@ -772,13 +774,14 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
     if (args.file !== undefined) {
       extras.file = validatedPath("file", args.file);
     }
-    if (args.operationId !== undefined) {
-      if (typeof args.operationId !== "string"
-        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args.operationId)) {
-        throw new McpError(ErrorCode.InvalidParams, "operationId must be a UUID");
-      }
-      extras.operationId = args.operationId;
+  }
+  if (["svn_diff", "svn_update", "svn_commit", "svn_prepare_commit", "eol_fix_verified", "svn_resolve", "svn_resolved"]
+      .includes(name) && args.operationId !== undefined) {
+    if (typeof args.operationId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args.operationId)) {
+      throw new McpError(ErrorCode.InvalidParams, "operationId must be a UUID");
     }
+    extras.operationId = args.operationId;
   }
   if (name === "svn_log") {
     copyOptionalBoolean(extras, args, "changedPathsSummary");

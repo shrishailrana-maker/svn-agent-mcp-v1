@@ -201,6 +201,9 @@ function receiptPayload(
     const error = compactError(payload, request);
     return {
       ok: false,
+      ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+      ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+      ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
       ...(payload.verdict ? { verdict: payload.verdict } : {}),
       ...(error.note ? { note: error.note } : {}),
       ...(error.recoveryTool ? { recoveryTool: error.recoveryTool } : {}),
@@ -241,6 +244,8 @@ function receiptPayload(
     conflictCount: payload.conflicts.length,
     ...(files.length > 0 ? { added, removed } : {}),
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     ...(nextCursor ? { nextCursor } : {})
   };
   if (tool === "svn_status" || tool === "svn_snapshot") {
@@ -270,7 +275,8 @@ const PROJECTION_SAFETY_FIELDS = [
   "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts", "conflictCount",
   "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
   "hasMore", "recoveryTool", "remediation",
-  "snapshotToken", "unchangedSinceCursor", "changedSinceCursor"
+  "snapshotToken", "unchangedSinceCursor", "changedSinceCursor",
+  "operationId", "idempotentReplay", "operationRecovered"
 ] as const;
 
 function applyFieldProjection(
@@ -362,6 +368,9 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
   const submittedPathCount = stringArray(request.paths).length;
   return {
     ok: false,
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     ...(payload.code ? { code: payload.code } : {}),
     ...(guardCode ? { guardCode } : {}),
     note: payload.note || "svn command failed",
@@ -1027,6 +1036,9 @@ function compactPrepareCommit(payload: ToolEnvelope, request: Record<string, unk
     finalCommitScope: finalScope,
     updatedPaths,
     unexpectedTouchedPaths: unexpected,
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     ...(allFinalScope.length > finalScope.length
       ? { finalCommitScopeTruncated: true, finalCommitScopeCount: allFinalScope.length }
       : {}),
@@ -1054,6 +1066,9 @@ function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
     resultingRevision: payload.resulting_revision,
     ...(payload.observed_remote_head !== undefined ? { remoteHeadRevision: payload.observed_remote_head } : {}),
     conflictCount: payload.conflicts.length,
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     finalCommitScope: scope,
     ...(allScope.length > scope.length ? { finalCommitScopeTruncated: true, pathCount: allScope.length } : {}),
     ...(unexpected.length > 0 ? { unexpectedTouchedPaths: unexpected } : {}),
@@ -1103,6 +1118,9 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   const receipt: Record<string, unknown> = {
     ok: true,
     action: tool === "svn_path_change" ? request.action : tool.replace(/^svn_/, ""),
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     ...(source !== undefined ? { source } : {}),
     ...(target !== undefined ? { target } : {}),
     ...(targetPath !== undefined ? { path: targetPath } : {}),
@@ -1242,6 +1260,8 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
     return {
       ok: payload.ok,
       action: "eol_fix_verified",
+      ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+      ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
       counts: payload.counts,
       ...(failures.length > 0 ? { failures } : {}),
       ...(files.length > failures.length && failures.length >= 100 ? { failuresTruncated: true } : {}),
@@ -1265,6 +1285,8 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
   return {
     ok: true,
     action: "eol_fix_verified",
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
     ...(request.path
       ? { path: receiptPathValue(request.path, payload.cwd, stringValue(payload.wc_root) || payload.cwd) }
       : {}),

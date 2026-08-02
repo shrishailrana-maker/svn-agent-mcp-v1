@@ -36,6 +36,11 @@ All notable changes to the SVN MCP are recorded here.
   postponement, optional remote-HEAD guarding, unexpected-path refusal, and a final precommit
   receipt without committing. A hidden `svn_prepare_commit` route preserves explicit compatibility
   without adding an advertised schema.
+- Added durable UUID operation receipts for update, commit/prepare, EOL repair, and conflict
+  resolution. Identical retries replay compact results across MCP restarts; concurrent, mismatched,
+  corrupt, and ambiguous stale operations fail closed instead of repeating a mutation. Abandoned
+  receipt locks are reclaimed after a bounded interval while active lock contention returns a typed
+  failure.
 
 ### Changed
 
