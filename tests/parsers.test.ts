@@ -96,6 +96,7 @@ describe("SVN text and XML parsers", () => {
 </info>`);
 
     expect(parsed[0]).toEqual({
+      path: ".",
       url: "file:///repo/trunk",
       repo_root: "file:///repo",
       wc_root: "C:\\work\\repo",

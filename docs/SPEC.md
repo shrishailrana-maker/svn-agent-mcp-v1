@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.31 — public implementation contract. Single source of truth.**
+**Spec version 1.32 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -44,7 +44,7 @@ working copy multiplies the cost.
 
 | Pain | Fix | Where in this doc |
 |---|---|---|
-| P1: 5–8 round trips per commit | Composite MCP tools: `svn_precommit` + `svn_commit` = 2 calls total | §8.3, §8.4 |
+| P1: 5–8 round trips per commit | `svn_precommit` + `svn_commit` = 2 calls; bound `operation:"safe"` = 1 call | §8.3, §8.4 |
 | P1: permission-prompt stalls | Allowlist read-only tools; only mutations prompt | §10.4 |
 | P1: policy re-derivation + drift | Policy baked into the MCP as defaults & guards; read-only clients hard-READONLY | §7 |
 | P1: raw-diff dumping into context | Structured JSON envelope, per-file ± counts, line-capped excerpts | §6.4, §8.3 |
@@ -102,6 +102,7 @@ workflow).
 | D12 | ESM TypeScript, strict mode; deps only `@modelcontextprotocol/sdk`, `zod`, `fast-xml-parser` | Small, auditable |
 | D13 | Server registered under the name **`svn`**; tools named `svn_*` / `eol_*` | Short, unambiguous |
 | D14 | External SVN MCPs are reference material, not the base implementation | Borrow diagnostics/docs lessons; reject force flags, optional broad commits, shell execution, credential env vars, and repo-specific registration |
+| D15 | Cross-call safety evidence uses expiring path-bound tokens; durable mutation IDs remain host-local and fail closed | Detect concurrent changes without persisting repository content or adding advertised tool schemas |
 
 ## 5. Generic SVN policy inlined
 
@@ -151,6 +152,9 @@ no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
     runner.ts         # no-shell process wrappers: timeout, bundled-bin lookup, streaming, redaction
     envelope.ts       # Envelope type + builders (ok/fail)
     guards.ts         # G1–G7 guard framework (§7)
+    evidenceStore.ts  # bounded process-local cursor and workflow evidence
+    operationStore.ts # durable host-local idempotency receipts
+    workflowState.ts  # canonical status/revision/content identity binding
     parse\
       statusXml.ts, infoXml.ts, logXml.ts   # --xml parsers (fast-xml-parser)
       diffText.ts     # unified-diff → per-file {added, removed}; lineLimit excerpting
@@ -241,6 +245,14 @@ and capped at 512 live tokens. Diff evidence is process-local, bound to operatio
 scope, valid for 10 minutes, capped at 2 MiB per operation, 32 operations, and 16 MiB total. Invalid,
 expired, wrong-scope, or wrong-kind identifiers return typed errors. Neither token family survives a
 server restart or stores repository evidence outside server memory.
+Workflow evidence uses the same bounded process-local store but distinct kinds and scope binding.
+An explicit-file baseline records status, base revision, kind, SHA256 content identity, and a
+canonical hash of all SVN properties before editing. A READY precommit token additionally binds
+repository policy, diff identity, EOL policy,
+and observed remote revision. Invalid, expired, wrong-kind, wrong-scope, changed-policy, changed-file,
+or changed-remote evidence is refused before commit. Directory baselines are refused because they
+cannot prove descendant identity. Safe-operation stage detail is paged from bounded memory and is
+not included in the normal receipt.
 Conflict evidence uses an independent `conflictCursor`, pages at most 100 explicit paths, and always
 reports total count and truncation. This keeps safety evidence reachable without unbounded receipts.
 
@@ -493,12 +505,15 @@ credentials.
 
 ### 8.3 Composite tools (the P1 killers)
 
-**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor?, afterCursor? }`
+**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor?, afterCursor?, captureBaseline?: boolean = false }`
 Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
 items in one response. It performs no mutation and is available under READONLY. Snapshot tokens use
 the same `afterCursor`/`NO_CHANGE` contract as status and additionally bind revision/head/range state.
+`captureBaseline:true` requires one to 500 explicit files and returns `baseline_token`, expiry, and
+path count. The opaque token binds exact status, base revision, file kind, SHA256 content identity,
+repository policy, remote revision, working copy, and scope. Directories are refused.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false }` *(read-only; allowed under READONLY)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
@@ -539,8 +554,15 @@ With `expandDescendants:true`, each explicit existing directory is replaced by a
 under that directory. The expansion is capped at 500 paths, physically rechecked for working-copy
 containment, sorted, returned as `expanded_paths`, and subjected to every normal guard. A clean
 directory returns `NOTHING_TO_COMMIT`. Without this flag, directory-node behavior is unchanged.
+A READY result stores and returns `precommit_token` plus expiry. The token is bound to the exact
+resolved scope, current status, base revisions, content and SVN property hashes, repository/EOL policy identities,
+diff identity, and observed remote revision. Supplying `baselineToken` also validates the baseline
+scope/policy and returns bounded paths changed since that pre-edit state. The token never bypasses
+commit guards and expires with process-local evidence. Path state is captured before and after the
+checks; a concurrent local change refuses token issuance. Commit recomputes the bound diff while
+confirming the path state stays stable.
 
-**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision?, operationId?: UUID }` *(mutating update; refused under READONLY; never commits)*
+**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision?, operationId?: UUID }` *(mutating update; refused under READONLY; never commits)*
 One call preflights root, directory, containment, expansion, and never-commit guards, records scoped
 local status, runs `svn update -r <revision> --accept postpone -- <paths...>`, refuses a changed
 expected remote HEAD, refuses any update result outside the explicit file or directory scope, stops
@@ -551,11 +573,32 @@ The receipt includes `requested_revision`, `resulting_revision`, `revision_range
 `updated_paths`, `unexpected_touched_paths`, and `final_commit_scope`. The exact numeric revision is
 required so a later repository commit cannot move the prepared slice beyond the intended build or
 release revision.
+When `baselineToken` is supplied, prepare also refuses any same-path local/remote overlap detected
+by the update, including a clean SVN merge that did not produce a text conflict.
 Compact/receipt output keeps at most 25 paths per prepare collection and reports the corresponding
 total and truncation flag. Full mode retains the complete bounded evidence.
 The hidden `svn_prepare_commit` route has the same implementation for known full-profile callers.
 It is omitted from discovery so preparation and later safe-commit orchestration can share the one
 canonical `svn_commit` schema.
+
+**`svn_commit operation:"safe"`** — `{ cwd?, paths: string[], operation: "safe", message: string, revision: numeric-string, expectedRemoteHead: integer, baselineToken?: UUID, operationId: UUID, riskAck?, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision? }` *(mutating; refused under READONLY)*
+One durable operation performs: guarded pinned prepare → baseline overlap/conflict refusal → batch
+verified EOL repair only when precommit reports explicit failing files → bound READY precommit →
+guarded commit → pinned update of the committed scope to the committed revision → final scoped
+snapshot. Invalid messages, missing evidence, changed policy/content/remote revision, unexpected
+update paths, same-path overlap, and postponed conflicts stop before commit. Ordinary commit guards
+remain authoritative.
+When `baselineToken` is omitted, safe mode captures the current explicit-file state immediately
+before update and uses local SVN status plus remote update touches for collision detection. A
+caller-supplied pre-edit token additionally proves which content changed since editing began.
+Paths already scheduled for addition are not valid `svn update` operands. Safe mode skips only
+those operands during its pinned update, still verifies the expected repository HEAD, and keeps
+every scheduled-added path in the exact precommit and commit scope.
+The compact result reports only verdict, committed revision/paths, final scoped cleanliness,
+scope-uniform revision evidence, durable operation ID, and an optional detail evidence ID. Detailed
+stage envelopes stay in the bounded process-local evidence store. `operation:"detail"` with the
+same explicit paths, returned `detailOperationId`, decimal cursor, and bounded `maxChars` pages that
+evidence without rerunning SVN. The safe and detail modes add no advertised tool.
 
 **`eol_fix_verified`** — `{ cwd?, path?: string, paths?: string[], target?: "crlf"|"lf", removeBom?: boolean = true, dryRun?: boolean = false, allowLarge?: boolean = false, operationId?: UUID }` *(mutating; refused under READONLY)*
 One call = read `svn:eol-style`, infer the target (`native` → platform native, `LF` → lf,
@@ -566,8 +609,9 @@ using absolute paths; `cwd` is optional and mainly for relative paths.
 Extra: `{ before: {kind, has_bom}, after: {kind, has_bom}, target, eol_style, converter,
 verification_command, diff_ignored_eol:true, pure_eol_churn: boolean }` —
 `pure_eol_churn:true` is the proof the fix changed nothing but line endings. `dryRun:true`
-reports `before` + inferred converter/target, touches nothing. Never invoked implicitly by any
-other tool (fixing is always an explicit caller decision). Missing paths, non-files, binary files,
+reports `before` + inferred converter/target, touches nothing. Safe-commit mode may invoke the same
+batch operation only after precommit names explicit EOL failures; ordinary tools never repair
+tracked files implicitly. Missing paths, non-files, binary files,
 and `sniff:"skipped-too-large"` files return structured refusals; oversized files require
 explicit `allowLarge:true`. No PowerShell scripts, byte rewrites, pipes, redirects, or shell
 quoting are involved. `svn_add` may apply the same verified conversion transactionally when the
@@ -588,7 +632,7 @@ scope are backed up, converted, and content-hash verified before SVN scheduling.
 all converted files and prevents the add. Binary files and `eolExclude` globs (defaulting to
 `**/*.patch` and `**/*.diff`) are skipped and reported.
 
-**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
+**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
 ≥1 `- ` bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -607,6 +651,9 @@ are reported by the post-status residue.
 With `expandDescendants:true`, existing directory inputs expand to the bounded, sorted set of all
 currently changed descendants. The exact expanded list is returned and every descendant receives
 the same containment, never-commit, status, conflict, and risk checks as an explicitly named path.
+When `precommitToken` is supplied, commit first proves that exact scope, file state, repository
+policy, and observed remote revision still match the READY precommit evidence. A mismatch is a typed
+refusal; the token never substitutes for G1-G6.
 
 **`svn_path_change`** — `{ cwd?, action: "move"|"rename"|"copy", src: string, dest: string }`
 argv: `svn <move|copy> --parents <src> <dest>`; `rename` uses SVN's `move` operation. Working-copy
@@ -621,7 +668,7 @@ The legacy `svn_move`, `svn_rename`, and `svn_copy` routes remain callable in th
 compatibility but are omitted from tool discovery. They have the same guards and behavior as the
 corresponding `svn_path_change` action.
 
-**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, maxItems?, cursor?, taskPaths?, targetOverlapOnly?, operationId?: UUID }`
+**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, baselineToken?: UUID, maxItems?, cursor?, taskPaths?, targetOverlapOnly?, operationId?: UUID }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
 requirement in §5.2 remains the caller's responsibility). argv:
 `svn update [-r <revision>] --accept postpone [paths…]`. Revision ranges are refused. An optional
@@ -638,6 +685,10 @@ Top-folder summaries are capped at 25 with explicit total/truncation fields. Con
 own 100-item `conflictCursor` pages and are never silently omitted.
 Any nonzero or past-end changed-path cursor retains `changedCount`, `changedPathCount`, `pageOffset`,
 and bounded top-folder context; past-end pages add `cursorPastEnd:true`.
+`baselineToken` requires the same explicit files used to capture the baseline. The update returns a
+bounded per-path receipt with baseline revision, local modification before update, remote touch,
+same-path collision, postponed conflict, and remediation. It does not change SVN's successful
+merge semantics, but prepare and safe modes treat a reported collision as a commit blocker.
 
 **`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true }`
 `dryRun:true` (default) = preview: returns scoped status + per-file ± counts of what would be
@@ -824,6 +875,15 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.32 / v1.4.0 — 2026-08-02
+
+- Adds explicit-file pre-edit baseline tokens and path-level local/remote collision receipts on
+  pinned updates without adding an advertised tool schema.
+- Makes READY precommit evidence reusable through a short-lived token bound to exact scope,
+  content, status, base revisions, policy, diff identity, EOL verdict, and remote revision.
+- Adds durable `svn_commit operation:"safe"` orchestration plus bounded cursor-paged detail,
+  retaining every existing guard and stopping before commit on changed or overlapping evidence.
 
 ### Spec 1.31 / Unreleased — 2026-08-02
 
@@ -1298,7 +1358,7 @@ work grounded in practical workflow friction, not abstract SVN theory.
 |---:|---|---|---|
 | 1 | Mixed-revision confusion: a working-copy root can be at an older BASE revision while children are newer. | `svn_info` reports parsed revision ranges, local modification flags, remote HEAD, and stale-base state; release workflows can set `svn_precommit requireUniformRevision:true`. | Ordinary workflows still decide whether mixed revision is acceptable. |
 | 2 | `svn log <wc-root>` can stop at the root node's old peg revision and hide newer commits. | v0.1.7 resolves working-copy targets to repository URLs and returns `target_mode:"repository-url"`. | URL fallback can fail if `svn info` cannot resolve a URL; then the MCP returns `working-copy-path` mode. |
-| 3 | Concurrent-client overlap: another actor may commit while local work exists; update can merge `G` files silently. | `svn_update` requires explicit paths or `updateAll:true`, supports a numeric pinned revision plus optional expected-HEAD guard, and always uses `--accept postpone`; status/conflicts are structured. | Semantic overlap still needs review by the operator or caller. |
+| 3 | Concurrent-client overlap: another actor may commit while local work exists; update can merge `G` files silently. | Explicit-file baselines plus `svn_update baselineToken` report same-path overlap even after a clean merge; safe mode can capture current state itself, blocks overlap, pins revisions, and always uses `--accept postpone`. | Ordinary standalone updates without a baseline still require caller review. |
 | 4 | Unversioned files are easy to miss; `svn commit` does not include them automatically. | `svn_status` exposes `?` paths; `svn_precommit` blocks uncommittable paths; `svn_add` is explicit. | Caller must decide which unversioned files belong to the current slice. |
 | 5 | SVN cannot add a child file under a brand-new unversioned parent directory without adding parents first. | `svn_add` uses `--parents --depth empty` for files and schedules needed parent dirs without adding siblings. | Recursive directory adds still require `allowRecursive:true`. |
 | 6 | Commit scope ambiguity: no Git-style staging area; broad commits can include unrelated WIP. | Mutating tools require explicit paths; `svn_commit` verifies each path is changed/scheduled. | "Commit everything" remains unsafe unless the caller intentionally scopes all paths. |

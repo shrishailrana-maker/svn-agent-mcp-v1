@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.3.0`; each source clone can prepare a local runtime under `releases/v1.3.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.4.0`; each source clone can prepare a local runtime under `releases/v1.4.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -180,6 +180,10 @@ bounded log filtering and summaries, and update paging/overlap controls. Snapsho
 working-copy and query bound, process-local, and expire after 15 minutes. Repeating the same status
 or snapshot with `afterCursor` returns a minimal `NO_CHANGE` receipt; changed or safety-relevant
 state returns the current bounded result and a replacement token.
+For multi-client editing, `svn_snapshot captureBaseline:true` on explicit files returns a separate
+pre-edit baseline token. Pass it to `svn_update baselineToken` to receive path-level local-edit,
+remote-touch, conflict, and same-path-collision evidence. Directory baselines are refused because
+directory metadata cannot prove which descendant changed.
 Conflict lists use independent pages of at most 100 paths; `conflictCount`, `conflictsTruncated`, and
 `nextConflictCursor` make omitted pages explicit without inflating every status or update response.
 
@@ -189,6 +193,9 @@ paths. Set `expandDescendants:true` to expand a named directory to its currently
 guard every result, and return the exact expanded scope. Set `allowDirectoryTargets:true` only when
 intentionally committing a directory property or another directory-node-only change.
 `svn_precommit` accepts the same scope controls so its readiness verdict matches the later commit.
+A READY precommit also returns a short-lived `precommitToken` bound to exact path status, base
+revisions, content hashes, repository policy, diff identity, and observed remote revision. Passing
+that token to `svn_commit` makes the commit refuse if the verified state changed in between.
 
 Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
@@ -203,7 +210,23 @@ then runs the normal guarded precommit checks. It never commits. Its compact rec
 resulting revision, conflicts, updated paths, and exact final commit scope. Keeping preparation as
 a mode of the existing commit workflow avoids loading another tool schema.
 
-Mutation retries can include a UUID `operationId` on `svn_update`, `svn_commit` (including prepare),
+`svn_commit operation:"safe"` performs the guarded sequence in one durable call: pinned scoped
+update, baseline collision refusal, automatic verified EOL repair when precommit requests it,
+precommit binding, commit, pinned update to the committed revision, and a final clean scoped
+snapshot. It requires an explicit numeric `revision`, `expectedRemoteHead`, pre-edit
+`baselineToken` when an earlier edit-session baseline is available, valid commit message, explicit
+paths, and UUID `operationId`. Without a token it captures the current explicit-file state before
+update, keeping the common workflow to one call. Its normal response is a compact receipt. Use
+`operation:"detail"` with the returned `detailOperationId` and cursor to
+page bounded stage evidence only when an audit needs it. This adds no advertised tool schema; the
+full profile remains at 25 tools.
+
+Scheduled-added files are not valid `svn update` operands, so safe mode omits only those files from
+the pinned update while still verifying the expected repository HEAD. They remain in the exact
+precommit and commit scope.
+
+Mutation retries can include a UUID `operationId` on `svn_update`, `svn_commit` (including prepare
+and safe mode),
 `eol_fix_verified`, and `svn_resolve`. The server binds that ID to normalized inputs and stores a
 bounded receipt outside the working copy. An identical retry replays the prior result after a client
 timeout or MCP restart; a concurrent or changed request with the same ID is refused. The receipt is

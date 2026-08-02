@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
-import { eolFixVerified, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
+import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
 import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
@@ -43,6 +43,37 @@ describe("SVN tool integration against a temp repository", () => {
 
       const statusOnly = await svnSnapshot({ cwd: fixture.wc, fields: ["counts"] });
       expect(statusOnly).toMatchObject({ ok: true, components: { status: true, info: false } });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("captures a bounded pre-edit baseline for explicit paths", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "baseline.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["baseline.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["baseline.txt"],
+        message: commitMessage("Add baseline fixture")
+      })).ok).toBe(true);
+
+      const baseline = await svnSnapshot({ cwd: fixture.wc, paths: ["baseline.txt"], captureBaseline: true });
+      expect(baseline).toMatchObject({
+        ok: true,
+        baseline_token: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        baseline_expires_at: expect.any(Number),
+        baseline_path_count: 1
+      });
+      expect(await svnSnapshot({ cwd: fixture.wc, captureBaseline: true })).toMatchObject({
+        ok: false,
+        note: "captureBaseline requires explicit paths"
+      });
+      expect(await svnSnapshot({ cwd: fixture.wc, paths: ["."], captureBaseline: true })).toMatchObject({
+        ok: false,
+        code: "BASELINE_FILE_SCOPE_REQUIRED"
+      });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1878,6 +1909,58 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("reports same-path collisions against a captured pre-edit baseline", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "baseline collision peer");
+    try {
+      const relativePath = "collision scope/shared.txt";
+      const localFile = path.join(fixture.wc, relativePath);
+      fs.mkdirSync(path.dirname(localFile), { recursive: true });
+      fs.writeFileSync(localFile, "alpha\r\nbeta\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add collision fixture")
+      })).ok).toBe(true);
+
+      const baseline = await svnSnapshot({ cwd: fixture.wc, paths: [relativePath], captureBaseline: true });
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      const peerFile = path.join(peer, relativePath);
+      fs.writeFileSync(peerFile, "alpha\r\nremote beta\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote collision", "--", peerFile], { cwd: peer });
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+
+      fs.writeFileSync(localFile, "local alpha\r\nbeta\r\n", "utf8");
+      const updated = await svnUpdate({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        baselineToken: String(baseline.baseline_token)
+      });
+
+      expect(updated).toMatchObject({
+        ok: true,
+        baseline_token: baseline.baseline_token,
+        collision: true,
+        collision_paths: [relativePath],
+        recommended_action: "reconcile-and-reverify"
+      });
+      expect(updated.path_states).toEqual([
+        expect.objectContaining({
+          path: relativePath,
+          locally_modified_before_update: true,
+          remotely_changed_during_update: true,
+          same_path_collision: true,
+          conflict_postponed: false
+        })
+      ]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("prepares only explicit commit paths at a pinned revision after remote HEAD advances", async () => {
     const fixture = createTempWorkingCopy();
     const peer = path.join(fixture.root, "prepare peer");
@@ -1987,6 +2070,387 @@ describe("SVN tool integration against a temp repository", () => {
       expect(normalized).toMatchObject({ ok: true, mixed_revision: false });
       const ready = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath], requireUniformRevision: true });
       expect(ready).toMatchObject({ ok: true, verdict: "READY", mixed_revision: false });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds a READY precommit token to the exact verified path state", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "bound commit.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add bound commit fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, "two\r\n", "utf8");
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        name: "custom:bound-state",
+        value: "001"
+      })).ok).toBe(true);
+      const ready = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+      expect(ready).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        precommit_token: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        precommit_expires_at: expect.any(Number)
+      });
+
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        name: "custom:bound-state",
+        value: "1"
+      })).ok).toBe(true);
+      const numericPropertyChanged = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit bound state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(numericPropertyChanged).toMatchObject({ ok: false, code: "PRECOMMIT_STATE_CHANGED" });
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        name: "custom:bound-state",
+        value: " 001 "
+      })).ok).toBe(true);
+      const whitespacePropertyChanged = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit bound state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(whitespacePropertyChanged).toMatchObject({ ok: false, code: "PRECOMMIT_STATE_CHANGED" });
+      expect((await svnPropset({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        name: "custom:bound-state",
+        value: "001"
+      })).ok).toBe(true);
+
+      fs.writeFileSync(path.join(fixture.wc, ".svn-mcp-policy.json"), JSON.stringify({ deny: ["scratch/**"] }), "utf8");
+      const policyChanged = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit bound state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(policyChanged).toMatchObject({ ok: false, code: "PRECOMMIT_POLICY_CHANGED" });
+      fs.rmSync(path.join(fixture.wc, ".svn-mcp-policy.json"));
+
+      fs.writeFileSync(file, "three\r\n", "utf8");
+      const changed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit bound state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(changed).toMatchObject({ ok: false, code: "PRECOMMIT_STATE_CHANGED" });
+
+      fs.writeFileSync(file, "two\r\n", "utf8");
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit bound state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(committed).toMatchObject({
+        ok: true,
+        precommit_token: ready.precommit_token,
+        committed_revision: expect.any(Number)
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds READY evidence to decoded binary SVN property bytes", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "binary property state.txt";
+      const file = path.join(fixture.wc, relativePath);
+      const propertyFile = path.join(fixture.root, "binary-property.bin");
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add binary property fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, "two\r\n", "utf8");
+      fs.writeFileSync(propertyFile, Buffer.from([0, 1, 2, 255]));
+      execFileSync(svnExecutable(), ["propset", "-F", propertyFile, "custom:binary-state", "--", file], { cwd: fixture.wc });
+      const ready = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+      expect(ready).toMatchObject({ ok: true, verdict: "READY" });
+
+      fs.writeFileSync(propertyFile, Buffer.from([0, 1, 3, 255]));
+      execFileSync(svnExecutable(), ["propset", "-F", propertyFile, "custom:binary-state", "--", file], { cwd: fixture.wc });
+      const changed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Commit binary property state"),
+        precommitToken: String(ready.precommit_token)
+      });
+      expect(changed).toMatchObject({ ok: false, code: "PRECOMMIT_STATE_CHANGED" });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds precommit evidence for a newly added path using repository HEAD", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "new bound file.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["new bound file.txt"] })).ok).toBe(true);
+      const ready = await svnPrecommit({ cwd: fixture.wc, paths: ["new bound file.txt"] });
+      expect(ready).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        remote_head_revision: 0,
+        precommit_token: expect.stringMatching(/^[0-9a-f-]{36}$/i)
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs an idempotent safe commit without touching unrelated local edits", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const targetPath = "safe scope/target.txt";
+      const unrelatedPath = "safe scope/unrelated.txt";
+      const target = path.join(fixture.wc, targetPath);
+      const unrelated = path.join(fixture.wc, unrelatedPath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "one\r\n", "utf8");
+      fs.writeFileSync(unrelated, "keep\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [targetPath, unrelatedPath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [targetPath, unrelatedPath],
+        message: commitMessage("Add safe commit fixtures")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(target, "two\n", "utf8");
+      fs.writeFileSync(unrelated, "unrelated local edit\r\n", "utf8");
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc, paths: [targetPath] })).remote_head_revision);
+      const operationId = randomUUID();
+      const committed = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [targetPath],
+        message: commitMessage("Safely update target"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        operationId
+      });
+
+      expect(committed).toMatchObject({
+        ok: true,
+        operation: "safe_commit",
+        verdict: "COMMITTED",
+        operation_id: operationId,
+        committed_revision: expect.any(Number),
+        committed_paths: [targetPath],
+        final_scope_clean: true,
+        scope_uniform: true,
+        baseline_captured_automatically: true,
+        detail_operation_id: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        detail_expires_at: expect.any(Number)
+      });
+      expect(statusByPath((await svnStatus({ cwd: fixture.wc })).changed_paths, fixture.wc).get(unrelatedPath)).toBe("M");
+
+      const replay = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [targetPath],
+        message: commitMessage("Safely update target"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        operationId
+      });
+      expect(replay).toMatchObject({ ok: true, committed_revision: committed.committed_revision, idempotent_replay: true });
+
+      const detail = await svnCommitWorkflow({
+        operation: "detail",
+        cwd: fixture.wc,
+        paths: [targetPath],
+        detailOperationId: String(committed.detail_operation_id),
+        cursor: "0",
+        maxChars: 2048
+      });
+      expect(detail).toMatchObject({ ok: true, operation: "safe_commit_detail", detail_operation_id: committed.detail_operation_id });
+      expect(String(detail.detail)).toContain("precommit");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps safe-commit scope exact when cwd is below the working-copy root", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const rootPath = "root-target.txt";
+      const subdirectory = path.join(fixture.wc, "sub");
+      const decoyPath = "sub/root-target.txt";
+      const rootFile = path.join(fixture.wc, rootPath);
+      const decoyFile = path.join(fixture.wc, decoyPath);
+      fs.mkdirSync(subdirectory, { recursive: true });
+      fs.writeFileSync(rootFile, "root one\r\n", "utf8");
+      fs.writeFileSync(decoyFile, "decoy unchanged\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [rootPath, decoyPath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [rootPath, decoyPath],
+        message: commitMessage("Add subdirectory safe-commit fixtures")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(rootFile, "root two\n", "utf8");
+      const remoteHead = Number((await svnInfo({ cwd: subdirectory, paths: ["../root-target.txt"] })).remote_head_revision);
+      const committed = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: subdirectory,
+        paths: ["../root-target.txt"],
+        message: commitMessage("Safely update parent target"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        operationId: randomUUID()
+      });
+
+      expect(committed).toMatchObject({
+        ok: true,
+        verdict: "COMMITTED",
+        committed_paths: [rootPath],
+        final_scope_clean: true,
+        scope_uniform: true
+      });
+      expect(fs.readFileSync(rootFile, "utf8")).toBe("root two\n");
+      expect(fs.readFileSync(decoyFile, "utf8")).toBe("decoy unchanged\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops a safe commit before mutation when a baseline path changed remotely", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "safe collision peer");
+    try {
+      const relativePath = "safe collision.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add safe collision fixture")
+      })).ok).toBe(true);
+      const baseline = await svnSnapshot({ cwd: fixture.wc, paths: [relativePath], captureBaseline: true });
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      const peerFile = path.join(peer, relativePath);
+      fs.writeFileSync(peerFile, "one\r\nremote two\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote safe collision", "--", peerFile], { cwd: peer });
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+      fs.writeFileSync(file, "local one\r\ntwo\r\n", "utf8");
+
+      const refused = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Refuse colliding safe commit"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        baselineToken: String(baseline.baseline_token),
+        operationId: randomUUID()
+      });
+      expect(refused).toMatchObject({
+        ok: false,
+        operation: "safe_commit",
+        verdict: "COLLISION_DETECTED"
+      });
+      expect((await svnLog({ cwd: fixture.wc, paths: [relativePath], limit: 1 })).entries).toEqual([
+        expect.objectContaining({ rev: remoteHead, msg: "remote safe collision" })
+      ]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes a safe deletion without updating the removed path", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "safe delete.txt";
+      fs.writeFileSync(path.join(fixture.wc, relativePath), "remove me\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add safe delete fixture")
+      })).ok).toBe(true);
+      const baseline = await svnSnapshot({ cwd: fixture.wc, paths: [relativePath], captureBaseline: true });
+      expect((await svnDelete({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        dryRun: false,
+        riskAck: true
+      })).ok).toBe(true);
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc })).remote_head_revision);
+
+      const committed = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Safely delete fixture"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        baselineToken: String(baseline.baseline_token),
+        riskAck: true,
+        operationId: randomUUID()
+      });
+      expect(committed).toMatchObject({
+        ok: true,
+        verdict: "COMMITTED",
+        final_scope_clean: true,
+        scope_uniform: true
+      });
+      expect(fs.existsSync(path.join(fixture.wc, relativePath))).toBe(false);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("safe-commits a newly added file with an internal current-state baseline", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "new safe file.txt";
+      fs.writeFileSync(path.join(fixture.wc, relativePath), "new file\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc })).remote_head_revision);
+      const committed = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Safely add fixture"),
+        revision: String(remoteHead),
+        expectedRemoteHead: remoteHead,
+        operationId: randomUUID()
+      });
+      expect(committed).toMatchObject({
+        ok: true,
+        verdict: "COMMITTED",
+        committed_paths: [relativePath],
+        baseline_captured_automatically: true,
+        final_scope_clean: true,
+        scope_uniform: true
+      });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

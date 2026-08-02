@@ -58,11 +58,13 @@ export const fieldProjectionNames = {
   svn_precommit: [
     "ready", "verdict", "pathCount", "statusCounts", "diff", "eol", "mixedRevision",
     "revisionRange", "guardFailures", "riskSignals", "remediation", "eolCheckComplete",
-    "eolPolicyIdentity"
+    "eolPolicyIdentity", "precommitToken", "precommitExpiresAt", "remoteHeadRevision",
+    "baselineToken", "baselinePathChanges", "remoteHeadChangedSinceBaseline"
   ],
   svn_update: [
     "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision", "remoteHeadRevision",
-    "changedPaths", "counts", "conflicts", "expectedRemoteHead", "observedRemoteHead"
+    "changedPaths", "counts", "conflicts", "expectedRemoteHead", "observedRemoteHead",
+    "baselineToken", "collision", "collisionPaths", "pathStates", "recommendedAction"
   ],
   svn_commit: [
     "revision", "committedRevision", "committedPaths", "committedCount", "pathCount", "baseRevision",
@@ -70,20 +72,23 @@ export const fieldProjectionNames = {
     "postStatusClean", "residue", "warningCode", "warningDetail", "failedRule", "suggestedMessage",
     "verdict", "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision",
     "expectedRemoteHead", "observedRemoteHead", "updatedPaths", "unexpectedTouchedPaths",
-    "finalCommitScope", "conflicts"
+    "finalCommitScope", "conflicts", "precommitToken", "operation", "finalScopeClean", "scopeUniform",
+    "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor"
   ]
 } as const;
 
 export const advancedInputNames = {
   svn_status: ["afterCursor", "conflictCursor"],
-  svn_snapshot: ["afterCursor", "conflictCursor"],
+  svn_snapshot: ["afterCursor", "conflictCursor", "captureBaseline"],
   svn_diff: ["file", "operationId"],
   eol_fix_verified: ["operationId"],
+  svn_precommit: ["baselineToken"],
   svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
-  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly", "operationId"],
+  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly", "operationId", "baselineToken"],
   svn_commit: [
     "operation", "revision", "expectedRemoteHead", "lineLimit", "requireUniformRevision",
-    "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId"
+    "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId", "precommitToken",
+    "baselineToken", "detailOperationId", "cursor", "maxChars"
   ],
   svn_resolve: ["operationId"]
 } as const;
@@ -455,12 +460,14 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths,
-        operation: z.enum(["commit", "prepare"]).optional().describe(
-          "commit (default) performs the guarded commit; prepare performs only a pinned scoped update and precommit."
+        operation: z.enum(["commit", "prepare", "safe", "detail"]).optional().describe(
+          "commit (default), prepare, safe end-to-end commit, or paged safe-operation detail."
         ),
-        message: commitMessage.optional().describe("Required for operation:commit; ignored for operation:prepare."),
+        message: commitMessage.optional().describe(
+          "Required for commit/safe; ignored for prepare/detail."
+        ),
         revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision").optional().describe(
-          "Required for operation:prepare."
+          "Required for operation:prepare and operation:safe."
         ),
         expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
         lineLimit,
@@ -763,6 +770,9 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
     }
     extras.afterCursor = args.afterCursor;
   }
+  if (name === "svn_snapshot") {
+    copyOptionalBoolean(extras, args, "captureBaseline");
+  }
   if ((name === "svn_status" || name === "svn_snapshot" || name === "svn_update")
       && args.conflictCursor !== undefined) {
     if (typeof args.conflictCursor !== "string" || !/^\d{1,32}$/.test(args.conflictCursor)) {
@@ -812,7 +822,33 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
       extras.taskPaths = args.taskPaths.map((value) => validatedPath("taskPaths", value));
     }
   }
+  if ((name === "svn_update" || name === "svn_precommit" || name === "svn_commit") && args.baselineToken !== undefined) {
+    extras.baselineToken = validatedEvidenceToken("baselineToken", args.baselineToken);
+  }
+  if (name === "svn_commit" && args.precommitToken !== undefined) {
+    extras.precommitToken = validatedEvidenceToken("precommitToken", args.precommitToken);
+  }
+  if (name === "svn_commit") {
+    if (args.detailOperationId !== undefined) {
+      extras.detailOperationId = validatedEvidenceToken("detailOperationId", args.detailOperationId);
+    }
+    if (args.cursor !== undefined) {
+      if (typeof args.cursor !== "string" || !/^\d{1,32}$/.test(args.cursor)) {
+        throw new McpError(ErrorCode.InvalidParams, "cursor must be a decimal offset with at most 32 digits");
+      }
+      extras.cursor = args.cursor;
+    }
+    copyOptionalInteger(extras, args, "maxChars", 256, 64000);
+  }
   return extras;
+}
+
+function validatedEvidenceToken(name: string, value: unknown): string {
+  if (typeof value !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new McpError(ErrorCode.InvalidParams, `${name} must be an opaque UUID token`);
+  }
+  return value;
 }
 
 function copyOptionalBoolean(

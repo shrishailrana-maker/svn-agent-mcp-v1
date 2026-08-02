@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; default false",
@@ -81,7 +81,13 @@
         "riskSignals",
         "remediation",
         "eolCheckComplete",
-        "eolPolicyIdentity"
+        "eolPolicyIdentity",
+        "precommitToken",
+        "precommitExpiresAt",
+        "remoteHeadRevision",
+        "baselineToken",
+        "baselinePathChanges",
+        "remoteHeadChangedSinceBaseline"
       ],
       "svn_update": [
         "requestedRevision",
@@ -93,7 +99,12 @@
         "counts",
         "conflicts",
         "expectedRemoteHead",
-        "observedRemoteHead"
+        "observedRemoteHead",
+        "baselineToken",
+        "collision",
+        "collisionPaths",
+        "pathStates",
+        "recommendedAction"
       ],
       "svn_commit": [
         "revision",
@@ -123,7 +134,16 @@
         "updatedPaths",
         "unexpectedTouchedPaths",
         "finalCommitScope",
-        "conflicts"
+        "conflicts",
+        "precommitToken",
+        "operation",
+        "finalScopeClean",
+        "scopeUniform",
+        "finalRevisionRange",
+        "detailOperationId",
+        "detailExpiresAt",
+        "detail",
+        "nextCursor"
       ]
     },
     "advancedInputs": {
@@ -134,7 +154,8 @@
         ],
         "svn_snapshot": [
           "afterCursor",
-          "conflictCursor"
+          "conflictCursor",
+          "captureBaseline"
         ],
         "svn_diff": [
           "file",
@@ -142,6 +163,9 @@
         ],
         "eol_fix_verified": [
           "operationId"
+        ],
+        "svn_precommit": [
+          "baselineToken"
         ],
         "svn_log": [
           "changedPathsSummary",
@@ -156,7 +180,8 @@
           "conflictCursor",
           "taskPaths",
           "targetOverlapOnly",
-          "operationId"
+          "operationId",
+          "baselineToken"
         ],
         "svn_commit": [
           "operation",
@@ -167,7 +192,12 @@
           "expandDescendants",
           "allowRoot",
           "allowDirectoryTargets",
-          "operationId"
+          "operationId",
+          "precommitToken",
+          "baselineToken",
+          "detailOperationId",
+          "cursor",
+          "maxChars"
         ],
         "svn_resolve": [
           "operationId"
@@ -176,12 +206,16 @@
       "limits": {
         "afterCursor": "opaque string; max 64 chars",
         "operationId": "UUID",
+        "baselineToken": "opaque UUID; process-local and exact-scope bound",
+        "precommitToken": "opaque UUID; process-local and exact-state bound",
+        "detailOperationId": "opaque UUID; process-local safe-operation evidence",
         "file": "path; max 4096 chars",
         "messageContains": "1..256 chars",
         "scanLimit": "1..500",
         "maxTopLevelDirectories": "1..50",
         "maxItems": "1..500",
         "cursor": "decimal string; max 32 digits",
+        "maxChars": "256..64000",
         "conflictCursor": "decimal string; max 32 digits; conflict pages contain at most 100 items",
         "taskPaths": "1..500 paths; each max 4096 chars"
       }
@@ -1116,22 +1150,24 @@
             "description": "One to 500 explicit paths inside one WC."
           },
           "operation": {
-            "description": "commit (default) performs the guarded commit; prepare performs only a pinned scoped update and precommit.",
+            "description": "commit (default), prepare, safe end-to-end commit, or paged safe-operation detail.",
             "type": "string",
             "enum": [
               "commit",
-              "prepare"
+              "prepare",
+              "safe",
+              "detail"
             ]
           },
           "message": {
-            "description": "Required for operation:commit; ignored for operation:prepare.",
+            "description": "Required for commit/safe; ignored for prepare/detail.",
             "type": "string",
             "minLength": 1,
             "maxLength": 16000,
             "pattern": "^[^\\x00]*$"
           },
           "revision": {
-            "description": "Required for operation:prepare.",
+            "description": "Required for operation:prepare and operation:safe.",
             "type": "string",
             "maxLength": 32,
             "pattern": "^\\d+$"

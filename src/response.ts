@@ -130,6 +130,11 @@ function shapePayload(
     return compactPrecommit(payload, request);
   }
 
+  if (compactMode && tool === "svn_commit"
+      && (payload.operation === "safe_commit" || payload.operation === "safe_commit_detail")) {
+    return compactSafeCommit(payload);
+  }
+
   if (compactMode && (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit"))) {
     return compactPrepareCommit(payload, request);
   }
@@ -196,6 +201,9 @@ function receiptPayload(
 ): Record<string, unknown> {
   if (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit")) {
     return compactPrepareReceipt(payload);
+  }
+  if (tool === "svn_commit" && (payload.operation === "safe_commit" || payload.operation === "safe_commit_detail")) {
+    return compactSafeCommit(payload);
   }
   if (!payload.ok) {
     const error = compactError(payload, request);
@@ -475,6 +483,9 @@ function compactSnapshot(payload: ToolEnvelope, request: Record<string, unknown>
     ok: true,
     ...infoFields,
     ...statusFields,
+    ...(payload.baseline_token ? { baselineToken: payload.baseline_token } : {}),
+    ...(payload.baseline_expires_at ? { baselineExpiresAt: payload.baseline_expires_at } : {}),
+    ...(payload.baseline_path_count !== undefined ? { baselinePathCount: payload.baseline_path_count } : {}),
     ...(truncated === true ? { truncated: true } : {})
   };
   return withSnapshotToken("svn_snapshot", payload, request, result, {
@@ -979,6 +990,14 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     },
     ...(payload.eol_check_complete === true ? { eolCheckComplete: true } : {}),
     ...(payload.eol_policy_identity ? { eolPolicyIdentity: payload.eol_policy_identity } : {}),
+    ...(payload.precommit_token ? { precommitToken: payload.precommit_token } : {}),
+    ...(payload.precommit_expires_at ? { precommitExpiresAt: payload.precommit_expires_at } : {}),
+    ...(payload.remote_head_revision !== undefined ? { remoteHeadRevision: payload.remote_head_revision } : {}),
+    ...(payload.baseline_token ? { baselineToken: payload.baseline_token } : {}),
+    ...(payload.baseline_path_changes
+      ? { baselinePathChanges: stringArray(payload.baseline_path_changes).slice(0, 100) }
+      : {}),
+    ...(payload.remote_head_changed_since_baseline === true ? { remoteHeadChangedSinceBaseline: true } : {}),
     mixedRevision,
     ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
@@ -1079,6 +1098,44 @@ function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
   };
 }
 
+function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
+  if (payload.operation === "safe_commit_detail") {
+    return {
+      ok: payload.ok,
+      operation: "safe_commit_detail",
+      detailOperationId: payload.detail_operation_id,
+      detail: payload.detail,
+      truncated: payload.truncated === true,
+      ...(payload.next_cursor ? { nextCursor: payload.next_cursor } : {}),
+      ...(!payload.ok && payload.note ? { note: payload.note } : {})
+    };
+  }
+  return {
+    ok: payload.ok,
+    operation: "safe_commit",
+    verdict: payload.verdict,
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+    ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
+    ...(payload.committed_revision !== undefined ? { committedRevision: payload.committed_revision } : {}),
+    ...(payload.committed_paths !== undefined
+      ? {
+          committedPaths: stringArray(payload.committed_paths).slice(0, 100),
+          committedCount: payload.committed_count ?? stringArray(payload.committed_paths).length
+        }
+      : {}),
+    ...(payload.remote_head_revision !== undefined ? { remoteHeadRevision: payload.remote_head_revision } : {}),
+    ...(payload.final_scope_clean !== undefined ? { finalScopeClean: payload.final_scope_clean } : {}),
+    ...(payload.scope_uniform !== undefined ? { scopeUniform: payload.scope_uniform } : {}),
+    ...(payload.baseline_captured_automatically === true ? { baselineCapturedAutomatically: true } : {}),
+    ...(payload.final_revision_range !== undefined ? { finalRevisionRange: payload.final_revision_range } : {}),
+    ...(payload.detail_operation_id ? { detailOperationId: payload.detail_operation_id } : {}),
+    ...(payload.detail_expires_at ? { detailExpiresAt: payload.detail_expires_at } : {}),
+    ...(payload.detail_cursor ? { detailCursor: payload.detail_cursor } : {}),
+    ...(!payload.ok && payload.note ? { note: payload.note } : {})
+  };
+}
+
 function compactMutation(tool: string, payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   if (tool === "svn_revert" && request.dryRun !== false) {
     return {
@@ -1167,6 +1224,7 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     assignDefined(receipt, "remoteHeadRevision", payload.remote_head_revision);
     assignDefined(receipt, "eolVerdict", payload.eol_verdict);
     assignDefined(receipt, "workingCopyMixed", payload.working_copy_mixed);
+    assignDefined(receipt, "precommitToken", payload.precommit_token);
     if (payload.content_hashes !== undefined) {
       receipt.contentHashes = recordArray(payload.content_hashes).slice(0, 100);
     }
@@ -1240,6 +1298,15 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     if (payload.expected_remote_head !== undefined) {
       receipt.expectedRemoteHead = payload.expected_remote_head;
       receipt.observedRemoteHead = payload.observed_remote_head;
+    }
+    if (payload.baseline_token) {
+      receipt.baselineToken = payload.baseline_token;
+      receipt.collision = payload.collision === true;
+      const collisionPaths = stringArray(payload.collision_paths);
+      if (collisionPaths.length > 0) receipt.collisionPaths = collisionPaths.slice(0, 100);
+      const pathStates = recordArray(payload.path_states).slice(0, 100);
+      if (pathStates.length > 0) receipt.pathStates = pathStates;
+      if (payload.recommended_action) receipt.recommendedAction = payload.recommended_action;
     }
   }
   return receipt;

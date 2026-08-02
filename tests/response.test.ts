@@ -565,6 +565,58 @@ describe("public MCP response shaping", () => {
     }
   });
 
+  it("keeps workflow tokens and safe-commit detail compact", () => {
+    const root = "E:\\dev\\example";
+    const token = "11111111-1111-4111-8111-111111111111";
+    const precommit = toToolResult("svn_precommit", {
+      ...createEnvelope({ ok: true, command: "svn_precommit", cwd: root }),
+      verdict: "READY",
+      per_file: [{ path: "src/a.ts", status: "M", added: 1, removed: 0 }],
+      precommit_token: token,
+      precommit_expires_at: 123456,
+      remote_head_revision: 44,
+      eol_check_complete: true
+    }, { responseMode: "compact", request: { paths: ["src/a.ts"] } }).structuredContent;
+    expect(precommit).toMatchObject({
+      ready: true,
+      precommitToken: token,
+      precommitExpiresAt: 123456,
+      remoteHeadRevision: 44
+    });
+
+    const safe = toToolResult("svn_commit", {
+      ...createEnvelope({ ok: true, command: "svn safe_commit", cwd: root, revision: 45 }),
+      operation: "safe_commit",
+      verdict: "COMMITTED",
+      operation_id: token,
+      committed_revision: 45,
+      committed_paths: ["src/a.ts"],
+      committed_count: 1,
+      final_scope_clean: true,
+      scope_uniform: true,
+      final_revision_range: { min: 45, max: 45 },
+      detail_operation_id: "22222222-2222-4222-8222-222222222222",
+      detail_expires_at: 123999,
+      detail_cursor: "0"
+    }, { responseMode: "compact" }).structuredContent;
+    expect(safe).toEqual({
+      ok: true,
+      operation: "safe_commit",
+      verdict: "COMMITTED",
+      operationId: token,
+      committedRevision: 45,
+      committedPaths: ["src/a.ts"],
+      committedCount: 1,
+      finalScopeClean: true,
+      scopeUniform: true,
+      finalRevisionRange: { min: 45, max: 45 },
+      detailOperationId: "22222222-2222-4222-8222-222222222222",
+      detailExpiresAt: 123999,
+      detailCursor: "0"
+    });
+    expect(JSON.stringify(safe)).not.toContain("svn safe_commit");
+  });
+
   it("uses relative paths and validated projections outside full diagnostics", () => {
     const root = "E:\\dev\\example";
     const payload = {

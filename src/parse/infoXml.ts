@@ -22,6 +22,7 @@ export function parseInfoXml(xml: string): WcInfo[] {
 
   return asArray(parsed.info?.entry).map((entry) => {
     const entryObj = entry as {
+      path?: string;
       revision?: string | number;
       url?: string;
       repository?: { root?: string };
@@ -29,6 +30,7 @@ export function parseInfoXml(xml: string): WcInfo[] {
     };
 
     return {
+      path: entryObj.path ?? null,
       url: entryObj.url ?? null,
       repo_root: entryObj.repository?.root ?? null,
       wc_root: entryObj["wc-info"]?.["wcroot-abspath"] ?? null,

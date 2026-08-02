@@ -27,8 +27,18 @@ import {
 import { parseCommittedRevision } from "../parse/commitText.js";
 import { parseUpdateText } from "../parse/updateText.js";
 import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
+import { processWorkflowEvidence, workflowScope } from "../workflowEvidence.js";
+import {
+  captureCurrentWorkflowPathStates,
+  parseWorkflowPathStates,
+  workflowDiffIdentity,
+  workflowEolPolicyIdentity,
+  workflowPolicyIdentity,
+  workflowStatesEqual,
+  type WorkflowPathState
+} from "../workflowState.js";
 import { escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
-import type { ToolEnvelope } from "../types.js";
+import type { ChangedPath, Conflict, RunResult, ToolEnvelope } from "../types.js";
 import {
   getWcContext,
   parseSvnVersion,
@@ -230,6 +240,7 @@ export async function svnCommit(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   operationId?: string;
+  precommitToken?: string;
 }): Promise<ToolEnvelope> {
   if (input.operationId) {
     const { operationId, ...coreInput } = input;
@@ -242,7 +253,8 @@ export async function svnCommit(input: {
       riskAck: input.riskAck ?? false,
       allowRoot: input.allowRoot ?? false,
       allowDirectoryTargets: input.allowDirectoryTargets ?? false,
-      expandDescendants: input.expandDescendants ?? false
+      expandDescendants: input.expandDescendants ?? false,
+      precommitToken: input.precommitToken ?? null
     });
     return withDurableOperation({
       operationId,
@@ -302,6 +314,17 @@ export async function svnCommit(input: {
     if (hit) {
       return failEnvelope("svn commit", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
     }
+  }
+
+  if (input.precommitToken) {
+    const binding = await validatePrecommitBinding(
+      input.precommitToken,
+      guard.cwd,
+      guard.wcRoot,
+      guard.repoRoot,
+      scopedPaths
+    );
+    if (!binding.ok) return binding.envelope;
   }
 
   const status = await scopedStatusMap(guard.cwd, guard.wcRoot, statusPathsForCommit(scopedPaths, guard.wcRoot));
@@ -391,6 +414,7 @@ export async function svnCommit(input: {
       working_copy_mixed: postVersion?.mixed ?? null,
       revision_range: postVersion?.range ?? null,
       risk_signals: riskSignals,
+      ...(input.precommitToken ? { precommit_token: input.precommitToken } : {}),
       ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
     };
   } finally {
@@ -415,6 +439,162 @@ function hashCommitTargets(targets: string[], wcRoot: string): Array<Record<stri
       return { path: relative, algorithm: "sha256", hash: null, unavailable_reason: "path unavailable" };
     }
   });
+}
+
+async function validatePrecommitBinding(
+  token: string,
+  cwd: string,
+  wcRoot: string,
+  repositoryRoot: string | null,
+  scopedPaths: string[]
+): Promise<{ ok: true } | { ok: false; envelope: ToolEnvelope }> {
+  const evidence = processWorkflowEvidence.get(token, "precommit", workflowScope(wcRoot, scopedPaths));
+  if (!evidence.ok) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, `PRECOMMIT_${evidence.code}`, evidence.note)
+    };
+  }
+  const record = evidence.record;
+  const expectedStates = parseWorkflowPathStates(record.paths);
+  if (!expectedStates) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_INVALID", "precommit path evidence is invalid")
+    };
+  }
+  if (record.repositoryRoot !== repositoryRoot) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_REPOSITORY_MISMATCH", "precommit evidence belongs to another repository")
+    };
+  }
+  if (record.policyIdentity !== workflowPolicyIdentity(wcRoot)) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_POLICY_CHANGED", "repository policy changed after precommit")
+    };
+  }
+  if (typeof record.eolPolicyIdentity !== "string"
+    || record.eolPolicyIdentity !== workflowEolPolicyIdentity(wcRoot)) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_EOL_POLICY_CHANGED", "EOL policy changed after precommit")
+    };
+  }
+  if (typeof record.diffIdentity !== "string" || !/^sha256:[0-9a-f]{64}$/i.test(record.diffIdentity)) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_INVALID", "precommit diff evidence is invalid")
+    };
+  }
+  const current = await captureCurrentWorkflowPathStates(cwd, wcRoot, scopedPaths);
+  if (!current.ok) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_STATE_UNAVAILABLE", current.note)
+    };
+  }
+  if (!workflowStatesEqual(expectedStates, current.states)) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_STATE_CHANGED", "commit paths changed after precommit; rerun svn_precommit")
+    };
+  }
+  const diff = await svnDiff({ cwd, paths: scopedPaths, ignoreEol: true, lineLimit: 1 });
+  if (!diff.ok) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_DIFF_UNAVAILABLE", "could not revalidate the bound diff; rerun svn_precommit")
+    };
+  }
+  if (workflowDiffIdentity(diff) !== record.diffIdentity) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_DIFF_CHANGED", "verified diff changed after precommit; rerun svn_precommit")
+    };
+  }
+  const stateAfterDiff = await captureCurrentWorkflowPathStates(cwd, wcRoot, scopedPaths);
+  if (!stateAfterDiff.ok || !workflowStatesEqual(current.states, stateAfterDiff.states)) {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_STATE_CHANGED", "commit paths changed during precommit validation; rerun svn_precommit")
+    };
+  }
+  const expectedRemoteHead = record.remoteHeadRevision;
+  if (expectedRemoteHead !== null && typeof expectedRemoteHead !== "number") {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_INVALID", "precommit remote revision evidence is invalid")
+    };
+  }
+  const observedRemoteHead = await remoteHeadForTargets(cwd, scopedPaths)
+    ?? await remoteHeadForTargets(cwd, [repositoryRoot ?? wcRoot]);
+  if (observedRemoteHead === null || observedRemoteHead !== expectedRemoteHead) {
+    return {
+      ok: false,
+      envelope: {
+        ...workflowFailure("svn commit", cwd, "PRECOMMIT_REMOTE_HEAD_CHANGED", "repository HEAD changed after precommit; update and rerun svn_precommit"),
+        expected_remote_head: expectedRemoteHead,
+        observed_remote_head: observedRemoteHead
+      }
+    };
+  }
+  return { ok: true };
+}
+
+function baselineCollisionReceipt(
+  token: string,
+  cwd: string,
+  wcRoot: string,
+  targets: string[],
+  baselineStates: WorkflowPathState[],
+  beforeStates: WorkflowPathState[],
+  changedPaths: ChangedPath[],
+  conflicts: Conflict[]
+): Record<string, unknown> {
+  const baselineByPath = new Map(baselineStates.map((state) => [pathIdentityKey(path.resolve(wcRoot, state.path)), state]));
+  const beforeByPath = new Map(beforeStates.map((state) => [pathIdentityKey(path.resolve(wcRoot, state.path)), state]));
+  const changed = changedPaths.map((entry) => path.resolve(cwd, entry.path));
+  const conflicted = conflicts.map((entry) => path.resolve(cwd, entry.path));
+  const pathStates = targets.map((target) => {
+    const baseline = baselineByPath.get(pathIdentityKey(target));
+    const before = beforeByPath.get(pathIdentityKey(target));
+    const stateChanged = Boolean(baseline && before && !workflowStatesEqual([baseline], [before]));
+    const locallyModified = Boolean(before && (
+      isCommittableStatus(before.status)
+      || (stateChanged && baseline && (before.status !== "" || before.baseRevision === baseline.baseRevision))
+    ));
+    const remotelyChanged = changed.some((candidate) => pathsOverlap(candidate, target));
+    const conflictPostponed = conflicted.some((candidate) => pathsOverlap(candidate, target));
+    const collision = conflictPostponed || (locallyModified && remotelyChanged);
+    return {
+      path: repoRelativePath(target, wcRoot),
+      base_revision: baseline?.baseRevision ?? null,
+      locally_modified_before_update: locallyModified,
+      remotely_changed_during_update: remotelyChanged,
+      same_path_collision: collision,
+      conflict_postponed: conflictPostponed
+    };
+  });
+  const collisionPaths = pathStates
+    .filter((state) => state.same_path_collision)
+    .map((state) => state.path);
+  return {
+    baseline_token: token,
+    collision: collisionPaths.length > 0,
+    collision_paths: collisionPaths,
+    path_states: pathStates,
+    ...(collisionPaths.length > 0 ? { recommended_action: "reconcile-and-reverify" } : {})
+  };
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isInsideOrEqual(left, right) || isInsideOrEqual(right, left);
+}
+
+function workflowFailure(command: string, cwd: string, code: string, note: string): ToolEnvelope {
+  return { ...failEnvelope(command, cwd, note), code };
 }
 
 export async function svnMove(input: { cwd?: string; src: string; dest: string }): Promise<ToolEnvelope> {
@@ -451,6 +631,8 @@ export async function svnUpdate(input: {
   targetOverlapOnly?: boolean;
   depth?: "empty";
   operationId?: string;
+  baselineToken?: string;
+  skipAdded?: boolean;
 }): Promise<ToolEnvelope> {
   if (input.operationId) {
     const { operationId, ...coreInput } = input;
@@ -464,7 +646,9 @@ export async function svnUpdate(input: {
       expectedRemoteHead: input.expectedRemoteHead ?? null,
       taskPaths: normalizedOperationPaths(cwd, input.taskPaths ?? []),
       targetOverlapOnly: input.targetOverlapOnly ?? false,
-      depth: input.depth ?? null
+      depth: input.depth ?? null,
+      baselineToken: input.baselineToken ?? null,
+      skipAdded: input.skipAdded ?? false
     });
     return withDurableOperation({
       operationId,
@@ -493,6 +677,14 @@ export async function svnUpdate(input: {
   if (input.expectedRemoteHead !== undefined && !/^\d+$/.test(input.revision ?? "")) {
     return failEnvelope("svn update", cwd, "expectedRemoteHead requires an explicit numeric revision");
   }
+  if (input.baselineToken && (!input.paths || input.paths.length === 0 || input.updateAll)) {
+    return workflowFailure(
+      "svn update",
+      cwd,
+      "BASELINE_SCOPE_REQUIRED",
+      "baselineToken requires the same explicit paths used to capture the baseline"
+    );
+  }
 
   const context = await getWcContext(input.cwd, input.paths ?? []);
   if (!context.ok) {
@@ -514,11 +706,52 @@ export async function svnUpdate(input: {
     }
   }
 
+  let baselineStates: WorkflowPathState[] | null = null;
+  let beforeStates: WorkflowPathState[] | null = null;
+  if (input.baselineToken) {
+    const evidence = processWorkflowEvidence.get(
+      input.baselineToken,
+      "baseline",
+      workflowScope(context.wcRoot, targets)
+    );
+    if (!evidence.ok) {
+      return workflowFailure("svn update", context.cwd, `BASELINE_${evidence.code}`, evidence.note);
+    }
+    const record = evidence.record;
+    baselineStates = parseWorkflowPathStates(record.paths);
+    if (!baselineStates) {
+      return workflowFailure("svn update", context.cwd, "BASELINE_INVALID", "baseline path evidence is invalid");
+    }
+    if (typeof record.wcRoot !== "string" || pathIdentityKey(record.wcRoot) !== pathIdentityKey(context.wcRoot)
+      || record.repositoryRoot !== context.info.repo_root) {
+      return workflowFailure("svn update", context.cwd, "BASELINE_REPOSITORY_MISMATCH", "baseline belongs to another working copy or repository");
+    }
+    if (record.policyIdentity !== workflowPolicyIdentity(context.wcRoot)) {
+      return workflowFailure("svn update", context.cwd, "BASELINE_POLICY_CHANGED", "repository policy changed after the baseline was captured");
+    }
+    const captured = await captureCurrentWorkflowPathStates(context.cwd, context.wcRoot, targets);
+    if (!captured.ok) {
+      return workflowFailure("svn update", context.cwd, "BASELINE_CAPTURE_FAILED", captured.note);
+    }
+    beforeStates = captured.states;
+  }
+
+  let updateTargets = targets;
+  let skippedAddedPaths: string[] = [];
+  if (input.skipAdded && targets.length > 0) {
+    const status = await scopedStatusMap(context.cwd, context.wcRoot, targets);
+    if (!status.envelope.ok) return status.envelope;
+    updateTargets = targets.filter((target) => status.map.get(pathIdentityKey(target)) !== "A");
+    skippedAddedPaths = targets
+      .filter((target) => status.map.get(pathIdentityKey(target)) === "A")
+      .map((target) => repoRelativePath(target, context.wcRoot));
+  }
+
   if (input.expectedRemoteHead !== undefined) {
     const observedRemoteHead = await remoteHeadForTargets(
       context.cwd,
-      targets.length > 0 ? targets : [context.wcRoot]
-    );
+      updateTargets.length > 0 ? updateTargets : [context.info.repo_root ?? context.wcRoot]
+    ) ?? await remoteHeadForTargets(context.cwd, [context.info.repo_root ?? context.wcRoot]);
     if (observedRemoteHead === null) {
       return {
         ...failEnvelope("svn update", context.cwd, "could not verify remote HEAD before update"),
@@ -539,20 +772,44 @@ export async function svnUpdate(input: {
     }
   }
 
-  const run = await runSvn([
-    "update",
-    ...(input.revision ? ["-r", input.revision] : []),
-    ...(input.depth ? ["--depth", input.depth] : []),
-    "--accept",
-    "postpone",
-    ...(targets.length > 0 ? ["--", ...targets.map(escapeSvnTarget)] : [])
-  ], context.cwd);
+  const run: RunResult = updateTargets.length === 0 && skippedAddedPaths.length > 0
+    ? {
+        command: "svn update (scheduled-add targets skipped)",
+        cwd: context.cwd,
+        executable: "svn",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        timedOut: false
+      }
+    : await runSvn([
+        "update",
+        ...(input.revision ? ["-r", input.revision] : []),
+        ...(input.depth ? ["--depth", input.depth] : []),
+        "--accept",
+        "postpone",
+        ...(updateTargets.length > 0 ? ["--", ...updateTargets.map(escapeSvnTarget)] : [])
+      ], context.cwd);
   const parsed = parseUpdateText(`${run.stdout}\n${run.stderr}`);
   const version = run.exitCode === 0 ? await runSvnVersion(context.wcRoot, context.cwd) : null;
   const versionState = version?.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
   const resultingRevision = versionState?.range && versionState.range.min === versionState.range.max
     ? versionState.range.min
     : null;
+  const baselineReceipt = input.baselineToken && baselineStates && beforeStates
+    ? baselineCollisionReceipt(
+        input.baselineToken,
+        context.cwd,
+        context.wcRoot,
+        targets,
+        baselineStates,
+        beforeStates,
+        parsed.changed_paths,
+        parsed.conflicts
+      )
+    : {};
   return {
     ...envelopeFromRun({
       run,
@@ -567,6 +824,8 @@ export async function svnUpdate(input: {
     revision_range: versionState?.range ?? null,
     mixed_revision: versionState?.mixed ?? false,
     wc_root: context.wcRoot,
+    ...baselineReceipt,
+    ...(skippedAddedPaths.length > 0 ? { skipped_added_paths: skippedAddedPaths } : {}),
     ...(input.expectedRemoteHead !== undefined
       ? { expected_remote_head: input.expectedRemoteHead, observed_remote_head: input.expectedRemoteHead }
       : {})
@@ -978,7 +1237,7 @@ async function mutatingPathGuard(
   cwdInput: string | undefined,
   paths: string[] | undefined,
   options: GuardOptions
-): Promise<{ ok: true; cwd: string; wcRoot: string; paths: string[] } | { ok: false; envelope: ToolEnvelope }> {
+): Promise<{ ok: true; cwd: string; wcRoot: string; repoRoot: string | null; paths: string[] } | { ok: false; envelope: ToolEnvelope }> {
   const cwd = resolveCwd(cwdInput);
   if (readonlyMode() && !options.allowReadonlyForDryRun) {
     return { ok: false, envelope: failEnvelope(command, cwd, "READONLY instance") };
@@ -1010,6 +1269,7 @@ async function mutatingPathGuard(
     ok: true,
     cwd: context.cwd,
     wcRoot: context.wcRoot,
+    repoRoot: context.info.repo_root,
     paths: resolved.paths
   };
 }
@@ -1193,7 +1453,7 @@ function normalizedCommitMessage(message: string): string {
   return normalizeMessageFile(message).trimEnd();
 }
 
-async function recoverCommittedOperation(input: {
+export async function recoverCommittedOperation(input: {
   cwd?: string;
   paths: string[];
   message: string;

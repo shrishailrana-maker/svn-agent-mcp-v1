@@ -4,6 +4,8 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-02
+
 ### Added
 
 - Added `receipt` and `structured-only` response modes. Receipt mode defines bounded minimal
@@ -41,6 +43,18 @@ All notable changes to the SVN MCP are recorded here.
   corrupt, and ambiguous stale operations fail closed instead of repeating a mutation. Abandoned
   receipt locks are reclaimed after a bounded interval while active lock contention returns a typed
   failure.
+- Added explicit-file pre-edit baselines through `svn_snapshot captureBaseline:true`. A later
+  `svn_update baselineToken` reports local edits, remote touches, postponed conflicts, and
+  same-path collisions without requiring a full update transcript.
+- Added READY precommit tokens bound to exact status, base revisions, content and SVN property hashes, repository
+  policy, diff identity, scope, and remote revision. `svn_commit precommitToken` refuses if any
+  bound evidence changed after verification.
+- Added `svn_commit operation:"safe"` as one durable guarded workflow: pinned scoped update,
+  collision refusal, verified EOL repair when needed, precommit binding, commit, pinned final
+  update, and a clean scoped snapshot. Bounded stage detail is paged later through
+  `operation:"detail"` instead of inflating the normal receipt.
+- Safe mode omits only scheduled-added operands from its pinned update while still checking the
+  expected repository HEAD and retaining those files in the exact precommit and commit scope.
 
 ### Changed
 
@@ -68,6 +82,9 @@ All notable changes to the SVN MCP are recorded here.
   plus a bounded suggested message.
 - Successful commit receipts now separate exact committed paths from post-commit residue and add
   bounded revision, remote-head, mixed-state, EOL-availability, and content-hash evidence.
+- Baseline, precommit, collision, and safe-commit controls are published once as advanced inputs;
+  the full profile remains at 25 advertised tools and compact safe-commit receipts stay
+  structured-only by default.
 
 ### Fixed
 

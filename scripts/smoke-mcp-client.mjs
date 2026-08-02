@@ -52,6 +52,8 @@ try {
     assert(commitTool?.inputSchema?.properties?.revision, "commit prepare revision is missing");
     assert(commitTool?.inputSchema?.properties?.expectedRemoteHead, "commit prepare expectedRemoteHead guard is missing");
     assert(commitTool?.inputSchema?.properties?.expandDescendants, "commit descendant expansion is missing");
+    assert(commitTool?.inputSchema?.properties?.operation?.enum?.includes("safe"), "commit safe workflow is missing");
+    assert(commitTool?.inputSchema?.properties?.operation?.enum?.includes("detail"), "commit detail workflow is missing");
     const diffTool = tools.tools.find((tool) => tool.name === "svn_diff");
     assert(diffTool?.inputSchema?.properties?.lineLimit?.maximum === 2000, "diff lineLimit maximum is not published");
     assert(diffTool?.inputSchema?.properties?.maxHunksPerFile?.maximum === 20, "diff hunk maximum is not published");
@@ -147,13 +149,20 @@ try {
     );
     passed.push("commit");
 
+    const baseline = await callOk(client, "svn_snapshot", {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      captureBaseline: true
+    });
+    assert(typeof baseline.baselineToken === "string", "snapshot omitted its pre-edit baseline token");
     fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");
     const prepared = await callOk(client, "svn_commit", {
       operation: "prepare",
       cwd: workingCopy,
       paths: ["client-smoke.txt"],
       revision: String(committed.revision),
-      expectedRemoteHead: committed.revision
+      expectedRemoteHead: committed.revision,
+      baselineToken: baseline.baselineToken
     });
     assert(
       prepared.ready === true
@@ -173,6 +182,39 @@ try {
       `prepare accepted an unacknowledged working-copy root: ${JSON.stringify(prepareRootRefusal)}`
     );
     passed.push("prepare-commit");
+
+    const safeOperationId = randomUUID();
+    const safeInput = {
+      operation: "safe",
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      message: "Safe MCP client smoke\n\n- Exercise bound workflow evidence\n- Verify compact final receipt\n",
+      revision: String(committed.revision),
+      expectedRemoteHead: committed.revision,
+      baselineToken: baseline.baselineToken,
+      operationId: safeOperationId
+    };
+    const safe = await callOk(client, "svn_commit", safeInput);
+    assert(
+      safe.verdict === "COMMITTED"
+        && safe.finalScopeClean === true
+        && safe.scopeUniform === true
+        && typeof safe.detailOperationId === "string",
+      `safe commit receipt was incomplete: ${JSON.stringify(safe)}`
+    );
+    const safeReplay = await callOk(client, "svn_commit", safeInput);
+    assert(safeReplay.idempotentReplay === true && safeReplay.committedRevision === safe.committedRevision,
+      "safe commit retry did not replay its durable receipt");
+    const safeDetail = await callOk(client, "svn_commit", {
+      operation: "detail",
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      detailOperationId: safe.detailOperationId,
+      cursor: "0",
+      maxChars: 2048
+    });
+    assert(String(safeDetail.detail).includes("precommit"), "safe commit detail omitted its precommit stage");
+    passed.push("safe-commit");
 
     const guardedDirectory = path.join(workingCopy, "guarded-directory");
     const guardedChild = path.join(guardedDirectory, "child.txt");
@@ -266,7 +308,7 @@ try {
     );
     passed.push("path-change-compatibility");
 
-    fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");
+    fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\nthree\r\n", "utf8");
     const diff = await callOk(client, "svn_diff", { cwd: workingCopy, paths: ["client-smoke.txt"] });
     assert(
       diff.files.some((item) => item.path === "client-smoke.txt" && item.added === 1),

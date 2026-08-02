@@ -46,6 +46,16 @@ Please do not publish exploit details until a fix or mitigation is available.
   are pruned within fixed limits; retained unfinished or unreadable records cause a capacity refusal
   rather than deletion. The receipt store is local to one host and must not be treated as a
   cross-machine lock.
+- Baseline, precommit, and safe-operation detail tokens are process-local, expire, and are bound to
+  a working copy plus exact explicit paths. Baselines accept files only. Precommit tokens include
+  file content hashes, canonical SVN property hashes, status, base revisions, repository policy, diff identity, and observed
+  remote revision; commit rechecks them without weakening any ordinary guard. Detailed workflow
+  stages stay in bounded memory and are not persisted with durable mutation receipts.
+- `svn_commit operation:"safe"` requires an exact revision, expected remote revision, valid commit
+  message, explicit files, and durable operation ID. It accepts a stronger pre-edit baseline or
+  captures the current scoped state internally before update. It stops before
+  commit on same-path overlap or postponed conflict, and an interrupted ambiguous operation fails
+  closed rather than repeating a mutation.
 - SVN and conversion processes inherit the host environment so native credential caches, proxy
   settings, home directories, and configured SSH transports continue to work. Treat MCP process
   environment variables as trusted operator configuration and do not place secrets in debug logs.

@@ -28,12 +28,16 @@ try {
         limits: {
           afterCursor: "opaque string; max 64 chars",
           operationId: "UUID",
+          baselineToken: "opaque UUID; process-local and exact-scope bound",
+          precommitToken: "opaque UUID; process-local and exact-state bound",
+          detailOperationId: "opaque UUID; process-local safe-operation evidence",
           file: "path; max 4096 chars",
           messageContains: "1..256 chars",
           scanLimit: "1..500",
           maxTopLevelDirectories: "1..50",
           maxItems: "1..500",
           cursor: "decimal string; max 32 digits",
+          maxChars: "256..64000",
           conflictCursor: "decimal string; max 32 digits; conflict pages contain at most 100 items",
           taskPaths: "1..500 paths; each max 4096 chars"
         }

@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,13 +31,15 @@ const compactBudgets = {
   "500-line file diff": 4000,
   "one-file precommit": 1000,
   "self-check": 400,
-  "add receipt": 250
+  "add receipt": 250,
+  "safe commit": 2800
 };
 const receiptBudgets = {
   "clean status": 200,
   "status count only": 200,
   "1,001-path status": 800,
-  "one-file precommit": 500
+  "one-file precommit": 500,
+  "safe commit": 2800
 };
 const receiptTools = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 const profileSchemaBudgets = {
@@ -126,6 +129,25 @@ try {
   const fullAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-full.txt"], responseMode: "full" });
   const compactAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-compact.txt"], responseMode: "compact" });
   measurements.push(measurement("add receipt", compactAdd, fullAdd, rawAdd, null));
+
+  const safeSizes = {};
+  for (const mode of ["compact", "full", "receipt"]) {
+    const relative = `safe-${mode}.txt`;
+    fs.writeFileSync(path.join(workingCopy, relative), `${mode}\r\n`, "utf8");
+    run(svn, ["add", relative], workingCopy);
+    const head = Number(raw(svn, ["info", "-r", "HEAD", "--show-item", "revision", pathToFileURL(repository).href], workingCopy));
+    safeSizes[mode] = await callSize("svn_commit", {
+      operation: "safe",
+      cwd: workingCopy,
+      paths: [relative],
+      message: `Benchmark safe ${mode}\n\n- Measure bounded workflow receipt\n- Preserve response budgets\n`,
+      revision: String(head),
+      expectedRemoteHead: head,
+      operationId: randomUUID(),
+      responseMode: mode
+    });
+  }
+  measurements.push(measurement("safe commit", safeSizes.compact, safeSizes.full, null, safeSizes.receipt));
 
   const failures = budgetFailures(schemaSizes, profileSchemas, measurements);
   process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, profileSchemas, measurements, budgetFailures: failures }, null, 2)}\n`);
