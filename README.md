@@ -126,6 +126,11 @@ The MCP is not tied to one SVN checkout. If a tool call supplies absolute paths 
 Client registration is static: configure the MCP once, and working-copy discovery happens per tool call. The server does not rewrite client configuration at runtime.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
+`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 25
+canonical tools, `docs` exposes the 8-tool edit/commit workflow, and `review` adds bounded diff,
+cat, and blame for 11 tools total. Focused profiles reduce tool-definition context without changing
+any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
+workflow needs another operation.
 `SVN_MCP_RESPONSE_MODE` selects `compact`
 (default), `standard`, or `full` responses. Compact mode returns bounded structured results and
 short text receipts; use `responseMode: "full"` on a call when bounded raw SVN diagnostics are needed.
@@ -197,7 +202,7 @@ diagnostics.
 
 Use `svn_self_check` to verify the MCP package, runtime layout, resolved native or bundled tools, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
 
-Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete` and canonical `svn_resolve`; the older `svn_resolved` name remains as a deprecated compatibility alias.
+Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete`, canonical `svn_resolve`, and `svn_path_change` with an explicit `move`, `rename`, or `copy` action. Legacy direct calls to `svn_resolved`, `svn_move`, `svn_rename`, and `svn_copy` remain callable in the full profile for compatibility but are no longer advertised.
 
 For SVN property work, use `svn_propget` and guarded `svn_propset` instead of raw `svn propget`/`svn propset`. `svn_propset_eol_style` remains the safer shortcut for `svn:eol-style` normalization.
 

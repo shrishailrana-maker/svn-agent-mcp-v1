@@ -6,6 +6,10 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Added
 
+- Added server-level `full`, `docs`, and `review` tool profiles through
+  `SVN_MCP_TOOL_PROFILE`; the focused profiles advertise only 8 or 11 tools and return a typed
+  refusal when a client calls a hidden tool.
+- Added canonical `svn_path_change` with an explicit `move`, `rename`, or `copy` action.
 - Added repository-driven `normalizeEol` handling to `svn_add`; configured text files are
   transactionally normalized and verified before scheduling, while binary and policy-excluded
   byte-exact files are reported as skipped.
@@ -15,6 +19,9 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Changed
 
+- The full profile now advertises 25 canonical tools. Legacy `svn_move`, `svn_rename`,
+  `svn_copy`, and `svn_resolved` routes remain callable for existing clients but are omitted from
+  tool discovery to reduce schema context.
 - `svn_blame` now ignores EOL-only churn by default, matching the existing `svn_diff` default;
   both tools expose `showEolChanges:true` for diagnostics, and pure EOL diffs return `eolOnly:true`.
 - Commit-message format validation now blocks before `svn commit` and returns a typed failed rule

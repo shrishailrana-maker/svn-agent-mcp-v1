@@ -29,9 +29,12 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert(tools.tools.length === 28, `expected 28 tools, received ${tools.tools.length}`);
-    for (const name of ["svn_delete", "svn_resolve", "svn_resolved", "svn_snapshot", "svn_cat", "svn_blame"]) {
+    assert(tools.tools.length === 25, `expected 25 canonical tools, received ${tools.tools.length}`);
+    for (const name of ["svn_delete", "svn_resolve", "svn_path_change", "svn_snapshot", "svn_cat", "svn_blame"]) {
       assert(tools.tools.some((tool) => tool.name === name), `missing public tool: ${name}`);
+    }
+    for (const name of ["svn_move", "svn_rename", "svn_copy", "svn_resolved"]) {
+      assert(!tools.tools.some((tool) => tool.name === name), `legacy tool should not be advertised: ${name}`);
     }
     passed.push("handshake");
 
@@ -155,6 +158,24 @@ try {
     });
     assert(blame.lines[0]?.revision === committed.revision, "blame omitted the committed revision");
     passed.push("revision-read");
+
+    const legacyCopy = await callOk(client, "svn_copy", {
+      cwd: workingCopy,
+      src: "client-smoke.txt",
+      dest: "legacy-copy.txt"
+    });
+    assert(legacyCopy.action === "copy", "hidden compatibility copy route returned the wrong receipt");
+    const canonicalMove = await callOk(client, "svn_path_change", {
+      cwd: workingCopy,
+      action: "move",
+      src: "legacy-copy.txt",
+      dest: "canonical-move.txt"
+    });
+    assert(
+      canonicalMove.action === "move" && canonicalMove.verifiedStatus === "renamed",
+      `canonical path-change receipt was incorrect: ${JSON.stringify(canonicalMove)}`
+    );
+    passed.push("path-change-compatibility");
 
     fs.writeFileSync(path.join(workingCopy, "client-smoke.txt"), "one\r\ntwo\r\n", "utf8");
     const diff = await callOk(client, "svn_diff", { cwd: workingCopy, paths: ["client-smoke.txt"] });

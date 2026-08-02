@@ -2,6 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
@@ -23,6 +24,7 @@ import {
   svnExport,
   svnImport,
   svnMove,
+  svnPathChange,
   svnPropset,
   svnPropsetEolStyle,
   svnRename,
@@ -36,6 +38,31 @@ import type { ToolEnvelope } from "./types.js";
 export const serverName = "svn";
 export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
+export type ToolProfile = "full" | "docs" | "review";
+
+const docsToolNames = [
+  "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
+] as const;
+const reviewToolNames = [...docsToolNames, "svn_diff", "svn_cat", "svn_blame"] as const;
+const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved"]);
+
+export function configuredToolProfile(value = process.env.SVN_MCP_TOOL_PROFILE): ToolProfile {
+  const normalized = value?.trim().toLowerCase() || "full";
+  if (normalized === "full" || normalized === "docs" || normalized === "review") {
+    return normalized;
+  }
+  throw new Error(`invalid SVN_MCP_TOOL_PROFILE=${value}; allowed full, docs, review`);
+}
+
+export function toolNamesForProfile(profile: ToolProfile): ReadonlySet<string> | null {
+  if (profile === "docs") {
+    return new Set(docsToolNames);
+  }
+  if (profile === "review") {
+    return new Set(reviewToolNames);
+  }
+  return null;
+}
 
 function boundedIntegerSchema(name: string, minimum: number, maximum: number, example: number) {
   const message = (value: unknown) =>
@@ -47,10 +74,23 @@ function boundedIntegerSchema(name: string, minimum: number, maximum: number, ex
 }
 
 export function createServer(): McpServer {
+  const profile = configuredToolProfile();
+  const enabledNames = toolNamesForProfile(profile);
   const server = new McpServer({
     name: serverName,
     version: serverVersion
   });
+  const profileRegistrations = new Map<string, { config: unknown; callback: unknown }>();
+  const register = server.registerTool.bind(server);
+  server.registerTool = ((name: string, config: unknown, callback: unknown) => {
+    profileRegistrations.set(name, { config, callback });
+    const tool = register(name, config as never, callback as never);
+    const advertised = enabledNames ? enabledNames.has(name) : !hiddenLegacyToolNames.has(name);
+    if (!advertised) {
+      tool.disable();
+    }
+    return tool;
+  }) as typeof server.registerTool;
 
   const noNul = /^[^\x00]*$/;
   const filesystemPath = z.string().min(1).max(4096).regex(noNul, "must not contain NUL");
@@ -99,7 +139,11 @@ export function createServer(): McpServer {
       description: "Check package and bundled runtime health.",
       inputSchema: { cwd, detailed: z.boolean().optional(), ...response }
     },
-    async (args, extra) => handleTool("svn_self_check", args, extra.signal, () => svnSelfCheck(compactArgs(args), serverVersion))
+    async (args, extra) => handleTool("svn_self_check", args, extra.signal, async () => ({
+      ...await svnSelfCheck(compactArgs(args), serverVersion),
+      tool_profile: profile,
+      advertised_tool_count: enabledNames?.size ?? 25
+    }))
   );
 
   server.registerTool(
@@ -371,6 +415,21 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
+    "svn_path_change",
+    {
+      description: "Move, rename, or copy one working-copy path.",
+      inputSchema: {
+        cwd,
+        action: z.enum(["move", "rename", "copy"]),
+        src: filesystemPath,
+        dest: filesystemPath,
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_path_change", args, extra.signal, () => svnPathChange(compactArgs(args)))
+  );
+
+  server.registerTool(
     "svn_update",
     {
       description: "Guarded update with conflicts postponed.",
@@ -517,7 +576,48 @@ export function createServer(): McpServer {
     async (args, extra) => handleTool("svn_import", args, extra.signal, () => svnImport(compactArgs(args)))
   );
 
+  installProfileCallHandler(server, profile, enabledNames, profileRegistrations);
   return server;
+}
+
+function installProfileCallHandler(
+  server: McpServer,
+  profile: ToolProfile,
+  enabledNames: ReadonlySet<string> | null,
+  registrations: Map<string, { config: unknown; callback: unknown }>
+): void {
+  server.server.removeRequestHandler("tools/call");
+  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const name = request.params.name;
+    if (enabledNames && !enabledNames.has(name)) {
+      const note = `tool ${name} is not exposed by the ${profile} profile; set SVN_MCP_TOOL_PROFILE=full`;
+      return {
+        isError: true,
+        content: [{ type: "text", text: `ERROR ${name}: ${note}` }],
+        structuredContent: {
+          ok: false,
+          code: "TOOL_PROFILE",
+          tool: name,
+          activeProfile: profile,
+          note,
+          remediation: "use the full profile and restart the MCP client"
+        }
+      };
+    }
+
+    const registration = registrations.get(name);
+    if (!registration) {
+      throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
+    }
+    const config = registration.config as { inputSchema?: z.ZodRawShape };
+    const parsed = z.object(config.inputSchema ?? {}).safeParse(request.params.arguments ?? {});
+    if (!parsed.success) {
+      const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ");
+      throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for tool ${name}: ${details}`);
+    }
+    const callback = registration.callback as (args: Record<string, unknown>, callbackExtra: typeof extra) => Promise<unknown>;
+    return await callback(parsed.data, extra) as never;
+  });
 }
 
 export async function handleTool(

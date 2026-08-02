@@ -694,6 +694,18 @@ describe("public MCP response shaping", () => {
       verifiedStatus: "renamed"
     });
 
+    const pathChange = toToolResult("svn_path_change", movePayload, {
+      responseMode: "compact",
+      request: { action: "copy", src: "docs/old.md", dest: "docs/copy.md" }
+    }).structuredContent;
+    expect(pathChange).toEqual({
+      ok: true,
+      action: "copy",
+      source: "docs/old.md",
+      target: "docs/copy.md",
+      verifiedStatus: "copied"
+    });
+
     const imported = toToolResult("svn_import", createEnvelope({
       ok: true,
       command: "svn import",

@@ -922,8 +922,8 @@
       }
     },
     {
-      "name": "svn_move",
-      "description": "Guarded working-copy move.",
+      "name": "svn_path_change",
+      "description": "Move, rename, or copy one working-copy path.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -933,6 +933,14 @@
             "minLength": 1,
             "maxLength": 4096,
             "pattern": "^[^\\x00]*$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "move",
+              "rename",
+              "copy"
+            ]
           },
           "src": {
             "type": "string",
@@ -956,94 +964,7 @@
           }
         },
         "required": [
-          "src",
-          "dest"
-        ],
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "svn_rename",
-      "description": "Alias for guarded working-copy move.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "cwd": {
-            "description": "Absolute WC directory; required for relative paths.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "src": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "dest": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "responseMode": {
-            "type": "string",
-            "enum": [
-              "compact",
-              "standard",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "src",
-          "dest"
-        ],
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "svn_copy",
-      "description": "Guarded working-copy copy.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "cwd": {
-            "description": "Absolute WC directory; required for relative paths.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "src": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "dest": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "responseMode": {
-            "type": "string",
-            "enum": [
-              "compact",
-              "standard",
-              "full"
-            ]
-          }
-        },
-        "required": [
+          "action",
           "src",
           "dest"
         ],
@@ -1211,53 +1132,6 @@
     {
       "name": "svn_resolve",
       "description": "Resolve one conflict with an explicit mode.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "cwd": {
-            "description": "Absolute WC directory; required for relative paths.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
-          },
-          "accept": {
-            "type": "string",
-            "enum": [
-              "working",
-              "mine-full",
-              "theirs-full",
-              "base"
-            ]
-          },
-          "responseMode": {
-            "type": "string",
-            "enum": [
-              "compact",
-              "standard",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "path",
-          "accept"
-        ],
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "svn_resolved",
-      "description": "Deprecated alias for svn_resolve.",
       "inputSchema": {
         "type": "object",
         "properties": {

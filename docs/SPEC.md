@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.26 — public implementation contract. Single source of truth.**
+**Spec version 1.27 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -160,7 +160,7 @@ no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
     tools\
       readonly.ts     # status/info, diff/log/cat/blame, EOL, properties
       composite.ts    # svn_precommit, eol_fix_verified
-      mutating.ts     # svn_add, svn_commit, svn_move, svn_rename, svn_copy,
+      mutating.ts     # svn_add, svn_commit, svn_path_change,
                       # svn_update, svn_revert, svn_delete, svn_resolve, svn_cleanup,
                       # svn_propset_eol_style, svn_propset, svn_export, svn_import
   tests\              # jest: unit + integration (temp file:// repo)
@@ -189,6 +189,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
+| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 25 canonical tools), `docs` (8), or `review` (11) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact` (default), `standard`, or `full` |
 
 ### 6.3 Path & cwd rules
@@ -210,6 +211,20 @@ parsed envelope but omits redundant successful stdout. Full mode preserves the l
 and bounded raw successful output for troubleshooting. Failures retain bounded stdout/stderr diagnostics
 in every mode. Response shaping never bypasses path validation, guards, EOL checks,
 mixed-revision checks, or post-mutation verification.
+
+### 6.5 Tool profiles
+
+Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
+25 canonical tools. `docs` advertises `svn_update`, `svn_status`, `svn_log`, `svn_add`,
+`eol_check`, `eol_fix_verified`, `svn_precommit`, and `svn_commit`. `review` adds `svn_diff`,
+`svn_cat`, and `svn_blame`. A call to an unadvertised tool in a focused profile returns a typed
+`TOOL_PROFILE` refusal with remediation. READONLY checks and every mutation guard still run
+independently.
+
+The full profile omits legacy `svn_move`, `svn_rename`, `svn_copy`, and `svn_resolved` from tool
+discovery. Existing clients may continue calling those routes in full mode, while new clients use
+`svn_path_change` and `svn_resolve`. This retains wire compatibility without charging every agent
+for four redundant schemas.
 
 Internally, tools retain this complete envelope so composite and mutation safety logic does not
 depend on the selected public response mode:
@@ -273,7 +288,7 @@ hidden/no-window process option.
 - **G1 explicit targets:** mutating path-list tools require non-empty `paths[]`; source/destination tools require explicit `src` and `dest` (exceptions: `svn_update` with `updateAll:true`; `svn_cleanup` takes one `path`). No implicit `.`, no recursive default anywhere. Public path arrays are capped at 500 entries, filesystem paths at 4,096 characters, and repository locations at 8,192 characters.
 - **G2 READONLY:** `--readonly` (or legacy/dev `SVN_AGENT_READONLY=1`) → all §8.4 tools + `eol_fix_verified` refuse.
 - **G3 WC containment:** resolved paths must be inside the working copy (§6.3).
-- **G4 never-commit globs** (block in `svn_add`, `svn_move`, `svn_rename`, `svn_copy`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`, `**/.npmrc`, `**/.git/**`, `**/.hg/**`, `**/.svn/**`, `**/.ssh/**`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions for generated payloads, for example to version a toolchain payload in the MCP repository itself. Credential and VCS-metadata guards cannot be overridden. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
+- **G4 never-commit globs** (block in `svn_add`, `svn_path_change`, and `svn_commit`; case-insensitive, match on repo-relative path): `**/bin/**`, `**/dist/**`, `**/node_modules/**`, `**/coverage/**`, `**/obj/**`, `**/.vs/**`, `**/.cache/**`, `**/*.db`, `**/*.tsbuildinfo`, `scratch/**`, `packages/**`, `tags/**`, `.graphify/**`, `graphify-out/**`, `**/*.pfx`, `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.snk`, `**/.env*`, `**/.npmrc`, `**/.git/**`, `**/.hg/**`, `**/.svn/**`, `**/.ssh/**`. Optional repo-local `.svn-mcp-policy.json` may add strict allow/deny exceptions for generated payloads, for example to version a toolchain payload in the MCP repository itself. Credential and VCS-metadata guards cannot be overridden. ("Unrelated drive-by changes" cannot be a glob — mitigated by G1 + G5; stays agent judgment.)
   Policy shape:
   ```json
   { "neverCommit": { "allow": ["bin/**"], "deny": ["custom-generated/**"] } }
@@ -498,24 +513,18 @@ explicitly acknowledges that `--depth empty` commits only the directory node and
 descendants. Explicit child paths remain the normal scoped workflow; any descendants left changed
 are reported by the post-status residue.
 
-**`svn_move`** — `{ cwd?, src: string, dest: string }`
-argv: `svn move --parents <src> <dest>`. Working-copy path → working-copy path only; repository
-URL forms are refused because URL moves create revisions immediately and require message-file
-handling. `src` must exist and both `src` and `dest` must resolve inside the working copy.
-Intermediate destination directories are created/scheduled by SVN. G4 enforced on both `src` and
-`dest`. Extra: `{ operation:"move", src, dest }` plus scoped `changed_paths` for review/commit.
-Committing a move normally requires both old and new paths; because the old path is scheduled
-delete, `svn_commit` requires `riskAck:true` by G6.
+**`svn_path_change`** — `{ cwd?, action: "move"|"rename"|"copy", src: string, dest: string }`
+argv: `svn <move|copy> --parents <src> <dest>`; `rename` uses SVN's `move` operation. Working-copy
+path to working-copy path only; repository URL forms are refused because URL mutations create
+revisions immediately and require message-file handling. `src` must exist and both paths must
+resolve inside the working copy. Intermediate destination directories are created and scheduled by
+SVN. G4 applies to both paths. The receipt reports the requested action plus scoped changed paths.
+Committing a move or rename normally requires both old and new paths; because the old path is
+scheduled delete, `svn_commit` requires `riskAck:true` by G6.
 
-**`svn_rename`** — `{ cwd?, src: string, dest: string }`
-Alias for `svn_move`, registered separately so clients can use the natural verb when doing a
-rename. Same argv, guards, and response shape as `svn_move`.
-
-**`svn_copy`** — `{ cwd?, src: string, dest: string }`
-argv: `svn copy --parents <src> <dest>`. Working-copy path → working-copy path only; repository
-URL forms are refused. `src` must exist and both paths must be inside the working copy.
-Intermediate destination directories are created/scheduled by SVN. G4 enforced on both `src` and
-`dest`. Extra: `{ operation:"copy", src, dest }` plus scoped `changed_paths`.
+The legacy `svn_move`, `svn_rename`, and `svn_copy` routes remain callable in the full profile for
+compatibility but are omitted from tool discovery. They have the same guards and behavior as the
+corresponding `svn_path_change` action.
 
 **`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
@@ -544,7 +553,8 @@ successful schedule-delete is followed by scoped status verification for `D` ent
 **`svn_resolve`** — `{ cwd?, path: string, accept: "working"|"mine-full"|"theirs-full"|"base" }`
 argv: `svn resolve --accept <accept> <path>`. Single path; `accept` has **no default** — the
 caller must state the resolution. Intended only after an operator asked for conflict resolution.
-`svn_resolved` remains registered as a deprecated compatibility alias.
+The legacy `svn_resolved` route remains callable in the full profile as a deprecated compatibility
+alias but is omitted from tool discovery.
 
 **`svn_cleanup`** — `{ cwd?, path?: string }`
 argv: `svn cleanup [path]` — releases stale WC locks (the `E155004` remedy). **Never** passes
@@ -713,6 +723,21 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.27 / Unreleased — 2026-08-02
+
+- Adds `full`, `docs`, and `review` tool profiles as schema-context controls with typed hidden-tool
+  refusals and unchanged safety guards.
+- Consolidates move, rename, and copy discovery under canonical `svn_path_change`; legacy routes
+  remain callable in full mode without consuming advertised schema context.
+
+### Spec 1.26 / Unreleased — 2026-08-02
+
+- Adds repository-driven transactional EOL normalization during add and bounded batch EOL repair.
+- Makes diff and blame EOL-blind by default while retaining explicit EOL diagnostics.
+- Blocks malformed commit messages before mutation, strengthens commit receipts, and fixes Windows
+  Unicode argv handling with a reproducible UTF-8 runtime manifest.
+- Adds response/schema budgets and a post-large-diff protocol recovery smoke test.
 
 ### Spec 1.25 / v1.3.0 — 2026-07-31
 

@@ -68,8 +68,18 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    if (tools.tools.length !== 28) {
-      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 28`);
+    if (tools.tools.length !== 25) {
+      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 25 canonical tools`);
+    }
+    for (const name of ["svn_path_change", "svn_resolve", "svn_delete", "svn_snapshot", "svn_cat", "svn_blame"]) {
+      if (!tools.tools.some((tool) => tool.name === name)) {
+        throw new Error(`installed MCP omitted canonical tool ${name}`);
+      }
+    }
+    for (const name of ["svn_move", "svn_rename", "svn_copy", "svn_resolved"]) {
+      if (tools.tools.some((tool) => tool.name === name)) {
+        throw new Error(`installed MCP advertised legacy compatibility tool ${name}`);
+      }
     }
     const response = await client.callTool({
       name: "svn_self_check",
@@ -84,7 +94,7 @@ try {
   }
 
   console.log(`Packed install smoke passed: ${filename}`);
-  console.log("  MCP handshake: 28 tools, healthy self-check");
+  console.log("  MCP handshake: 25 canonical tools, healthy self-check");
   console.log(`  layout: ${check.runtime_layout}`);
   console.log(`  dist files: ${check.dist_file_count}`);
   console.log(`  bin files: ${check.bin_file_count}`);

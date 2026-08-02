@@ -32,6 +32,10 @@ const compactBudgets = {
   "self-check": 400,
   "add receipt": 250
 };
+const profileSchemaBudgets = {
+  docs: { toolCount: 8, inputSchemas: 7000, toolDefinitions: 8000 },
+  review: { toolCount: 11, inputSchemas: 9700, toolDefinitions: 11000 }
+};
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 fs.mkdirSync(temporaryRoot, { recursive: true });
@@ -77,6 +81,10 @@ try {
     allToolDefinitions: JSON.stringify(listed.tools).length,
     selectedToolDefinitions: JSON.stringify(listed.tools.filter((tool) => selectedNames.has(tool.name))).length
   };
+  const profileSchemas = {
+    docs: await measureProfileSchemas("docs"),
+    review: await measureProfileSchemas("review")
+  };
 
   const rawPrecommit = [
     raw(svn, ["status", seed], workingCopy),
@@ -111,8 +119,8 @@ try {
   const compactAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-compact.txt"], responseMode: "compact" });
   measurements.push(measurement("add receipt", compactAdd, fullAdd, rawAdd));
 
-  const failures = budgetFailures(schemaSizes, measurements);
-  process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, measurements, budgetFailures: failures }, null, 2)}\n`);
+  const failures = budgetFailures(schemaSizes, profileSchemas, measurements);
+  process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, profileSchemas, measurements, budgetFailures: failures }, null, 2)}\n`);
   if (enforceBudgets && failures.length > 0) {
     process.exitCode = 1;
   }
@@ -154,11 +162,19 @@ function run(executable, args, cwd = root) {
   execFileSync(executable, args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe" });
 }
 
-function budgetFailures(schemaSizes, measurements) {
+function budgetFailures(schemaSizes, profileSchemas, measurements) {
   const failures = [];
   for (const [name, maximum] of Object.entries(schemaBudgets)) {
     if (schemaSizes[name] > maximum) {
       failures.push(`schema ${name}: ${schemaSizes[name]} > ${maximum}`);
+    }
+  }
+  for (const [profile, maximums] of Object.entries(profileSchemaBudgets)) {
+    const measured = profileSchemas[profile];
+    for (const [name, maximum] of Object.entries(maximums)) {
+      if (measured[name] > maximum) {
+        failures.push(`${profile} profile ${name}: ${measured[name]} > ${maximum}`);
+      }
     }
   }
   for (const result of measurements) {
@@ -171,4 +187,38 @@ function budgetFailures(schemaSizes, measurements) {
     }
   }
   return failures;
+}
+
+async function measureProfileSchemas(profile) {
+  const profileTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: [server],
+    cwd: root,
+    env: {
+      ...stringEnvironment(process.env),
+      SVN_MCP_TOOL_PROFILE: profile
+    },
+    stderr: "ignore"
+  });
+  const profileClient = new Client({ name: `response-benchmark-${profile}`, version: "1.0.0" });
+  try {
+    await profileClient.connect(profileTransport);
+    const listed = await profileClient.listTools();
+    const hidden = await profileClient.callTool({ name: "svn_delete", arguments: { paths: ["unused"] } });
+    const refusal = hidden.structuredContent ?? {};
+    if (refusal.code !== "TOOL_PROFILE" || refusal.tool !== "svn_delete" || refusal.activeProfile !== profile) {
+      throw new Error(`${profile} profile did not return a typed hidden-tool refusal`);
+    }
+    return {
+      toolCount: listed.tools.length,
+      inputSchemas: JSON.stringify(listed.tools.map((tool) => tool.inputSchema)).length,
+      toolDefinitions: JSON.stringify(listed.tools).length
+    };
+  } finally {
+    await profileClient.close().catch(() => undefined);
+  }
+}
+
+function stringEnvironment(environment) {
+  return Object.fromEntries(Object.entries(environment).filter((entry) => typeof entry[1] === "string"));
 }

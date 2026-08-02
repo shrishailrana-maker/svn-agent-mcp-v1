@@ -41,6 +41,7 @@ const MUTATION_STATUS: Record<string, string> = {
   svn_export: "exported",
   svn_import: "imported",
   svn_move: "renamed",
+  svn_path_change: "changed",
   svn_propset: "property-set",
   svn_propset_eol_style: "property-set",
   svn_rename: "renamed",
@@ -326,6 +327,8 @@ function compactSelfCheck(payload: ToolEnvelope, request: Record<string, unknown
     ok: payload.ok,
     version: payload.server_version,
     available: payload.toolchain_ok === true && payload.runtime_layout_ok === true,
+    ...(payload.tool_profile ? { toolProfile: payload.tool_profile } : {}),
+    ...(payload.advertised_tool_count !== undefined ? { advertisedToolCount: payload.advertised_tool_count } : {}),
     ...(payload.note ? { diagnostics: payload.note } : {})
   };
 }
@@ -645,9 +648,11 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     };
   }
 
-  const result = MUTATION_STATUS[tool];
+  const result = tool === "svn_path_change"
+    ? request.action === "copy" ? "copied" : "renamed"
+    : MUTATION_STATUS[tool];
   const receiptRoot = typeof payload.wc_root === "string" ? payload.wc_root : payload.cwd;
-  const verified = (tool === "svn_move" || tool === "svn_rename" || tool === "svn_copy")
+  const verified = (tool === "svn_move" || tool === "svn_rename" || tool === "svn_copy" || tool === "svn_path_change")
     ? payload.changed_paths.length > 0
     : tool === "svn_delete"
       ? payload.post_status_verified === true
@@ -661,7 +666,7 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
   const targetPath = receiptValue(request.path);
   const receipt: Record<string, unknown> = {
     ok: true,
-    action: tool.replace(/^svn_/, ""),
+    action: tool === "svn_path_change" ? request.action : tool.replace(/^svn_/, ""),
     ...(source !== undefined ? { source } : {}),
     ...(target !== undefined ? { target } : {}),
     ...(targetPath !== undefined ? { path: targetPath } : {}),

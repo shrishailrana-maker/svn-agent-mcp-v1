@@ -391,6 +391,18 @@ export async function svnCopy(input: { cwd?: string; src: string; dest: string }
   return svnMoveOrCopy("svn copy", "copy", input);
 }
 
+export async function svnPathChange(input: {
+  cwd?: string;
+  action: "move" | "rename" | "copy";
+  src: string;
+  dest: string;
+}): Promise<ToolEnvelope> {
+  if (input.action === "copy") {
+    return svnCopy(input);
+  }
+  return input.action === "rename" ? svnRename(input) : svnMove(input);
+}
+
 export async function svnUpdate(input: {
   cwd?: string;
   paths?: string[];

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnPrecommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
@@ -191,7 +191,7 @@ describe("SVN tool integration against a temp repository", () => {
       expect(diff.per_file).toHaveLength(1);
       expect(normalizeStatusPath(diff.per_file[0].path, fixture.wc)).toBe(original);
 
-      expect((await svnMove({ cwd: fixture.wc, src: original, dest: moved })).ok).toBe(true);
+      expect((await svnPathChange({ cwd: fixture.wc, action: "move", src: original, dest: moved })).ok).toBe(true);
       const second = await svnCommit({
         cwd: fixture.wc,
         paths: [original, moved],

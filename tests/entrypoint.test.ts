@@ -4,11 +4,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
-import { handleTool, serverVersion } from "../src/index.js";
+import { configuredToolProfile, handleTool, serverVersion, toolNamesForProfile } from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
 
 describe("server entrypoint launch detection", () => {
+  it("selects bounded tool profiles while keeping full as the default", () => {
+    expect(configuredToolProfile(undefined)).toBe("full");
+    expect([...(toolNamesForProfile("docs") ?? [])]).toEqual([
+      "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
+    ]);
+    expect(toolNamesForProfile("review")?.size).toBe(11);
+    expect(toolNamesForProfile("full")).toBeNull();
+    expect(() => configuredToolProfile("wide-open")).toThrow("allowed full, docs, review");
+  });
+
   it("uses the package version as the MCP server version", () => {
     expect(serverVersion).toBe(packageJson.version);
   });
