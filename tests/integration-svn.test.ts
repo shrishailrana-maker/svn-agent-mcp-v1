@@ -13,6 +13,19 @@ import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnSt
 jest.setTimeout(30000);
 
 describe("SVN tool integration against a temp repository", () => {
+  it("skips unrequested snapshot components for projected fields", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const revisionOnly = await svnSnapshot({ cwd: fixture.wc, fields: ["revision"] });
+      expect(revisionOnly).toMatchObject({ ok: true, components: { status: false, info: true } });
+
+      const statusOnly = await svnSnapshot({ cwd: fixture.wc, fields: ["counts"] });
+      expect(statusOnly).toMatchObject({ ok: true, components: { status: true, info: false } });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("treats at signs in working-copy and export paths as literal characters", async () => {
     const fixture = createTempWorkingCopy();
     try {

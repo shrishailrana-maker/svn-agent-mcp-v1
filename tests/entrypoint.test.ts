@@ -23,6 +23,28 @@ describe("server entrypoint launch detection", () => {
     expect(serverVersion).toBe(packageJson.version);
   });
 
+  it("publishes compact response modes without repeating global controls in every schema", async () => {
+    if (!fs.existsSync(distIndex)) {
+      return;
+    }
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+    const client = new Client({ name: "schema-controls", version: "1.0.0" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [distIndex], stderr: "ignore" });
+    try {
+      await client.connect(transport);
+      const tools = await client.listTools();
+      const status = tools.tools.find((tool) => tool.name === "svn_status");
+      expect(status?.inputSchema.properties?.responseMode?.enum).toEqual([
+        "compact", "standard", "full", "receipt", "structured-only"
+      ]);
+      expect(status?.inputSchema.properties).not.toHaveProperty("humanText");
+      expect(status?.inputSchema.properties).not.toHaveProperty("fields");
+    } finally {
+      await client.close();
+    }
+  }, 20000);
+
   it("contains unexpected tool failures in a redacted error envelope", async () => {
     const secret = "unexpected-private-detail";
     const result = await handleTool(

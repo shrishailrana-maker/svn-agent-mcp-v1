@@ -315,6 +315,7 @@ export async function svnDiff(input: {
       truncated: diff.truncated
     }),
     ...diff,
+    wc_root: context.wcRoot,
     page_offset: lineOffset,
     ...(diff.truncated ? { next_cursor: String(lineOffset + excerptLineCount(diff.diff_excerpt)) } : {}),
     ignore_eol: ignoreEol,
@@ -589,6 +590,7 @@ export async function eolCheck(input: { cwd?: string; paths: string[] }): Promis
       cwd: context.cwd,
       note: files.some((file) => file.mismatch) ? "EOL mismatch detected" : ""
     }),
+    wc_root: context.wcRoot,
     files
   };
 }

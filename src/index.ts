@@ -40,6 +40,34 @@ export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 export type ToolProfile = "full" | "docs" | "review";
 
+export const fieldProjectionNames = {
+  svn_status: ["revision", "changedPaths", "counts", "items", "conflicts"],
+  svn_info: [
+    "root", "revision", "url", "repositoryRoot", "mixedRevision", "revisionRange",
+    "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
+  ],
+  svn_snapshot: [
+    "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
+    "remoteHeadRevision", "staleBase", "changedPaths", "counts", "items", "conflicts"
+  ],
+  svn_log: ["revision", "revisionRange", "entryCount", "entries", "targetMode"],
+  svn_diff: ["files", "totalFiles", "added", "removed", "excerpt", "eolOnly"],
+  svn_propget: ["path", "name", "value"],
+  svn_precommit: [
+    "ready", "verdict", "pathCount", "statusCounts", "diff", "eol", "mixedRevision",
+    "revisionRange", "guardFailures", "riskSignals", "remediation"
+  ],
+  svn_update: [
+    "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision", "remoteHeadRevision",
+    "changedPaths", "counts", "conflicts", "expectedRemoteHead", "observedRemoteHead"
+  ],
+  svn_commit: [
+    "revision", "committedRevision", "committedPaths", "committedCount", "pathCount", "baseRevision",
+    "baseRevisionRange", "remoteHeadRevision", "eolVerdict", "workingCopyMixed", "contentHashes",
+    "postStatusClean", "residue", "warningCode", "warningDetail", "failedRule", "suggestedMessage"
+  ]
+} as const;
+
 const docsToolNames = [
   "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
 ] as const;
@@ -84,8 +112,9 @@ export function createServer(): McpServer {
   const register = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: unknown, callback: unknown) => {
     profileRegistrations.set(name, { config, callback });
-    const tool = register(name, config as never, callback as never);
     const advertised = enabledNames ? enabledNames.has(name) : !hiddenLegacyToolNames.has(name);
+    const publicConfig = advertised && enabledNames ? focusedProfileConfig(config) : config;
+    const tool = register(name, publicConfig as never, callback as never);
     if (!advertised) {
       tool.disable();
     }
@@ -112,16 +141,11 @@ export function createServer(): McpServer {
     /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})(?::(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\}))?$/i
   ).optional();
   const propertyName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/);
-  const responseMode = z.enum(["compact", "standard", "full"]).optional();
+  const responseMode = z.enum(["compact", "standard", "full", "receipt", "structured-only"]).optional();
   const response = { responseMode };
   const cursor = z.string().max(32).regex(/^\d+$/, "cursor must be a decimal offset with at most 32 digits").optional();
   // svn_log cursors may carry the range floor as "next:floor".
   const logCursor = z.string().max(65).regex(/^\d+(?::\d+)?$/).optional();
-  const infoField = z.enum([
-    "root", "revision", "url", "repositoryRoot", "mixedRevision", "revisionRange",
-    "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
-  ]);
-  const propertyField = z.enum(["path", "name", "value"]);
   const maxItems = boundedIntegerSchema("maxItems", 1, 500, 100).optional();
   const lineLimit = boundedIntegerSchema("lineLimit", 1, 2000, 200).optional();
   const maxChars = boundedIntegerSchema("maxChars", 256, 64000, 3000).optional();
@@ -150,7 +174,14 @@ export function createServer(): McpServer {
     "svn_diagnose",
     {
       description: "Diagnose local and remote working-copy health.",
-      inputSchema: { cwd, paths: optionalPaths, ...response }
+      inputSchema: {
+        cwd,
+        paths: optionalPaths,
+        includePassing: z.boolean().optional(),
+        maxItems,
+        cursor,
+        ...response
+      }
     },
     async (args, extra) => handleTool("svn_diagnose", args, extra.signal, () => svnDiagnose(compactArgs(args)))
   );
@@ -182,7 +213,7 @@ export function createServer(): McpServer {
       inputSchema: {
         cwd,
         paths: optionalPaths,
-        fields: z.array(infoField).max(11).optional(),
+        fields: z.array(z.enum(fieldProjectionNames.svn_info)).max(11).optional(),
         ...response
       }
     },
@@ -311,7 +342,7 @@ export function createServer(): McpServer {
         cwd,
         paths,
         name: propertyName,
-        fields: z.array(propertyField).max(3).optional(),
+        fields: z.array(z.enum(fieldProjectionNames.svn_propget)).max(3).optional(),
         maxValueChars,
         countOnly: z.boolean().optional(),
         maxItems,
@@ -580,6 +611,23 @@ export function createServer(): McpServer {
   return server;
 }
 
+function focusedProfileConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object") {
+    return config;
+  }
+  const typed = config as { inputSchema?: z.ZodRawShape } & Record<string, unknown>;
+  if (!typed.inputSchema?.responseMode) {
+    return config;
+  }
+  return {
+    ...typed,
+    inputSchema: {
+      ...typed.inputSchema,
+      responseMode: z.enum(["compact", "receipt", "structured-only"]).optional()
+    }
+  };
+}
+
 function installProfileCallHandler(
   server: McpServer,
   profile: ToolProfile,
@@ -615,9 +663,32 @@ function installProfileCallHandler(
       const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ");
       throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for tool ${name}: ${details}`);
     }
+    const extras = validateGlobalResponseArguments(name, request.params.arguments ?? {});
     const callback = registration.callback as (args: Record<string, unknown>, callbackExtra: typeof extra) => Promise<unknown>;
-    return await callback(parsed.data, extra) as never;
+    return await callback({ ...parsed.data, ...extras }, extra) as never;
   });
+}
+
+function validateGlobalResponseArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  const extras: Record<string, unknown> = {};
+  if (args.humanText !== undefined) {
+    if (typeof args.humanText !== "boolean") {
+      throw new McpError(ErrorCode.InvalidParams, "humanText must be true or false");
+    }
+    extras.humanText = args.humanText;
+  }
+  if (args.fields !== undefined) {
+    const allowed = fieldProjectionNames[name as keyof typeof fieldProjectionNames] as readonly string[] | undefined;
+    if (!allowed) {
+      throw new McpError(ErrorCode.InvalidParams, `fields projection is not supported for ${name}`);
+    }
+    if (!Array.isArray(args.fields) || args.fields.length > allowed.length
+      || args.fields.some((field) => typeof field !== "string" || !allowed.includes(field))) {
+      throw new McpError(ErrorCode.InvalidParams, `invalid fields for ${name}; allowed ${allowed.join(", ")}`);
+    }
+    extras.fields = args.fields;
+  }
+  return extras;
 }
 
 export async function handleTool(
@@ -637,7 +708,11 @@ export async function handleTool(
 
 function publicToolResult(tool: string, payload: ToolEnvelope, request: Record<string, unknown>) {
   const requestedMode = request.responseMode;
-  const responseMode: ResponseMode | undefined = requestedMode === "compact" || requestedMode === "standard" || requestedMode === "full"
+  const responseMode: ResponseMode | undefined = requestedMode === "compact"
+    || requestedMode === "standard"
+    || requestedMode === "full"
+    || requestedMode === "receipt"
+    || requestedMode === "structured-only"
     ? requestedMode
     : undefined;
   return toToolResult(tool, payload, {

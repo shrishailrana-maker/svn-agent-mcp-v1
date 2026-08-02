@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.27 — public implementation contract. Single source of truth.**
+**Spec version 1.28 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-02.
 
@@ -190,7 +190,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
 | `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 25 canonical tools), `docs` (8), or `review` (11) |
-| `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact` (default), `standard`, or `full` |
+| `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 
 ### 6.3 Path & cwd rules
 
@@ -204,13 +204,29 @@ never silently `.`.
 
 ### 6.4 Response modes and internal envelope
 
-Every tool accepts optional `responseMode: "compact" | "standard" | "full"`. The server default
-is `compact`, overridable with `SVN_MCP_RESPONSE_MODE`. Compact mode returns bounded,
-tool-specific structured results and a one-line text receipt. Standard mode preserves the full
-parsed envelope but omits redundant successful stdout. Full mode preserves the legacy envelope
-and bounded raw successful output for troubleshooting. Failures retain bounded stdout/stderr diagnostics
-in every mode. Response shaping never bypasses path validation, guards, EOL checks,
-mixed-revision checks, or post-mutation verification.
+Every tool accepts optional `responseMode: "compact" | "receipt" | "structured-only" |
+"standard" | "full"`. The server default is `compact`, overridable with
+`SVN_MCP_RESPONSE_MODE`. Compact mode returns bounded tool-specific structured results.
+`structured-only` is an explicit compact alias. Receipt mode is smaller still for status,
+snapshot, precommit, update, and commit: verdict/success, relative changed paths, revisions,
+conflict and line totals, operation ID when available, and continuation only. Other tools treat
+receipt as compact.
+
+`structuredContent` is authoritative; the MCP `content` array is empty by default to avoid
+returning the same facts twice. `humanText:true` adds a short summary for clients that require one.
+Standard mode preserves the parsed envelope without raw successful stdout, commands, or absolute
+working-copy roots. Full mode preserves the bounded legacy diagnostic envelope, including raw
+successful output and machine paths. Non-full failures retain actionable bounded diagnostics with
+working-copy paths made relative, except typed
+guard refusals omit redundant raw submitted path lists. Response shaping never bypasses path
+validation, guards, EOL checks, mixed-revision checks, or post-mutation verification.
+
+Compact, receipt, and standard paths are working-copy-relative. High-use tools accept a validated
+`fields` projection. The one shared allowed-field catalog is generated under
+`globalResponseControls.fieldProjections` in `MCP_API.json`; it is intentionally not repeated in
+every live tool schema. The call router validates projection names before invoking a tool. Snapshot
+also skips its status or info subprocess group when the requested fields prove that group is not
+needed. Safety checks in precommit and mutations never skip work because of projection.
 
 ### 6.5 Tool profiles
 
@@ -403,7 +419,8 @@ Pure read/self-diagnostic tool. Reports MCP package/runtime version, `current` j
 whether `current` matches the package version, release `bin` and `dist` payload counts, startup
 probe results for bundled tools, whether the bundled SVN/EOL toolchain is healthy, and whether
 release/clean scripts use the Node-based paths. Compact output normally returns only version,
-availability, and short diagnostics; `detailed:true` includes paths, counts, and capabilities.
+availability, and short diagnostics; `detailed:true` includes counts and capabilities without
+machine paths. Request full mode when executable and release-layout paths are required.
 Prepared source clones use `current -> releases/v<version>`; npm installations are valid with
 package-root `dist/` and `bin/` and no generated junction. For npm-package layouts,
 `current_pointer_applicable:false` and `current_matches_package:null`; pointer state does not reduce
@@ -723,6 +740,17 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.28 / Unreleased — 2026-08-02
+
+- Makes structured MCP data authoritative and human text explicit opt-in.
+- Adds receipt and structured-only modes, relative normal-mode paths, validated field projection,
+  and projection-aware snapshot execution.
+- Shrinks compact guard refusals and standardizes failure-only check output.
+- Makes receipt cursors advance deterministically and removes remaining machine-path leaks from
+  every non-full response shape.
+- Enforces response and schema budgets, including receipt targets, while keeping the full live
+  input schema smaller than before the feature.
 
 ### Spec 1.27 / Unreleased — 2026-08-02
 

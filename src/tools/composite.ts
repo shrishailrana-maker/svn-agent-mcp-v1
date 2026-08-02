@@ -35,34 +35,46 @@ export async function svnSnapshot(input: {
   paths?: string[];
   includeIgnored?: boolean;
   hideNoise?: boolean;
+  fields?: string[];
 }): Promise<ToolEnvelope> {
+  const requested = new Set(input.fields ?? []);
+  const projected = requested.size > 0;
+  const statusFields = ["changedPaths", "counts", "items", "conflicts"];
+  const infoFields = [
+    "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
+    "remoteHeadRevision", "staleBase"
+  ];
+  const needStatus = !projected || statusFields.some((field) => requested.has(field));
+  const needInfo = !projected || infoFields.some((field) => requested.has(field));
   const [status, info] = await Promise.all([
-    svnStatus(input),
-    svnInfo({
+    needStatus ? svnStatus(input) : Promise.resolve(null),
+    needInfo ? svnInfo({
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.paths === undefined ? {} : { paths: input.paths })
-    })
+    }) : Promise.resolve(null)
   ]);
-  const ok = status.ok && info.ok;
+  const ok = (status?.ok ?? true) && (info?.ok ?? true);
+  const cwd = status?.cwd ?? info?.cwd ?? resolveCwd(input.cwd);
   return {
     ...createEnvelope({
       ok,
       command: "svn snapshot",
-      cwd: status.cwd,
-      revision: info.revision,
-      changed_paths: status.changed_paths,
-      conflicts: status.conflicts,
-      note: ok ? "" : [status.note, info.note].filter(Boolean).join("; "),
-      truncated: status.truncated || info.truncated
+      cwd,
+      revision: info?.revision,
+      changed_paths: status?.changed_paths ?? [],
+      conflicts: status?.conflicts ?? [],
+      note: ok ? "" : [status?.note, info?.note].filter(Boolean).join("; "),
+      truncated: Boolean(status?.truncated || info?.truncated)
     }),
-    wc_root: info.wc_root,
-    mixed_revision: info.mixed_revision,
-    revision_range: info.revision_range,
-    local_modifications: info.local_modifications,
-    switched: info.switched,
-    partial: info.partial,
-    remote_head_revision: info.remote_head_revision,
-    stale_base: info.stale_base
+    wc_root: info?.wc_root ?? status?.wc_root,
+    mixed_revision: info?.mixed_revision,
+    revision_range: info?.revision_range,
+    local_modifications: info?.local_modifications,
+    switched: info?.switched,
+    partial: info?.partial,
+    remote_head_revision: info?.remote_head_revision,
+    stale_base: info?.stale_base,
+    components: { status: needStatus, info: needInfo }
   };
 }
 

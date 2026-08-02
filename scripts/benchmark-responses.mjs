@@ -32,6 +32,13 @@ const compactBudgets = {
   "self-check": 400,
   "add receipt": 250
 };
+const receiptBudgets = {
+  "clean status": 200,
+  "status count only": 200,
+  "1,001-path status": 800,
+  "one-file precommit": 500
+};
+const receiptTools = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 const profileSchemaBudgets = {
   docs: { toolCount: 8, inputSchemas: 7000, toolDefinitions: 8000 },
   review: { toolCount: 11, inputSchemas: 9700, toolDefinitions: 11000 }
@@ -105,7 +112,8 @@ try {
   for (const [label, name, args, rawOutput] of cases) {
     const compact = await callSize(name, { ...args, responseMode: "compact" });
     const full = await callSize(name, { ...args, responseMode: "full" });
-    measurements.push(measurement(label, compact, full, rawOutput));
+    const receipt = receiptTools.has(name) ? await callSize(name, { ...args, responseMode: "receipt" }) : null;
+    measurements.push(measurement(label, compact, full, rawOutput, receipt));
   }
 
   const rawAddPath = path.join(workingCopy, "add-raw.txt");
@@ -117,7 +125,7 @@ try {
   const rawAdd = raw(svn, ["add", rawAddPath], workingCopy);
   const fullAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-full.txt"], responseMode: "full" });
   const compactAdd = await callSize("svn_add", { cwd: workingCopy, paths: ["add-compact.txt"], responseMode: "compact" });
-  measurements.push(measurement("add receipt", compactAdd, fullAdd, rawAdd));
+  measurements.push(measurement("add receipt", compactAdd, fullAdd, rawAdd, null));
 
   const failures = budgetFailures(schemaSizes, profileSchemas, measurements);
   process.stdout.write(`${JSON.stringify({ schemaChars: schemaSizes, profileSchemas, measurements, budgetFailures: failures }, null, 2)}\n`);
@@ -134,11 +142,12 @@ async function callSize(name, args) {
   return JSON.stringify(result).length;
 }
 
-function measurement(label, compact, full, rawOutput) {
+function measurement(label, compact, full, rawOutput, receipt) {
   const rawChars = typeof rawOutput === "string" ? rawOutput.length : null;
   return {
     case: label,
     compactChars: compact,
+    ...(typeof receipt === "number" ? { receiptChars: receipt } : {}),
     fullChars: full,
     rawCliChars: rawChars,
     reductionVsFullPercent: percentReduction(full, compact),
@@ -183,6 +192,13 @@ function budgetFailures(schemaSizes, profileSchemas, measurements) {
       result.compactBudgetChars = maximum;
       if (result.compactChars > maximum) {
         failures.push(`${result.case}: ${result.compactChars} > ${maximum}`);
+      }
+    }
+    const receiptMaximum = receiptBudgets[result.case];
+    if (receiptMaximum !== undefined && typeof result.receiptChars === "number") {
+      result.receiptBudgetChars = receiptMaximum;
+      if (result.receiptChars > receiptMaximum) {
+        failures.push(`${result.case} receipt: ${result.receiptChars} > ${receiptMaximum}`);
       }
     }
   }

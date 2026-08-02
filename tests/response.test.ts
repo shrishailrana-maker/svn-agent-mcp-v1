@@ -33,8 +33,13 @@ describe("public MCP response shaping", () => {
     expect(structured.truncated).toBe(true);
     expect(structured.nextCursor).toBe("25");
     expect(structured).not.toHaveProperty("stdout_summary");
-    expect(result.content[0]?.text).toBe("OK svn_status: 1000 changes; 25 returned; more available");
-    expect(result.content[0]?.text).not.toContain("file-0000.ts");
+    expect(result.content).toEqual([]);
+    const humanText = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { cwd: root, maxItems: 25, humanText: true }
+    });
+    expect(humanText.content[0]?.text).toBe("OK svn_status: 1000 changes; 25 returned; more available");
+    expect(humanText.content[0]?.text).not.toContain("file-0000.ts");
 
     const legacyChars = JSON.stringify({
       content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -113,7 +118,38 @@ describe("public MCP response shaping", () => {
     expect(structured).not.toHaveProperty("command");
     expect(structured).not.toHaveProperty("cwd");
     expect(structured).not.toHaveProperty("changed_paths");
-    expect(result.content[0]?.text).toBe("ERROR svn_status: authentication failed");
+    expect(result.content).toEqual([]);
+    const humanText = toToolResult("svn_status", payload, {
+      responseMode: "compact",
+      request: { humanText: true }
+    });
+    expect(humanText.content[0]?.text).toBe("ERROR svn_status: authentication failed");
+  });
+
+  it("returns typed compact guard refusals without echoing submitted path lists", () => {
+    const root = "E:\\dev\\example";
+    const submitted = Array.from({ length: 500 }, (_, index) => `${root}\\src\\file-${index}.key`);
+    const payload = createEnvelope({
+      ok: false,
+      command: `svn add -- ${submitted.join(" ")}`,
+      cwd: root,
+      stdout: submitted.join("\n"),
+      stderr: submitted.join("\n"),
+      note: "never-commit path matches **/*.key: src/file-0.key"
+    });
+
+    const compact = toToolResult("svn_add", payload, {
+      responseMode: "compact",
+      request: { paths: submitted }
+    }).structuredContent;
+    expect(compact).toEqual({
+      ok: false,
+      guardCode: "NEVER_COMMIT",
+      note: "never-commit path matches **/*.key: src/file-0.key",
+      affectedPathCount: 500,
+      truncated: true
+    });
+    expect(JSON.stringify(compact)).not.toContain("file-499.key");
   });
 
   it("bounds secondary compact collections and reports omitted counts", () => {
@@ -150,7 +186,7 @@ describe("public MCP response shaping", () => {
       responseMode: "compact",
       request: { paths: Array.from({ length: 150 }, (_, index) => `src/file-${index}.ts`) }
     }).structuredContent;
-    expect(precommit.guardFailures as unknown[]).toHaveLength(100);
+    expect(precommit.guardFailures).toEqual(["src/file-0.ts: blocked"]);
     expect(precommit.guardFailureCount).toBe(150);
     expect(precommit.guardFailuresTruncated).toBe(true);
 
@@ -214,9 +250,13 @@ describe("public MCP response shaping", () => {
     const full = toToolResult("svn_log", payload, { responseMode: "full" });
 
     expect(compact.structuredContent.stdout_summary).toBe("");
-    expect(compact.content[0]?.text).toBe("OK svn_log");
+    expect(compact.content).toEqual([]);
     expect(full.structuredContent.stdout_summary).toBe("<log>raw</log>");
-    expect(full.content[0]?.text).toBe(JSON.stringify(payload, null, 2));
+    expect(full.content).toEqual([]);
+    expect(toToolResult("svn_log", payload, {
+      responseMode: "full",
+      request: { humanText: true }
+    }).content[0]?.text).toBe(JSON.stringify(payload, null, 2));
   });
 
   it("redacts parsed fields in standard and full responses", () => {
@@ -257,7 +297,229 @@ describe("public MCP response shaping", () => {
     expect(defaultResponseMode({})).toBe("compact");
     expect(defaultResponseMode({ SVN_MCP_RESPONSE_MODE: "standard" })).toBe("standard");
     expect(defaultResponseMode({ SVN_MCP_RESPONSE_MODE: "full" })).toBe("full");
+    expect(defaultResponseMode({ SVN_MCP_RESPONSE_MODE: "receipt" })).toBe("receipt");
+    expect(defaultResponseMode({ SVN_MCP_RESPONSE_MODE: "structured-only" })).toBe("structured-only");
     expect(defaultResponseMode({ SVN_MCP_RESPONSE_MODE: "invalid" })).toBe("compact");
+  });
+
+  it("returns explicit structured-only and minimal receipt contracts", () => {
+    const root = "E:\\dev\\example";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn status --xml",
+        cwd: root,
+        revision: 42,
+        changed_paths: [
+          { status: "M", path: `${root}\\src\\a.ts` },
+          { status: "A", path: `${root}\\src\\b.ts` }
+        ],
+        conflicts: [{ path: `${root}\\src\\a.ts`, type: "text" }]
+      }),
+      wc_root: root,
+      remote_head_revision: 43,
+      operation_id: "op-123"
+    };
+
+    const structuredOnly = toToolResult("svn_status", payload, {
+      responseMode: "structured-only",
+      request: { cwd: root }
+    });
+    expect(structuredOnly.content).toEqual([]);
+    expect(structuredOnly.structuredContent).toMatchObject({
+      ok: true,
+      counts: { modified: 1, added: 1 },
+      items: [
+        { path: "src/a.ts", status: "modified" },
+        { path: "src/b.ts", status: "added" }
+      ]
+    });
+
+    const receipt = toToolResult("svn_status", payload, {
+      responseMode: "receipt",
+      request: { cwd: root }
+    });
+    expect(receipt.content).toEqual([]);
+    expect(receipt.structuredContent).toEqual({
+      ok: true,
+      baseRevision: 42,
+      remoteHeadRevision: 43,
+      changedPaths: ["src/a.ts", "src/b.ts"],
+      conflictCount: 1,
+      operationId: "op-123"
+    });
+    expect(JSON.stringify(receipt)).not.toContain(root);
+  });
+
+  it("continues receipt path pages from the requested cursor", () => {
+    const root = "E:\\dev\\example";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: "svn status --xml",
+        cwd: root,
+        revision: 42,
+        changed_paths: Array.from({ length: 30 }, (_, index) => ({
+          status: "M",
+          path: `${root}\\src\\file-${index}.ts`
+        }))
+      }),
+      wc_root: root
+    };
+
+    const first = toToolResult("svn_status", payload, {
+      responseMode: "receipt",
+      request: { maxItems: 25 }
+    }).structuredContent;
+    const second = toToolResult("svn_status", payload, {
+      responseMode: "receipt",
+      request: { maxItems: 25, cursor: "25" }
+    }).structuredContent;
+
+    expect(first.changedPaths).toHaveLength(25);
+    expect(first.nextCursor).toBe("25");
+    expect(second.changedPaths).toEqual([
+      "src/file-25.ts", "src/file-26.ts", "src/file-27.ts", "src/file-28.ts", "src/file-29.ts"
+    ]);
+    expect(second).not.toHaveProperty("nextCursor");
+  });
+
+  it("returns bounded receipts for snapshot, precommit, update, and commit", () => {
+    const root = "E:\\dev\\example";
+    const changed = [{ status: "M", path: `${root}\\src\\a.ts` }];
+    const snapshot = toToolResult("svn_snapshot", {
+      ...createEnvelope({ ok: true, command: "snapshot", cwd: root, revision: 40, changed_paths: changed }),
+      wc_root: root,
+      remote_head_revision: 43
+    }, { responseMode: "receipt" }).structuredContent;
+    expect(snapshot).toEqual({
+      ok: true,
+      baseRevision: 40,
+      remoteHeadRevision: 43,
+      changedPaths: ["src/a.ts"],
+      conflictCount: 0
+    });
+
+    const precommit = toToolResult("svn_precommit", {
+      ...createEnvelope({ ok: true, command: "precommit", cwd: root, revision: 40, changed_paths: changed }),
+      wc_root: root,
+      verdict: "READY",
+      remote_head_revision: 43,
+      per_file: [{ path: "src/a.ts", added: 4, removed: 2 }]
+    }, { responseMode: "receipt" }).structuredContent;
+    expect(precommit).toEqual({
+      ok: true,
+      verdict: "READY",
+      baseRevision: 40,
+      remoteHeadRevision: 43,
+      changedPaths: ["src/a.ts"],
+      conflictCount: 0,
+      added: 4,
+      removed: 2
+    });
+
+    const update = toToolResult("svn_update", {
+      ...createEnvelope({ ok: true, command: "update", cwd: root, revision: 44, changed_paths: changed }),
+      wc_root: root,
+      resulting_revision: 44,
+      observed_remote_head: 44
+    }, { responseMode: "receipt" }).structuredContent;
+    expect(update).toEqual({
+      ok: true,
+      resultingRevision: 44,
+      remoteHeadRevision: 44,
+      changedPaths: ["src/a.ts"],
+      conflictCount: 0
+    });
+
+    const commit = toToolResult("svn_commit", {
+      ...createEnvelope({ ok: true, command: "commit", cwd: root, revision: 45 }),
+      wc_root: root,
+      committed_revision: 45,
+      committed_paths: ["src/a.ts"],
+      base_revision: 44,
+      remote_head_revision: 45,
+      operation_id: "commit-45"
+    }, { responseMode: "receipt" }).structuredContent;
+    expect(commit).toEqual({
+      ok: true,
+      baseRevision: 44,
+      committedRevision: 45,
+      remoteHeadRevision: 45,
+      changedPaths: ["src/a.ts"],
+      conflictCount: 0,
+      operationId: "commit-45"
+    });
+    for (const result of [snapshot, precommit, update, commit]) {
+      expect(JSON.stringify(result).length).toBeLessThan(400);
+      expect(JSON.stringify(result)).not.toContain(root);
+    }
+  });
+
+  it("uses relative paths and validated projections outside full diagnostics", () => {
+    const root = "E:\\dev\\example";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: `svn status --xml -- ${root}\\src\\a.ts`,
+        cwd: root,
+        revision: 42,
+        changed_paths: [{ status: "M", path: `${root}\\src\\a.ts` }],
+        conflicts: [{ path: `${root}\\src\\a.ts`, type: "text" }]
+      }),
+      wc_root: root,
+      remote_head_revision: 43
+    };
+
+    const standard = toToolResult("svn_status", payload, {
+      responseMode: "standard",
+      request: { fields: ["revision", "changedPaths", "conflicts"] }
+    }).structuredContent;
+    expect(standard).toEqual({
+      ok: true,
+      revision: 42,
+      changedPaths: [{ status: "M", path: "src/a.ts" }],
+      conflicts: [{ path: "src/a.ts", type: "text" }]
+    });
+    expect(JSON.stringify(standard)).not.toContain(root);
+  });
+
+  it("reserves absolute machine paths for full diagnostics", () => {
+    const root = "E:\\dev\\example with spaces";
+    const payload = {
+      ...createEnvelope({
+        ok: true,
+        command: `svn status --xml -- ${root}\\src\\a.ts`,
+        cwd: root,
+        revision: 42,
+        stderr: `svn: warning: ${root}\\src\\a.ts was skipped`,
+        changed_paths: [{ status: "M", path: `${root}\\src\\a.ts` }]
+      }),
+      wc_root: root
+    };
+
+    for (const responseMode of ["compact", "receipt", "structured-only", "standard"] as const) {
+      const result = toToolResult("svn_status", payload, { responseMode }).structuredContent;
+      expect(JSON.stringify(result)).not.toContain(root);
+    }
+    expect(toToolResult("svn_status", payload, {
+      responseMode: "full"
+    }).structuredContent.cwd).toBe(root);
+
+    const batchFix = toToolResult("eol_fix_verified", {
+      ...createEnvelope({ ok: false, command: "unix2dos", cwd: root, note: "one file failed" }),
+      wc_root: root,
+      batch: true,
+      counts: { requested: 1, fixed: 0, failed: 1 },
+      files: [{ ok: false, path: `${root}\\src\\a.ts`, failure: "conversion failed" }]
+    }, { responseMode: "compact" }).structuredContent;
+    expect(batchFix.failures).toEqual([{
+      path: "src/a.ts",
+      before: undefined,
+      after: undefined,
+      failure: "conversion failed"
+    }]);
+    expect(JSON.stringify(batchFix)).not.toContain(root);
   });
 
   it("keeps compact log entries bounded and omits verbose fields by default", () => {
@@ -632,6 +894,7 @@ describe("public MCP response shaping", () => {
       diff: { files: 0, added: 0, removed: 0, truncated: false },
       eol: { ok: true },
       mixedRevision: false,
+      guardCode: "NEVER_COMMIT",
       guardFailures: ["src/private.key: blocked by never-commit rule"],
       note: "BLOCKED"
     });
@@ -997,6 +1260,16 @@ describe("public MCP response shaping", () => {
       checks: { passed: 5, failed: [] }
     });
     expect(JSON.stringify(compactHealthy)).not.toContain("long command");
+    const withPassing = toToolResult("svn_diagnose", healthy, {
+      responseMode: "compact",
+      request: { includePassing: true, maxItems: 2 }
+    }).structuredContent;
+    expect(withPassing.checks).toEqual({
+      passed: 5,
+      failed: [],
+      passing: [{ name: "check_0" }, { name: "check_1" }]
+    });
+    expect(withPassing).toMatchObject({ truncated: true, nextCursor: "2" });
 
     const failed = {
       ...healthy,
@@ -1048,8 +1321,18 @@ describe("public MCP response shaping", () => {
       responseMode: "compact",
       request: { detailed: true }
     }).structuredContent;
-    expect(detailed.current_path).toBe("E:\\dev\\example\\current");
-    expect(detailed.stdout_summary).toBe("");
+    expect(detailed).toMatchObject({
+      ok: true,
+      version: "1.0.0",
+      packageVersion: "1.0.0",
+      runtimeLayoutOk: true,
+      currentPointerApplicable: undefined,
+      currentMatchesPackage: true,
+      toolchainOk: true
+    });
+    expect(JSON.stringify(detailed)).not.toContain("E:\\dev\\example");
+    expect(detailed).not.toHaveProperty("current_path");
+    expect(detailed).not.toHaveProperty("runtime_root");
   });
 
   it("does not call an incomplete matching release available", () => {

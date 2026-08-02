@@ -2,7 +2,7 @@ import path from "node:path";
 import { redactText } from "./envelope.js";
 import type { ChangedPath, ToolEnvelope } from "./types.js";
 
-export type ResponseMode = "compact" | "standard" | "full";
+export type ResponseMode = "compact" | "standard" | "full" | "receipt" | "structured-only";
 
 export interface ResponseOptions {
   responseMode?: ResponseMode;
@@ -56,12 +56,15 @@ const MUTATION_STATUS: Record<string, string> = {
 // newline delimiter; this bound limits the damage from clients that do not.
 const COMPACT_DIFF_RESULT_BUDGET_BYTES = 28 * 1024;
 const COMPACT_DIFF_EXCERPT_CHAR_LIMIT = 8_000;
+const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 
 export function defaultResponseMode(
   env: Readonly<Record<string, string | undefined>> = process.env
 ): ResponseMode {
   const value = env.SVN_MCP_RESPONSE_MODE?.trim().toLowerCase();
-  return value === "standard" || value === "full" ? value : "compact";
+  return value === "standard" || value === "full" || value === "receipt" || value === "structured-only"
+    ? value
+    : "compact";
 }
 
 export function toToolResult<T extends ToolEnvelope>(
@@ -72,19 +75,28 @@ export function toToolResult<T extends ToolEnvelope>(
   const mode = options.responseMode ?? defaultResponseMode();
   const safePayload = redactStructuredValue(payload) as T;
   const shaped = shapePayload(tool, safePayload, mode, options.request ?? {});
-  const candidateWarning = mode === "compact" && safePayload.ok ? safePayload.stderr_summary.slice(0, 2000) : "";
-  const warning = candidateWarning && shaped.note !== candidateWarning ? candidateWarning : "";
-  const structured = warning
+  const responseRoot = stringValue(safePayload.wc_root) || safePayload.cwd;
+  const candidateWarning = mode !== "full" && safePayload.ok
+    ? sanitizeNonFullText(safePayload.stderr_summary.slice(0, 2000), safePayload.cwd, responseRoot)
+    : "";
+  const shapedNote = sanitizeNonFullText(stringValue(shaped.note), safePayload.cwd, responseRoot);
+  const warning = candidateWarning && shapedNote !== candidateWarning ? candidateWarning : "";
+  const warned = warning
     ? {
         ...shaped,
         warning,
         ...(warning.length < safePayload.stderr_summary.length ? { warningTruncated: true } : {})
       }
     : shaped;
+  const projected = applyFieldProjection(tool, safePayload, warned, options.request ?? {});
+  const structured = mode === "full"
+    ? projected
+    : sanitizeNonFullStructuredValue(projected, safePayload.cwd, responseRoot) as Record<string, unknown>;
+  const humanText = options.request?.humanText === true;
   const text = mode === "full" ? JSON.stringify(safePayload, null, 2) : summarizeToolResult(tool, structured);
 
   return {
-    content: [{ type: "text", text }],
+    content: humanText ? [{ type: "text", text }] : [],
     structuredContent: structured
   };
 }
@@ -99,80 +111,238 @@ function shapePayload(
     return payload;
   }
 
-  if (mode === "compact" && tool === "svn_diagnose") {
-    return compactDiagnose(payload);
+  if (mode === "receipt" && RECEIPT_TOOLS.has(tool)) {
+    return receiptPayload(tool, payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_precommit") {
+  const compactMode = mode === "compact" || mode === "structured-only" || mode === "receipt";
+
+  if (compactMode && tool === "svn_diagnose") {
+    return compactDiagnose(payload, request);
+  }
+
+  if (compactMode && tool === "svn_precommit") {
     return compactPrecommit(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_self_check") {
+  if (compactMode && tool === "svn_self_check") {
     return compactSelfCheck(payload, request);
   }
 
-  if (mode === "compact" && tool === "eol_fix_verified") {
+  if (compactMode && tool === "eol_fix_verified") {
     return compactEolFix(payload, request);
   }
 
   if (!payload.ok) {
-    return mode === "compact" ? compactError(payload) : payload;
+    return compactMode ? compactError(payload, request) : standardPayload(payload);
   }
 
-  if (mode === "compact" && tool === "svn_status") {
+  if (compactMode && tool === "svn_status") {
     return compactStatus(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_info") {
+  if (compactMode && tool === "svn_info") {
     return compactInfo(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_snapshot") {
+  if (compactMode && tool === "svn_snapshot") {
     return compactSnapshot(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_log") {
+  if (compactMode && tool === "svn_log") {
     return compactLog(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_diff") {
+  if (compactMode && tool === "svn_diff") {
     return compactDiff(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_cat") {
+  if (compactMode && tool === "svn_cat") {
     return compactCat(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_blame") {
+  if (compactMode && tool === "svn_blame") {
     return compactBlame(payload, request);
   }
 
-  if (mode === "compact" && tool === "eol_check") {
+  if (compactMode && tool === "eol_check") {
     return compactEolCheck(payload, request);
   }
 
-  if (mode === "compact" && tool === "svn_propget") {
+  if (compactMode && tool === "svn_propget") {
     return compactPropget(payload, request);
   }
 
-  if (mode === "compact" && MUTATION_STATUS[tool]) {
+  if (compactMode && MUTATION_STATUS[tool]) {
     return compactMutation(tool, payload, request);
   }
 
+  return standardPayload(payload);
+}
+
+function receiptPayload(
+  tool: string,
+  payload: ToolEnvelope,
+  request: Record<string, unknown>
+): Record<string, unknown> {
+  if (!payload.ok) {
+    const error = compactError(payload, request);
+    return {
+      ok: false,
+      ...(payload.verdict ? { verdict: payload.verdict } : {}),
+      ...(error.note ? { note: error.note } : {}),
+      ...(error.recoveryTool ? { recoveryTool: error.recoveryTool } : {}),
+      ...(error.expectedRemoteHead !== undefined ? { expectedRemoteHead: error.expectedRemoteHead } : {}),
+      ...(error.observedRemoteHead !== undefined ? { observedRemoteHead: error.observedRemoteHead } : {})
+    };
+  }
+
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const sourcePaths = tool === "svn_commit" && payload.committed_paths !== undefined
+    ? stringArray(payload.committed_paths)
+    : payload.changed_paths.map((item) => item.path);
+  const countOnly = request.countOnly === true;
+  const changedPaths = countOnly
+    ? []
+    : uniqueStrings(sourcePaths.map((item) => workingCopyRelativePath(item, payload.cwd, root)));
+  const offset = cursorOffset(request.cursor);
+  const maxPaths = boundedInteger(request.maxItems, 25, 1, 100);
+  const page = changedPaths.slice(offset, offset + maxPaths);
+  const files = recordArray(payload.per_file);
+  const added = files.reduce((sum, file) => sum + numberValue(file.added), 0);
+  const removed = files.reduce((sum, file) => sum + numberValue(file.removed), 0);
+  const baseRevision = payload.base_revision
+    ?? (tool === "svn_status" || tool === "svn_snapshot" || tool === "svn_precommit" ? payload.revision : undefined);
+  const remoteHead = payload.remote_head_revision ?? payload.observed_remote_head;
+  const nextOffset = offset + page.length;
+  const nextCursor = nextOffset < changedPaths.length ? String(nextOffset) : payload.next_cursor;
+
   return {
-    ...payload,
-    stdout_summary: ""
+    ok: true,
+    ...(payload.verdict ? { verdict: payload.verdict } : {}),
+    ...(baseRevision !== null && baseRevision !== undefined ? { baseRevision } : {}),
+    ...(payload.resulting_revision !== undefined ? { resultingRevision: payload.resulting_revision } : {}),
+    ...(payload.committed_revision !== undefined ? { committedRevision: payload.committed_revision } : {}),
+    ...(remoteHead !== null && remoteHead !== undefined ? { remoteHeadRevision: remoteHead } : {}),
+    ...(countOnly ? { changedCount: sourcePaths.length } : {}),
+    ...(page.length > 0 ? { changedPaths: page } : {}),
+    conflictCount: payload.conflicts.length,
+    ...(files.length > 0 ? { added, removed } : {}),
+    ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+    ...(nextCursor ? { nextCursor } : {})
   };
 }
 
-function compactError(payload: ToolEnvelope): Record<string, unknown> {
+function standardPayload(payload: ToolEnvelope): Record<string, unknown> {
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const relative = relativeizeStructuredPaths(payload, payload.cwd, root) as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...relative, stdout_summary: "" };
+  delete result.command;
+  delete result.cwd;
+  delete result.wc_root;
+  return result;
+}
+
+const PROJECTION_SAFETY_FIELDS = [
+  "ok", "ready", "verdict", "code", "note", "warning", "warningCode", "warningDetail",
+  "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts", "conflictCount",
+  "truncated", "nextCursor", "nextFileCursor", "hasMore", "recoveryTool", "remediation"
+] as const;
+
+function applyFieldProjection(
+  tool: string,
+  payload: ToolEnvelope,
+  shaped: Record<string, unknown>,
+  request: Record<string, unknown>
+): Record<string, unknown> {
+  const fields = stringArray(request.fields);
+  if (fields.length === 0 || !payload.ok || tool === "svn_propget") {
+    return shaped;
+  }
+
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const perFile = recordArray(payload.per_file);
+  const changedPaths = payload.changed_paths.map((item) => ({
+    status: item.status,
+    path: workingCopyRelativePath(item.path, payload.cwd, root)
+  }));
+  const conflicts = payload.conflicts.map((item) => ({
+    path: workingCopyRelativePath(item.path, payload.cwd, root),
+    type: item.type
+  }));
+  const source: Record<string, unknown> = {
+    revision: payload.revision,
+    revisionRange: payload.revision_range,
+    mixedRevision: payload.mixed_revision,
+    remoteHeadRevision: payload.remote_head_revision ?? payload.observed_remote_head,
+    changedPaths,
+    conflicts,
+    totalFiles: perFile.length,
+    added: perFile.reduce((sum, file) => sum + numberValue(file.added), 0),
+    removed: perFile.reduce((sum, file) => sum + numberValue(file.removed), 0),
+    ...shaped
+  };
+  const projected = projectFields(source, fields);
+  for (const field of PROJECTION_SAFETY_FIELDS) {
+    const value = shaped[field];
+    if (value !== undefined && value !== false && value !== "" && projected[field] === undefined) {
+      projected[field] = value;
+    }
+  }
+  return { ok: true, ...projected };
+}
+
+const ROOT_RELATIVE_PATH_ARRAY_KEYS = new Set(["committed_paths", "filtered_paths", "missing_paths"]);
+const PATH_STRING_KEYS = new Set(["path", "src", "dest", "source", "target"]);
+
+function relativeizeStructuredPaths(value: unknown, cwd: string, wcRoot: string, parentKey = ""): unknown {
+  if (Array.isArray(value)) {
+    if (ROOT_RELATIVE_PATH_ARRAY_KEYS.has(parentKey)) {
+      return value.map((item) => typeof item === "string" ? item.replace(/\\/g, "/") : item);
+    }
+    return value.map((item) => relativeizeStructuredPaths(item, cwd, wcRoot, parentKey));
+  }
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string" && PATH_STRING_KEYS.has(parentKey)) {
+      return workingCopyPathIfInside(value, cwd, wcRoot);
+    }
+    return value;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key,
+    relativeizeStructuredPaths(item, cwd, wcRoot, key)
+  ]));
+}
+
+function workingCopyPathIfInside(value: string, cwd: string, wcRoot: string): string {
+  if (!value || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
+    return value;
+  }
+  const pathApi = pathImplementationFor(cwd, wcRoot, value);
+  const absolute = pathApi.isAbsolute(value) ? value : pathApi.resolve(cwd, value);
+  const relative = pathApi.relative(wcRoot, absolute);
+  if (relative === ".." || relative.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(relative)) {
+    return value.replace(/\\/g, "/");
+  }
+  return (relative || ".").replace(/\\/g, "/");
+}
+
+function compactError(payload: ToolEnvelope, request: Record<string, unknown> = {}): Record<string, unknown> {
   const conflicts = payload.conflicts.slice(0, 100);
   const riskSignals = stringArray(payload.risk_signals);
+  const guardCode = classifyGuardCode(payload.note);
+  const submittedPathCount = stringArray(request.paths).length;
   return {
     ok: false,
+    ...(guardCode ? { guardCode } : {}),
     note: payload.note || "svn command failed",
-    ...(payload.stdout_summary ? { stdout: payload.stdout_summary } : {}),
-    ...(payload.stderr_summary ? { stderr: payload.stderr_summary } : {}),
+    ...(!guardCode && payload.stdout_summary ? { stdout: payload.stdout_summary } : {}),
+    ...(!guardCode && payload.stderr_summary ? { stderr: payload.stderr_summary } : {}),
+    ...(guardCode && submittedPathCount > 1 ? { affectedPathCount: submittedPathCount } : {}),
     ...(conflicts.length > 0 ? { conflicts } : {}),
     ...(payload.conflicts.length > conflicts.length
       ? { conflictCount: payload.conflicts.length, conflictsTruncated: true }
@@ -185,11 +355,30 @@ function compactError(payload: ToolEnvelope): Record<string, unknown> {
   };
 }
 
-function compactDiagnose(payload: ToolEnvelope): Record<string, unknown> {
+function classifyGuardCode(note: string): string | null {
+  if (/never-commit|policy-error:/i.test(note)) return "NEVER_COMMIT";
+  if (/path (?:resolves )?outside working copy|not inside a working copy/i.test(note)) return "PATH_CONTAINMENT";
+  if (/READONLY instance/i.test(note)) return "READONLY";
+  if (/explicit (?:path|paths|src and dest)|cwd or absolute path required/i.test(note)) return "EXPLICIT_SCOPE";
+  if (/riskAck required/i.test(note)) return "RISK_ACK";
+  if (/working-copy root.*requires|refusing to .*working-copy root/i.test(note)) return "ROOT_SCOPE";
+  if (/directory .*requires allow/i.test(note)) return "DIRECTORY_SCOPE";
+  if (/unresolved conflicts?|non-committable status/i.test(note)) return "CONFLICT";
+  return null;
+}
+
+function compactDiagnose(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const checks = recordArray(payload.checks);
-  const failed = checks
-    .filter((check) => check.ok !== true)
+  const includePassing = request.includePassing === true;
+  const selected = includePassing ? checks : checks.filter((check) => check.ok !== true);
+  const offset = cursorOffset(request.cursor);
+  const maxItems = boundedInteger(request.maxItems, 100, 1, 500);
+  const page = selected.slice(offset, offset + maxItems);
+  const failed = page.filter((check) => check.ok !== true)
     .map((check) => ({ name: check.name, ...(check.note ? { note: check.note } : {}) }));
+  const passing = page.filter((check) => check.ok === true).map((check) => ({ name: check.name }));
+  const nextOffset = offset + page.length;
+  const truncated = nextOffset < selected.length;
   const suggestions = stringArray(payload.suggestions);
   return {
     ok: payload.ok,
@@ -197,15 +386,20 @@ function compactDiagnose(payload: ToolEnvelope): Record<string, unknown> {
     svnAvailable: payload.svn_available,
     workingCopyValid: payload.working_copy_valid,
     remoteAccessible: payload.remote_accessible,
-    checks: { passed: checks.length - failed.length, failed },
+    checks: {
+      passed: checks.filter((check) => check.ok === true).length,
+      failed,
+      ...(includePassing ? { passing } : {})
+    },
     ...(payload.note ? { note: payload.note } : {}),
-    ...(suggestions.length > 0 ? { suggestions } : {})
+    ...(suggestions.length > 0 ? { suggestions } : {}),
+    ...(truncated ? { truncated: true, nextCursor: String(nextOffset) } : {})
   };
 }
 
 function compactInfo(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   const available: Record<string, unknown> = {
-    root: payload.wc_root ?? payload.cwd,
+    root: ".",
     revision: payload.revision,
     url: redactText(stringValue(payload.url)),
     repositoryRoot: redactText(stringValue(payload.repo_root)),
@@ -321,7 +515,26 @@ function compactPropget(payload: ToolEnvelope, request: Record<string, unknown>)
 
 function compactSelfCheck(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   if (request.detailed === true) {
-    return { ...payload, stdout_summary: "" };
+    return {
+      ok: payload.ok,
+      version: payload.server_version,
+      packageVersion: payload.package_version,
+      available: payload.toolchain_ok === true && payload.runtime_layout_ok === true,
+      runtimeLayout: payload.runtime_layout,
+      runtimeLayoutOk: payload.runtime_layout_ok,
+      currentPointerApplicable: payload.current_pointer_applicable,
+      currentRelease: payload.current_release,
+      currentMatchesPackage: payload.current_matches_package,
+      binFileCount: payload.bin_file_count,
+      distFileCount: payload.dist_file_count,
+      releasePrepareAvailable: payload.release_prepare_available,
+      cleanUsesNode: payload.clean_uses_node,
+      toolchainOk: payload.toolchain_ok,
+      startupProbe: payload.startup_probe,
+      ...(payload.tool_profile ? { toolProfile: payload.tool_profile } : {}),
+      ...(payload.advertised_tool_count !== undefined ? { advertisedToolCount: payload.advertised_tool_count } : {}),
+      ...(payload.note ? { diagnostics: payload.note } : {})
+    };
   }
   return {
     ok: payload.ok,
@@ -449,8 +662,9 @@ function compactDiff(payload: ToolEnvelope, request: Record<string, unknown>): R
   const fileSummaryTruncated = payload.per_file_truncated === true;
   const fileOffset = cursorOffset(request.fileCursor);
   const requestedFileCount = boundedInteger(request.maxFiles, 100, 1, 500);
+  const diffRoot = stringValue(payload.wc_root) || payload.cwd;
   const requestedFiles = sourceFiles.slice(fileOffset, fileOffset + requestedFileCount).map((file) => ({
-    path: redactText(relativePath(payload.cwd, stringValue(file.path))).slice(0, 4096),
+    path: redactText(workingCopyRelativePath(stringValue(file.path), payload.cwd, diffRoot)).slice(0, 4096),
     added: file.added,
     removed: file.removed,
     binary: file.binary,
@@ -530,7 +744,11 @@ function compactEolCheck(payload: ToolEnvelope, request: Record<string, unknown>
   const maxItems = countOnly ? 0 : boundedInteger(request.maxItems, 100, 1, 500);
   const page = maxItems === 0 ? [] : selected.slice(offset, offset + maxItems);
   const files = page.map((file) => ({
-    path: relativePath(payload.cwd, stringValue(file.path)),
+    path: workingCopyRelativePath(
+      stringValue(file.path),
+      payload.cwd,
+      stringValue(payload.wc_root) || payload.cwd
+    ),
     expected: file.eol_style ?? null,
     detected: file.kind ?? null,
     ...(request.includePassing === true ? { ok: file.mismatch !== true && file.sniff === "ok" } : {}),
@@ -557,7 +775,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
   const verdict = stringValue(payload.verdict);
   if (!payload.ok && files.length === 0) {
     return {
-      ...compactError(payload),
+      ...compactError(payload, request),
       ready: false,
       verdict,
       pathCount: stringArray(request.paths).length
@@ -569,7 +787,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
       .map((file) => file.guard)
       .filter((value): value is string => typeof value === "string" && value.length > 0)
   ]);
-  const guardFailures = allGuardFailures.slice(0, 100);
+  const guardFailures = allGuardFailures.slice(0, 1);
   const riskSignals = uniqueStrings(stringArray(payload.risk_signals)).slice(0, 100);
   const allEolFailures = uniqueStrings(files
     .filter((file) => file.pure_eol_churn === true || file.eol_mismatch === true)
@@ -615,6 +833,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
     ...(guardFailures.length > 0 ? { guardFailures } : {}),
+    ...(guardFailures.length > 0 ? { guardCode: classifyGuardCode(guardFailures[0] ?? "") ?? "GUARD_BLOCKED" } : {}),
     ...(allGuardFailures.length > guardFailures.length
       ? { guardFailureCount: allGuardFailures.length, guardFailuresTruncated: true }
       : {}),
@@ -661,9 +880,11 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
       : tool === "eol_fix_verified"
         ? payload.after !== undefined
         : false;
-  const source = receiptValue(request.src);
-  const target = receiptValue(request.dest ?? request.url);
-  const targetPath = receiptValue(request.path);
+  const source = receiptPathValue(request.src, payload.cwd, receiptRoot);
+  const target = request.url !== undefined
+    ? receiptValue(request.url)
+    : receiptPathValue(request.dest, payload.cwd, receiptRoot);
+  const targetPath = receiptPathValue(request.path, payload.cwd, receiptRoot);
   const receipt: Record<string, unknown> = {
     ok: true,
     action: tool === "svn_path_change" ? request.action : tool.replace(/^svn_/, ""),
@@ -741,8 +962,11 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
 function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
   if (payload.batch === true) {
     const files = recordArray(payload.files);
+    const root = stringValue(payload.wc_root) || payload.cwd;
     const failures = files.filter((file) => file.ok !== true).slice(0, 100).map((file) => ({
-      path: file.path,
+      path: typeof file.path === "string"
+        ? workingCopyRelativePath(file.path, payload.cwd, root)
+        : file.path,
       before: file.before,
       after: file.after,
       failure: file.failure
@@ -760,9 +984,11 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
   const after = compactEolState(payload.after);
   if (!payload.ok) {
     return {
-      ...compactError(payload),
+      ...compactError(payload, request),
       action: "eol_fix_verified",
-      ...(request.path ? { path: request.path } : {}),
+      ...(request.path
+        ? { path: receiptPathValue(request.path, payload.cwd, stringValue(payload.wc_root) || payload.cwd) }
+        : {}),
       ...(before ? { before } : {})
     };
   }
@@ -771,7 +997,9 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
   return {
     ok: true,
     action: "eol_fix_verified",
-    ...(request.path ? { path: request.path } : {}),
+    ...(request.path
+      ? { path: receiptPathValue(request.path, payload.cwd, stringValue(payload.wc_root) || payload.cwd) }
+      : {}),
     target: payload.target,
     ...(before ? { before } : {}),
     ...(after ? { after } : {}),
@@ -806,7 +1034,6 @@ function compactStatus(payload: ToolEnvelope, request: Record<string, unknown>):
 
   return {
     ok: true,
-    ...(request.cwd === undefined ? { root } : {}),
     counts,
     items,
     ...(conflicts.length > 0 ? { conflicts } : {}),
@@ -1029,6 +1256,45 @@ function stringValue(value: unknown): string {
 
 function receiptValue(value: unknown): string | undefined {
   return typeof value === "string" ? redactText(value).slice(0, 4096) : undefined;
+}
+
+function receiptPathValue(value: unknown, cwd: string, wcRoot: string): string | undefined {
+  return typeof value === "string"
+    ? redactText(workingCopyPathIfInside(value, cwd, wcRoot)).slice(0, 4096)
+    : undefined;
+}
+
+function sanitizeNonFullStructuredValue(value: unknown, cwd: string, wcRoot: string): unknown {
+  if (typeof value === "string") {
+    return sanitizeNonFullText(value, cwd, wcRoot);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeNonFullStructuredValue(item, cwd, wcRoot));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key,
+    sanitizeNonFullStructuredValue(item, cwd, wcRoot)
+  ]));
+}
+
+function sanitizeNonFullText(value: string, cwd: string, wcRoot: string): string {
+  let sanitized = value;
+  const roots = uniqueStrings([wcRoot, cwd].filter(Boolean)).sort((left, right) => right.length - left.length);
+  for (const root of roots) {
+    const pattern = root
+      .split(/[\\/]/)
+      .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("[\\\\/]");
+    sanitized = sanitized.replace(new RegExp(pattern, "gi"), ".");
+  }
+  return sanitized;
 }
 
 function numberValue(value: unknown): number {

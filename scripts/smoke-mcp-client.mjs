@@ -60,6 +60,19 @@ try {
     }
     assert(validationMessage.includes("lineLimit=2001") && validationMessage.includes("allowed 1..2000"),
       `diff limit validation was not actionable: ${validationMessage}`);
+    let projectionMessage = "";
+    try {
+      await client.callTool({
+        name: "svn_status",
+        arguments: { cwd: workingCopy, fields: ["notAField"] }
+      });
+    } catch (error) {
+      projectionMessage = error instanceof Error ? error.message : String(error);
+    }
+    assert(
+      projectionMessage.includes("invalid fields for svn_status") && projectionMessage.includes("changedPaths"),
+      `invalid projection was not rejected locally: ${projectionMessage}`
+    );
     passed.push("input-bounds");
 
     const selfCheck = await call(client, "svn_self_check", { cwd: workingCopy, responseMode: "compact" });
@@ -72,6 +85,18 @@ try {
 
     const status = await callOk(client, "svn_status", { cwd: workingCopy });
     assert(status.items.some((item) => item.path === "client-smoke.txt" && item.status === "added"), "status omitted added file");
+    const structuredOnly = await client.callTool({
+      name: "svn_status",
+      arguments: { cwd: workingCopy, responseMode: "structured-only" }
+    });
+    assert(structuredOnly.content.length === 0 && structuredOnly.structuredContent?.ok === true,
+      "structured-only response duplicated text or omitted structured content");
+    const withHumanText = await client.callTool({
+      name: "svn_status",
+      arguments: { cwd: workingCopy, responseMode: "compact", humanText: true }
+    });
+    assert(withHumanText.content.length === 1 && withHumanText.content[0]?.type === "text",
+      "humanText opt-in did not return a text receipt");
     passed.push("status");
 
     const precommit = await callOk(client, "svn_precommit", { cwd: workingCopy, paths: ["client-smoke.txt"] });

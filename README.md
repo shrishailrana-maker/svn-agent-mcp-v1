@@ -131,11 +131,15 @@ canonical tools, `docs` exposes the 8-tool edit/commit workflow, and `review` ad
 cat, and blame for 11 tools total. Focused profiles reduce tool-definition context without changing
 any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
 workflow needs another operation.
-`SVN_MCP_RESPONSE_MODE` selects `compact`
-(default), `standard`, or `full` responses. Compact mode returns bounded structured results and
-short text receipts; use `responseMode: "full"` on a call when bounded raw SVN diagnostics are needed.
-Errors retain bounded stdout/stderr diagnostics in every mode. Other development/test escape
-hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
+`SVN_MCP_RESPONSE_MODE` selects `compact` (default), `receipt`, `structured-only`, `standard`, or
+`full` responses. `structuredContent` is authoritative and `content` is empty by default; pass
+`humanText:true` when a client needs a short text receipt. `structured-only` makes that intent
+explicit. `receipt` is the smallest stable contract for status, snapshot, precommit, update, and
+commit. Use `responseMode:"full"` only when bounded raw SVN diagnostics and machine paths are
+needed.
+Non-guard failures retain bounded path-sanitized stdout/stderr diagnostics outside full mode;
+compact guard refusals return only a typed guard code, one-line reason, and affected-path count.
+Other development/test escape hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
 `SVN_AGENT_TIMEOUT_MS`, and `SVN_AGENT_MAX_DIFF_LINES`.
 
 High-volume reads are bounded by default. Log messages and changed paths are capped and opt-in
@@ -150,6 +154,13 @@ Public path arrays accept at most 500 entries, and individual filesystem paths a
 characters.
 Compact mode changes response size only; path containment, mutation guards, EOL checks,
 mixed-revision checks, and commit verification run unchanged.
+
+Normal responses use working-copy-relative paths. High-use tools accept a validated `fields`
+array; the allowed names are published once under `globalResponseControls.fieldProjections` in
+`docs/MCP_API.json` so the live MCP does not repeat those lists in every tool schema. Invalid
+fields are rejected before any SVN process starts. Focused `docs` and `review` profiles advertise
+only `compact`, `receipt`, and `structured-only`; known callers may still explicitly request
+standard/full diagnostics, but switching to the full profile is clearer for diagnostic work.
 
 `svn_commit` refuses existing directory targets by default because its deliberate `--depth empty`
 behavior commits only the directory node and excludes changed descendants. Prefer explicit file

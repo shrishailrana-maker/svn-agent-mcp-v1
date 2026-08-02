@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer, serverName, serverVersion } from "../dist/index.js";
+import { createServer, fieldProjectionNames, serverName, serverVersion } from "../dist/index.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = path.join(root, "docs", "MCP_API.json");
@@ -20,6 +20,10 @@ try {
   const content = `${JSON.stringify({
     schemaVersion: 1,
     server: { name: serverName, version: serverVersion },
+    globalResponseControls: {
+      humanText: "boolean; default false",
+      fieldProjections: fieldProjectionNames
+    },
     tools: listed.tools
   }, null, 2)}\n`;
 

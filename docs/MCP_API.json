@@ -4,6 +4,109 @@
     "name": "svn",
     "version": "1.3.0"
   },
+  "globalResponseControls": {
+    "humanText": "boolean; default false",
+    "fieldProjections": {
+      "svn_status": [
+        "revision",
+        "changedPaths",
+        "counts",
+        "items",
+        "conflicts"
+      ],
+      "svn_info": [
+        "root",
+        "revision",
+        "url",
+        "repositoryRoot",
+        "mixedRevision",
+        "revisionRange",
+        "localModifications",
+        "switched",
+        "partial",
+        "remoteHeadRevision",
+        "staleBase"
+      ],
+      "svn_snapshot": [
+        "revision",
+        "revisionRange",
+        "mixedRevision",
+        "localModifications",
+        "switched",
+        "partial",
+        "remoteHeadRevision",
+        "staleBase",
+        "changedPaths",
+        "counts",
+        "items",
+        "conflicts"
+      ],
+      "svn_log": [
+        "revision",
+        "revisionRange",
+        "entryCount",
+        "entries",
+        "targetMode"
+      ],
+      "svn_diff": [
+        "files",
+        "totalFiles",
+        "added",
+        "removed",
+        "excerpt",
+        "eolOnly"
+      ],
+      "svn_propget": [
+        "path",
+        "name",
+        "value"
+      ],
+      "svn_precommit": [
+        "ready",
+        "verdict",
+        "pathCount",
+        "statusCounts",
+        "diff",
+        "eol",
+        "mixedRevision",
+        "revisionRange",
+        "guardFailures",
+        "riskSignals",
+        "remediation"
+      ],
+      "svn_update": [
+        "requestedRevision",
+        "resultingRevision",
+        "revisionRange",
+        "mixedRevision",
+        "remoteHeadRevision",
+        "changedPaths",
+        "counts",
+        "conflicts",
+        "expectedRemoteHead",
+        "observedRemoteHead"
+      ],
+      "svn_commit": [
+        "revision",
+        "committedRevision",
+        "committedPaths",
+        "committedCount",
+        "pathCount",
+        "baseRevision",
+        "baseRevisionRange",
+        "remoteHeadRevision",
+        "eolVerdict",
+        "workingCopyMixed",
+        "contentHashes",
+        "postStatusClean",
+        "residue",
+        "warningCode",
+        "warningDetail",
+        "failedRule",
+        "suggestedMessage"
+      ]
+    }
+  },
   "tools": [
     {
       "name": "svn_self_check",
@@ -26,7 +129,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -60,12 +165,27 @@
               "pattern": "^[^\\x00]*$"
             }
           },
+          "includePassing": {
+            "type": "boolean"
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
           "responseMode": {
             "type": "string",
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -134,7 +254,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -193,7 +315,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -262,7 +386,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -352,7 +478,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -428,7 +556,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -477,7 +607,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -533,7 +665,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -592,7 +726,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -669,7 +805,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -738,7 +876,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -804,7 +944,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -847,7 +989,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -907,7 +1051,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -959,7 +1105,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1018,7 +1166,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1064,7 +1214,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1116,7 +1268,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1162,7 +1316,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1200,7 +1356,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1248,7 +1406,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1303,7 +1463,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1356,7 +1518,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },
@@ -1406,7 +1570,9 @@
             "enum": [
               "compact",
               "standard",
-              "full"
+              "full",
+              "receipt",
+              "structured-only"
             ]
           }
         },

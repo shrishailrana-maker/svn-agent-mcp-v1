@@ -89,6 +89,9 @@ try {
     if (!health || health.ok !== true || health.version !== check.package_version) {
       throw new Error(`installed MCP self-check failed: ${JSON.stringify(health)}`);
     }
+    if (response.content.length !== 0) {
+      throw new Error("installed MCP duplicated structured self-check data in content.text");
+    }
   } finally {
     await client.close();
   }

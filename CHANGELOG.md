@@ -6,6 +6,11 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Added
 
+- Added `receipt` and `structured-only` response modes. Receipt mode defines bounded minimal
+  contracts for status, snapshot, precommit, update, and commit.
+- Added validated field projection for high-use tools. Allowed fields are published once in the
+  generated API contract rather than repeated in every live tool schema.
+- Added explicit `humanText:true` opt-in for clients that need a short text content block.
 - Added server-level `full`, `docs`, and `review` tool profiles through
   `SVN_MCP_TOOL_PROFILE`; the focused profiles advertise only 8 or 11 tools and return a typed
   refusal when a client calls a hidden tool.
@@ -19,6 +24,14 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Changed
 
+- Structured content is now authoritative by default; successful and failed calls omit duplicate
+  `content.text` unless explicitly requested.
+- Compact, receipt, and standard responses use working-copy-relative paths; absolute paths and
+  raw commands remain full-diagnostic output only.
+- Compact guard refusals now return a typed guard code, one actionable detail, and an affected-path
+  count without echoing the complete submitted path list.
+- Check-style responses report pass counts and failures by default; passing details require
+  `includePassing:true` and remain paginated.
 - The full profile now advertises 25 canonical tools. Legacy `svn_move`, `svn_rename`,
   `svn_copy`, and `svn_resolved` routes remain callable for existing clients but are omitted from
   tool discovery to reduce schema context.
@@ -31,6 +44,10 @@ All notable changes to the SVN MCP are recorded here.
 
 ### Fixed
 
+- Fixed receipt continuation so a supplied cursor advances to the next changed-path page instead of
+  repeating page one.
+- Removed remaining absolute working-copy paths from non-full warnings, detailed self-check output,
+  standard diagnostics, and batch EOL failure receipts.
 - Embedded a Windows UTF-8 active-code-page manifest in the bundled VisualSVN `svn.exe`, preserving
   Greek, accented, CJK, and spaced path arguments without a shell or machine-wide locale change.
 - Added a post-large-diff client call to prove oversized SVN output cannot corrupt the next MCP
