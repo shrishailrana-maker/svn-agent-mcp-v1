@@ -26,11 +26,26 @@ import { parseLogXml } from "../parse/logXml.js";
 import { parseStatusXml } from "../parse/statusXml.js";
 import { svnXmlEntityLimits } from "../parse/xmlOptions.js";
 import { escapeSvnTarget, runSvn, runSvnStreamingLines, runSvnVersion } from "../runner.js";
-import type { ChangedPath, DiffSummary, EolCheckResult, Envelope, ToolEnvelope, WcInfo } from "../types.js";
+import type { ChangedPath, DiffSummary, EolCheckResult, Envelope, SvnLockInfo, ToolEnvelope, WcInfo } from "../types.js";
 
 export interface ToolInputWithCwd {
   cwd?: string;
 }
+
+export const STALE_LOCK_CANDIDATE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const LOCK_COMMENT_OUTPUT_LIMIT = 512;
+
+export interface LockInspection {
+  path: string;
+  repository_path: string;
+  repository_url: string | null;
+  local_lock: SvnLockInfo | null;
+  repository_lock: SvnLockInfo | null;
+}
+
+export type LockInspectionResult =
+  | { ok: true; cwd: string; wcRoot: string; rows: LockInspection[]; run: Awaited<ReturnType<typeof runSvn>> }
+  | { ok: false; envelope: ToolEnvelope };
 
 const propgetParser = new XMLParser({
   ignoreAttributes: false,
@@ -467,6 +482,194 @@ export async function svnDiff(input: {
         }
       : {})
   };
+}
+
+/**
+ * Inspect local and repository lock state without exposing lock bearer tokens.
+ * The internal result is shared by `svn_lock_status` and normal `svn_unlock`
+ * preflight checks. Callers must only copy the booleans and bounded metadata.
+ */
+export async function inspectLockState(input: { cwd?: string; paths: string[] }): Promise<LockInspectionResult> {
+  const cwd = resolveCwd(input.cwd);
+  const explicitError = requireExplicitPaths(input.paths);
+  if (explicitError) {
+    return { ok: false, envelope: failEnvelope("svn info --xml", cwd, explicitError) };
+  }
+
+  const context = await getWcContext(input.cwd, input.paths);
+  if (!context.ok) {
+    return { ok: false, envelope: context.envelope };
+  }
+  const resolved = resolveTargetsInsideWc(context.cwd, context.wcRoot, input.paths);
+  if (!resolved.ok) {
+    return { ok: false, envelope: failEnvelope("svn info --xml", context.cwd, resolved.note) };
+  }
+  const existsError = assertExistingTargets(resolved.paths);
+  if (existsError) {
+    return { ok: false, envelope: failEnvelope("svn info --xml", context.cwd, existsError) };
+  }
+
+  const localRun = await runSvn(
+    ["info", "--xml", "--", ...resolved.paths.map(escapeSvnTarget)],
+    context.cwd
+  );
+  if (localRun.exitCode !== 0) {
+    return {
+      ok: false,
+      envelope: envelopeFromRun({ run: localRun, ok: false, note: noteFromRun(localRun) })
+    };
+  }
+  const localEntries = parseInfoXml(localRun.stdout);
+  if (localEntries.length === 0) {
+    return { ok: false, envelope: failEnvelope(localRun.command, context.cwd, "target is not versioned") };
+  }
+
+  const localByPath = new Map<string, WcInfo>();
+  for (const entry of localEntries) {
+    if (!entry.path) continue;
+    localByPath.set(pathIdentityKey(path.resolve(context.cwd, entry.path)), entry);
+  }
+  const urls = resolved.paths.map((target, index) => {
+    const local = localByPath.get(pathIdentityKey(target)) ?? localEntries[index] ?? localEntries[0];
+    return local?.url ?? null;
+  });
+  const uniqueUrls = [...new Set(urls.filter((value): value is string => Boolean(value)))];
+  if (uniqueUrls.length === 0) {
+    return { ok: false, envelope: failEnvelope(localRun.command, context.cwd, "target has no repository URL") };
+  }
+
+  // Query the repository URL, not the local WC path. Local info tells us only
+  // whether this checkout carries a token; the URL is the current lock state.
+  const repositoryRun = await runSvn(
+    ["info", "--xml", "--", ...uniqueUrls.map(escapeSvnTarget)],
+    context.cwd
+  );
+  if (repositoryRun.exitCode !== 0) {
+    return {
+      ok: false,
+      envelope: envelopeFromRun({ run: repositoryRun, ok: false, note: noteFromRun(repositoryRun) })
+    };
+  }
+  const repositoryEntries = parseInfoXml(repositoryRun.stdout);
+  const repositoryByUrl = new Map<string, WcInfo>();
+  for (const entry of repositoryEntries) {
+    const key = entry.url ?? entry.path;
+    if (key) repositoryByUrl.set(key, entry);
+  }
+
+  const rows: LockInspection[] = resolved.paths.map((target, index) => {
+    const local = localByPath.get(pathIdentityKey(target)) ?? localEntries[index] ?? localEntries[0];
+    const url = urls[index] ?? local?.url ?? null;
+    const repository = (url ? repositoryByUrl.get(url) : undefined) ?? repositoryEntries[index] ?? repositoryEntries[0];
+    return {
+      path: repoRelativePath(target, context.wcRoot),
+      repository_path: repositoryRelativePathFromUrl(
+        url,
+        repository?.repo_root ?? context.info.repo_root,
+        repoRelativePath(target, context.wcRoot)
+      ),
+      repository_url: url,
+      local_lock: local?.lock ?? null,
+      repository_lock: repository?.lock ?? null
+    };
+  });
+
+  return { ok: true, cwd: context.cwd, wcRoot: context.wcRoot, rows, run: repositoryRun };
+}
+
+export async function svnLockStatus(input: {
+  cwd?: string;
+  paths: string[];
+  maxItems?: number;
+  cursor?: string;
+}): Promise<ToolEnvelope> {
+  const inspected = await inspectLockState(input);
+  if (!inspected.ok) {
+    return inspected.envelope;
+  }
+
+  const rows = inspected.rows.map((row) => lockStatusRow(row));
+  const offset = lockCursorOffset(input.cursor);
+  const maxItems = Math.min(500, Math.max(1, input.maxItems ?? 100));
+  const page = rows.slice(offset, offset + maxItems);
+  const nextOffset = offset + page.length;
+  return {
+    ...envelopeFromRun({
+      run: inspected.run,
+      ok: true,
+      note: ""
+    }),
+    wc_root: inspected.wcRoot,
+    locks: page,
+    lock_count: rows.length,
+    ...(nextOffset < rows.length ? { next_cursor: String(nextOffset), truncated: true } : {})
+  };
+}
+
+function lockStatusRow(row: LockInspection): Record<string, unknown> {
+  const repositoryLock = row.repository_lock;
+  const localToken = row.local_lock?.token;
+  const repositoryToken = repositoryLock?.token;
+  const stale = repositoryLock?.created ? isStaleLockDate(repositoryLock.created) : false;
+  let state: "unlocked" | "held-local" | "held-elsewhere" | "orphaned-token" | "stale-candidate";
+  if (!repositoryLock) {
+    state = localToken ? "orphaned-token" : "unlocked";
+  } else if (stale) {
+    state = "stale-candidate";
+  } else if (localToken && repositoryToken && localToken === repositoryToken) {
+    state = "held-local";
+  } else {
+    state = "held-elsewhere";
+  }
+
+  const comment = boundedLockComment(repositoryLock?.comment);
+  const workstationLabel = workstationLabelFromComment(comment);
+  return {
+    path: row.path,
+    repository_path: row.repository_path.slice(0, 4096),
+    repository_locked: Boolean(repositoryLock),
+    owner: boundedLockText(repositoryLock?.owner, 256),
+    created: boundedLockText(repositoryLock?.created, 64),
+    expires: boundedLockText(repositoryLock?.expires, 64),
+    comment,
+    ...(workstationLabel ? { workstation_label: workstationLabel } : {}),
+    local_token_possession: Boolean(localToken),
+    state
+  };
+}
+
+function isStaleLockDate(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && Date.now() - timestamp >= STALE_LOCK_CANDIDATE_AGE_MS;
+}
+
+function boundedLockComment(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.slice(0, LOCK_COMMENT_OUTPUT_LIMIT);
+}
+
+function boundedLockText(value: string | null | undefined, limit: number): string | null {
+  return value ? value.slice(0, limit) : null;
+}
+
+export function workstationLabelFromComment(comment: string | null | undefined): string | null {
+  if (!comment) return null;
+  const match = comment.match(/^\[svn-agent-mcp workstation=([A-Za-z0-9._-]{1,64})\]\s*/);
+  return match?.[1] ?? null;
+}
+
+function repositoryRelativePathFromUrl(url: string | null, repositoryRoot: string | null, fallback: string): string {
+  if (!url) return fallback;
+  if (repositoryRoot && (url === repositoryRoot || url.startsWith(`${repositoryRoot}/`))) {
+    return url === repositoryRoot ? "." : url.slice(repositoryRoot.length + 1);
+  }
+  return fallback;
+}
+
+function lockCursorOffset(value: string | undefined): number {
+  if (!value || !/^\d+$/.test(value)) return 0;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 export function diffEvidencePage(input: {

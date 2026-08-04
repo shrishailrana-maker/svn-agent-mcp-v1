@@ -78,10 +78,15 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    if (tools.tools.length !== 25) {
-      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 25 canonical tools`);
+    if (tools.tools.length !== 29) {
+      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 29 canonical tools`);
     }
-    for (const name of ["svn_path_change", "svn_resolve", "svn_delete", "svn_snapshot", "svn_cat", "svn_blame"]) {
+    for (const tool of tools.tools) {
+      if (tool.annotations?.destructiveHint !== false) {
+        throw new Error(`installed MCP omitted destructiveHint:false for ${tool.name}`);
+      }
+    }
+    for (const name of ["svn_path_change", "svn_resolve", "svn_delete", "svn_snapshot", "svn_cat", "svn_blame", "svn_lock", "svn_unlock", "svn_lock_status", "svn_needs_lock"]) {
       if (!tools.tools.some((tool) => tool.name === name)) {
         throw new Error(`installed MCP omitted canonical tool ${name}`);
       }
@@ -107,7 +112,7 @@ try {
   }
 
   console.log(`Packed install smoke passed: ${filename}`);
-  console.log("  MCP handshake: 25 canonical tools, healthy self-check");
+  console.log("  MCP handshake: 29 canonical tools, destructiveHint:false, healthy self-check");
   console.log(`  layout: ${check.runtime_layout}`);
   console.log(`  dist files: ${check.dist_file_count}`);
   console.log(`  bin files: ${check.bin_file_count}`);

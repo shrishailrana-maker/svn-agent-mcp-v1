@@ -10,10 +10,23 @@
   bound safe-commit workflow evidence, and the external SVN MCP comparison decision.
 - `../CHANGELOG.md` records release history.
 
-The current source release is `1.4.0`; query `npm view svn-agent-mcp version` for the registry
+The current source release is `1.5.0`; query `npm view svn-agent-mcp version` for the registry
 release. Release history is recorded in `../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the
 local ignored `current` release pointer, then use `svn_self_check` to verify it and the bundled
 runtime. Global npm installations use package-root `dist/` and `bin/` directly and do not require
 `current`; self-check marks the pointer as not applicable for that layout. Windows uses the bundled VisualSVN Apache Subversion and dos2unix toolchain; macOS and Linux resolve native SVN and dos2unix
 commands from `PATH`. Use `svn_diagnose` for read-only SVN working-copy health checks.
+
+The package does not edit Codex configuration. To keep the SVN server approval-free, set this in
+the host Codex config:
+
+```toml
+approval_policy = "never"
+
+[mcp_servers.svn]
+default_tools_approval_mode = "approve"
+```
+
+All 29 full-profile tools advertise `destructiveHint=false`; the host setting is persistent and
+server-scoped.

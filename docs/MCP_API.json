@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; default false",
@@ -210,6 +210,15 @@
         ],
         "svn_resolve": [
           "operationId"
+        ],
+        "svn_lock": [
+          "operationId"
+        ],
+        "svn_unlock": [
+          "operationId"
+        ],
+        "svn_needs_lock": [
+          "operationId"
         ]
       },
       "limits": {
@@ -259,6 +268,10 @@
           }
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -313,6 +326,69 @@
           }
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_lock_status",
+      "description": "Return bounded repository lock state without exposing lock tokens.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "One to 500 explicit paths inside one WC."
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full",
+              "receipt",
+              "structured-only"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -385,6 +461,10 @@
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -445,6 +525,10 @@
           }
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -516,6 +600,10 @@
           }
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -614,6 +702,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -689,6 +781,10 @@
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -742,6 +838,10 @@
           "path"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -800,6 +900,10 @@
           "path"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -861,6 +965,10 @@
           "paths"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -942,6 +1050,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1016,6 +1128,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1081,6 +1197,10 @@
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1128,6 +1248,191 @@
           "paths"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_lock",
+      "description": "Acquire guarded repository locks with a workstation-labelled comment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "One to 500 explicit paths inside one WC."
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "pattern": "^[^\\x00]*$"
+          },
+          "workstationLabel": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "forceAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full",
+              "receipt",
+              "structured-only"
+            ]
+          }
+        },
+        "required": [
+          "paths",
+          "comment"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_unlock",
+      "description": "Release guarded repository locks, refusing mismatched working-copy tokens.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "One to 500 explicit paths inside one WC."
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "forceAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full",
+              "receipt",
+              "structured-only"
+            ]
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "svn_needs_lock",
+      "description": "Set or remove svn:needs-lock on explicit regular versioned files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "description": "Absolute WC directory; required for relative paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            },
+            "description": "One to 500 explicit paths inside one WC."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "set",
+              "remove"
+            ]
+          },
+          "riskAck": {
+            "type": "boolean"
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full",
+              "receipt",
+              "structured-only"
+            ]
+          }
+        },
+        "required": [
+          "paths",
+          "action"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -1225,6 +1530,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1279,6 +1588,10 @@
           "dest"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -1336,6 +1649,10 @@
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1391,6 +1708,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1445,6 +1766,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1494,6 +1819,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1529,6 +1858,10 @@
           }
         },
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -1582,6 +1915,10 @@
           "paths"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"
@@ -1642,6 +1979,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1696,6 +2037,10 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1748,6 +2093,10 @@
           "message"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
       "execution": {
         "taskSupport": "forbidden"

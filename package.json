@@ -1,6 +1,6 @@
 {
   "name": "svn-agent-mcp",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Strict SVN Model Context Protocol server for agent-safe SVN workflows.",
   "type": "module",
   "main": "dist/index.js",
@@ -75,8 +75,11 @@
   "overrides": {
     "@hono/node-server": "^2.0.5",
     "babel-plugin-istanbul": "^8.0.0",
-    "brace-expansion": "^5.0.8",
+    "brace-expansion": "^5.0.9",
+    "fast-uri": "^3.1.5",
     "glob": "^13.0.6",
+    "hono": "^4.13.0",
+    "ip-address": "^10.4.0",
     "minimatch": "^10.2.5",
     "test-exclude": "^8.0.0"
   },

@@ -4,6 +4,30 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-04
+
+### Added
+
+- Added guarded `svn_lock`, `svn_unlock`, and read-only `svn_lock_status` tools for same-user
+  multi-working-copy workflows. Lock comments include a validated workstation label, durable
+  operation receipts bind normalized paths and force state, and lock tokens never enter public
+  responses.
+- Added guarded `svn_needs_lock` for explicit regular versioned files. Setting uses `*`; removal
+  requires `riskAck:true`.
+- Added lock diagnostics for held-elsewhere, orphaned-token, and seven-day stale-candidate states.
+- Added explicit `destructiveHint:false` annotations to every registered tool and accurate central
+  read-only annotations. Host Codex approval configuration remains outside the npm package.
+
+### Changed
+
+- Bumped the package, lockfile, and generated MCP contract to 1.5.0. The full profile now exposes
+  29 canonical tools; focused docs/review profiles remain unchanged.
+
+### Fixed
+
+- Updated transitive dependency overrides for `brace-expansion`, `fast-uri`, `hono`, and
+  `ip-address` to versions that resolve the current npm security advisories.
+
 ## [1.4.0] - 2026-08-02
 
 ### Added

@@ -32,8 +32,11 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert(tools.tools.length === 25, `expected 25 canonical tools, received ${tools.tools.length}`);
-    for (const name of ["svn_delete", "svn_resolve", "svn_path_change", "svn_snapshot", "svn_cat", "svn_blame"]) {
+    assert(tools.tools.length === 29, `expected 29 canonical tools, received ${tools.tools.length}`);
+    for (const tool of tools.tools) {
+      assert(tool.annotations?.destructiveHint === false, `tool ${tool.name} omitted destructiveHint:false`);
+    }
+    for (const name of ["svn_delete", "svn_resolve", "svn_path_change", "svn_snapshot", "svn_cat", "svn_blame", "svn_lock", "svn_unlock", "svn_lock_status", "svn_needs_lock"]) {
       assert(tools.tools.some((tool) => tool.name === name), `missing public tool: ${name}`);
     }
     for (const name of ["svn_move", "svn_rename", "svn_copy", "svn_resolved"]) {
@@ -150,6 +153,24 @@ try {
       `commit operation ID was not bound to its original payload: ${JSON.stringify(commitMismatch)}`
     );
     passed.push("commit");
+
+    await callOk(client, "svn_needs_lock", { cwd: workingCopy, paths: ["client-smoke.txt"], action: "set" });
+    const lockInput = {
+      cwd: workingCopy,
+      paths: ["client-smoke.txt"],
+      comment: "client smoke lock",
+      workstationLabel: "smoke-client",
+      operationId: randomUUID()
+    };
+    const lock = await callOk(client, "svn_lock", lockInput);
+    assert(lock.operationId === lockInput.operationId, "lock receipt omitted its operation ID");
+    const lockStatus = await callOk(client, "svn_lock_status", { cwd: workingCopy, paths: ["client-smoke.txt"] });
+    assert(lockStatus.locks[0]?.repositoryLocked === true && lockStatus.locks[0]?.localTokenPossession === true,
+      `lock status did not report local possession: ${JSON.stringify(lockStatus)}`);
+    assert(!JSON.stringify(lockStatus).includes("<token>"), "lock status exposed an XML token");
+    await callOk(client, "svn_unlock", { cwd: workingCopy, paths: ["client-smoke.txt"], operationId: randomUUID() });
+    await callOk(client, "svn_needs_lock", { cwd: workingCopy, paths: ["client-smoke.txt"], action: "remove", riskAck: true });
+    passed.push("repository-locks");
 
     const baseline = await callOk(client, "svn_snapshot", {
       cwd: workingCopy,

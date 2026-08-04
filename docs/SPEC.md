@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.34 — public implementation contract. Single source of truth.**
+**Spec version 1.35 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-08-02.
+hostnames, or product-specific role assignments. Date: 2026-08-04.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -45,7 +45,7 @@ working copy multiplies the cost.
 | Pain | Fix | Where in this doc |
 |---|---|---|
 | P1: 5–8 round trips per commit | `svn_precommit` + `svn_commit` = 2 calls; bound `operation:"safe"` = 1 call | §8.3, §8.4 |
-| P1: permission-prompt stalls | Allowlist read-only tools; only mutations prompt | §10.4 |
+| P1: permission-prompt stalls | Publish explicit read-only and non-destructive tool annotations; host policy controls approvals | §10.4 |
 | P1: policy re-derivation + drift | Policy baked into the MCP as defaults & guards; read-only clients hard-READONLY | §7 |
 | P1: raw-diff dumping into context | Structured JSON envelope, per-file ± counts, line-capped excerpts | §6.4, §8.3 |
 | P2: LF files born from file-creation tools | Repo policy makes `svn_add` normalize and verify new text files | §8.4 |
@@ -91,7 +91,7 @@ workflow).
 | D1 | Write from scratch in TypeScript/Node; do **not** fork an existing SVN MCP | Safety layer is the product; forking inherits a permissive surface |
 | D2 | Read-only safety = launch with `--readonly` (legacy/dev env `SVN_AGENT_READONLY=1` also works); every mutating tool refuses | Simple, unbypassable, matches "read-only clients never change SVN state" |
 | D3 | Mixed-revision WC on commit → **warn in `note`, proceed** | Caller decides; refusing blocks legitimate scoped commits |
-| D4 | `riskAck:true` required for mechanically detectable risky slices (§7 G6); undetectable risk categories stay the calling client's approval-gate duty | Encodes the risky-slice gate without pretending to detect the undetectable |
+| D4 | `riskAck:true` required for mechanically detectable risky slices (§7 G6); undetectable risk categories remain caller decisions | Encodes the risky-slice gate without pretending to detect the undetectable |
 | D5 | Branch/switch/merge/relocate remain out of scope; guarded delete is supported with dry-run, explicit paths, and risk acknowledgement | Delete is needed for normal scoped maintenance; the other operations still require separate guard designs |
 | D6 | Versioning: **semver**, first release `v0.1.0`; `current` junction → `releases\v0.1.0` | One pin, easy rollback |
 | D7 | Env overrides win; use compatible bundled tools next and native `PATH` tools otherwise | Windows stays self-contained while macOS/Linux use their normal package-managed toolchain |
@@ -162,11 +162,12 @@ no quoting pitfalls, and never an in-process rewrite of tracked file bytes.
       commitText.ts   # /Committed revision (\d+)\./
     eol.ts            # byte sniffing (EOL kind, BOM, binary), dos2unix/unix2dos invocation
     tools\
-      readonly.ts     # status/info, diff/log/cat/blame, EOL, properties
+      readonly.ts     # status/info, diff/log/cat/blame, EOL, properties, lock status
       composite.ts    # svn_snapshot, svn_precommit, commit workflows, eol_fix_verified
       mutating.ts     # svn_add, svn_commit, svn_path_change,
                       # svn_update, svn_revert, svn_delete, svn_resolve, svn_cleanup,
-                      # svn_propset_eol_style, svn_propset, svn_export, svn_import
+                      # svn_propset_eol_style, svn_propset, svn_lock, svn_unlock,
+                      # svn_needs_lock, svn_export, svn_import
   tests\              # jest: unit + integration (temp file:// repo)
   bin\                # versioned full Windows SVN and dos2unix runtime payloads
   dist\               # tsc output (committed into releases\, not into src tree)
@@ -193,9 +194,10 @@ only as development/test escape hatches:
 | `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
-| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 25 canonical tools), `docs` (8), or `review` (11) |
+| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 29 canonical tools), `docs` (8), or `review` (11) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 | `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
+| `SVN_MCP_WORKSTATION_LABEL` | No | Default lock workstation label; one to 64 `[A-Za-z0-9._-]` characters |
 
 ### 6.3 Path & cwd rules
 
@@ -275,7 +277,7 @@ These records coordinate retries on one host only and are not a distributed lock
 ### 6.5 Tool profiles
 
 Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
-25 canonical tools. `docs` advertises `svn_update`, `svn_status`, `svn_log`, `svn_add`,
+29 canonical tools. `docs` advertises `svn_update`, `svn_status`, `svn_log`, `svn_add`,
 `eol_check`, `eol_fix_verified`, `svn_precommit`, and `svn_commit`. `review` adds `svn_diff`,
 `svn_cat`, and `svn_blame`. A call to an unadvertised tool in a focused profile returns a typed
 `TOOL_PROFILE` refusal with remediation. READONLY checks and every mutation guard still run
@@ -358,7 +360,11 @@ hidden/no-window process option.
   allow exception cannot bypass a stricter project-specific deny or the immutable credential-file guards.
 - **G5 must-be-changed:** `svn_commit` verifies every listed path is actually modified/added/deleted per scoped status; unknown/clean path → refusal naming the path.
 - **G6 risky-slice ack:** `svn_commit` requires `riskAck:true` when any mechanical signal is present: a delete-scheduled path (status `D`), **more than 8 paths**, `version.ver` among the paths, or a build-system file among the paths (`*.sln`, `*.csproj`, `Directory.Build.props`, `Directory.Build.targets`, `*.props`, `*.targets`, `packages.config`). Refusal lists the triggered signals. Schema-changing / security-sensitive / scope-unclear risk is **not detectable** — the calling client's responsibility (§5.4).
-- **G7 no dangerous flags:** `--force` is never emitted. `svn_update` always gets `--accept postpone`. `svn_cleanup` never gets `--remove-unversioned`/`--remove-ignored`/`--vacuum-pristines`. `svn_resolve` requires an explicit `accept` value from the caller.
+- **G7 no dangerous flags:** `--force` is emitted only by `svn_lock` or `svn_unlock` when
+  `force:true`, `forceAck:true`, and a valid UUID `operationId` are all present. `svn_update`
+  always gets `--accept postpone`. `svn_cleanup` never gets
+  `--remove-unversioned`/`--remove-ignored`/`--vacuum-pristines`. `svn_resolve` requires an
+  explicit `accept` value from the caller.
 
 ## 8. Tool contracts
 
@@ -502,6 +508,15 @@ resolved working copy/targets in parallel. Extra fields: `health:"healthy"|"warn
 SVN failure triage into one structured call without changing the working copy or clearing
 credentials.
 
+**`svn_lock_status`** — `{ cwd?, paths: string[], maxItems?: number = 100, cursor? }`
+Read-only lock inspection. It runs local `svn info --xml` for token possession and repository URL
+`svn info --xml` for current lock state. Each bounded row contains a working-copy-relative path,
+repository-relative path, `repository_locked`, owner, created, expires, bounded comment, optional
+workstation label, `local_token_possession`, and a state. Tokens are compared internally and never
+returned. States include `unlocked`, `held-local`, `held-elsewhere`, `orphaned-token`, and
+`stale-candidate`; a stale candidate is a lock at least seven days old. Pages contain at most 500
+rows and expose `next_cursor` when more paths remain. This tool is available in READONLY mode.
+
 ### 8.2 (reserved)
 
 ### 8.3 Composite tools (the P1 killers)
@@ -636,6 +651,30 @@ scope are backed up, converted, and content-hash verified before SVN scheduling.
 converted files that have not changed concurrently and prevents the add; concurrently changed files
 are preserved and reported as rollback-skipped. Binary files and `eolExclude` globs (defaulting to
 `**/*.patch` and `**/*.diff`) are skipped and reported.
+
+**`svn_lock`** — `{ cwd?, paths: string[], comment: string, workstationLabel?: string, force?: boolean, forceAck?: boolean, operationId?: UUID }`
+Guarded repository lock. The comment must be non-empty and the workstation label must come from
+the input or `SVN_MCP_WORKSTATION_LABEL`, using one to 64 `[A-Za-z0-9._-]` characters. The
+repository comment is bounded and stored as `[svn-agent-mcp workstation=<label>] <comment>`.
+Normal calls run `svn lock -F <secure-temp-file> -- <paths…>`; the temporary file is always
+deleted. `force:true` adds `--force` only when `forceAck:true` and a valid UUID `operationId` are
+present. The operation receipt fingerprint binds normalized paths, comment, label, and force state.
+Never-commit, containment, and READONLY guards run before SVN.
+
+**`svn_unlock`** — `{ cwd?: string, paths: string[], force?: boolean, forceAck?: boolean, operationId?: UUID }`
+Guarded repository unlock. Before a normal `svn unlock`, the tool compares the local working-copy
+lock token with the current repository URL lock token. It refuses when the repository is locked but
+this working copy does not hold the matching token, even when the SVN username is the same. A
+forced unlock requires `force:true`, `forceAck:true`, and a valid UUID `operationId`; only then may
+`--force` be emitted. Durable receipts bind normalized paths and force state and replay terminal
+results without repeating SVN.
+
+**`svn_needs_lock`** — `{ cwd?: string, paths: string[], action: "set"|"remove", riskAck?: boolean, operationId?: UUID }`
+Guarded property mutation for regular versioned files only. `action:"set"` runs
+`svn propset -- svn:needs-lock * <paths…>`; `action:"remove"` runs
+`svn propdel -- svn:needs-lock <paths…>` and requires `riskAck:true`. Durable operation receipts
+bind normalized paths, action, and acknowledgement state. All normal mutation guards apply and
+READONLY refuses both actions.
 
 **`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
 Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
@@ -800,14 +839,23 @@ Measure before/after: `Measure-Command { svn status <PROJECT_ROOT>\src }`. Expec
 file-heavy svn ops. Trade-off: files under the path are not scanned on access. No process-level
 exclusions.
 
-### 10.4 Permission allowlist
+### 10.4 Host approval settings
 
-Interim (before MCP): allow read-only `svn status`, `svn diff`, `svn info`, and `svn log`
-commands in the client permission system.
-Final (after Phase 4): allow `mcp__svn__svn_self_check`, `mcp__svn__svn_diagnose`,
-`mcp__svn__svn_status`, `mcp__svn__svn_info`, `mcp__svn__svn_diff`, `mcp__svn__svn_log`,
-`mcp__svn__eol_check`, `mcp__svn__svn_propget`, and `mcp__svn__svn_precommit`; leave every
-mutating tool prompt-gated.
+The npm package does not edit user or host configuration. Keep Codex approval settings outside the
+repository. For a persistent server-scoped configuration, use:
+
+```toml
+approval_policy = "never"
+
+[mcp_servers.svn]
+default_tools_approval_mode = "approve"
+```
+
+All registered SVN tools, including hidden compatibility routes, advertise
+`annotations.destructiveHint=false`. A central canonical read-only set advertises accurate
+`readOnlyHint` values for diagnostics, status/info/snapshot, diff/log/cat/blame, EOL checks,
+property reads, precommit, and lock status. These annotations do not replace the MCP's READONLY,
+containment, never-commit, risk acknowledgement, or durable receipt guards.
 
 ## 11. Historical development phases
 
@@ -876,13 +924,25 @@ Gate: one full sample commit slice executed end-to-end through the MCP (precommi
 ## 13. Out of scope / future
 
 Branch, switch, merge, relocate (future candidates, each with its own guard design);
-lock/unlock; changelist support; any Git interop; any mass
+changelist support; any Git interop; any mass
 reformatting, ever. Project build/test time can dominate total slice time, but it is not SVN
 housekeeping — separate initiative.
 
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.35 / v1.5.0 — 2026-08-04
+
+- Adds guarded `svn_lock`, `svn_unlock`, and read-only `svn_lock_status` for shared working-copy
+  workflows. Normal unlock compares local and repository lock tokens internally and refuses a
+  mismatched token; forced lock/unlock requires explicit acknowledgement and a UUID operation ID.
+- Adds guarded `svn_needs_lock` for regular versioned files, with `riskAck:true` required for
+  removal. Durable lock receipts bind normalized paths, comments, labels, actions, and force state.
+- Bounds and redacts lock metadata, adds held-elsewhere/orphaned-token/stale-candidate diagnostics,
+  and keeps lock tokens out of all public response modes.
+- Publishes `destructiveHint=false` for every registered tool and accurate central read-only hints.
+  Host approval configuration remains external to the package.
 
 ### Spec 1.34 / Unreleased — 2026-08-02
 

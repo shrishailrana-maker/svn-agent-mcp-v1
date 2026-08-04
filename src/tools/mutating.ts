@@ -31,6 +31,7 @@ import {
   validatePropertyName
 } from "../guards.js";
 import { parseCommittedRevision } from "../parse/commitText.js";
+import { parseInfoXml } from "../parse/infoXml.js";
 import { parseUpdateText } from "../parse/updateText.js";
 import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
 import { processWorkflowEvidence, workflowScope } from "../workflowEvidence.js";
@@ -51,12 +52,30 @@ import {
   remoteHeadForTargets,
   revisionSelectorError,
   scopedStatusMap,
+  inspectLockState,
   svnDiff,
   svnStatus
 } from "./readonly.js";
 
 const DESCENDANT_SCAN_LIMIT = 20000;
 const DESCENDANT_SCAN_DEPTH_LIMIT = 256;
+const LOCK_WORKSTATION_LABEL = /^[A-Za-z0-9._-]{1,64}$/;
+const LOCK_COMMENT_MAX_CHARS = 4000;
+const UUID_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type SvnLockCoreInput = {
+  cwd?: string;
+  paths: string[];
+  comment: string;
+  workstationLabel: string;
+  force: boolean;
+};
+
+type SvnUnlockCoreInput = {
+  cwd?: string;
+  paths: string[];
+  force: boolean;
+};
 
 export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecursive?: boolean }): Promise<ToolEnvelope> {
   const guard = await mutatingPathGuard("svn add", input.cwd, input.paths, { requireExisting: true });
@@ -149,6 +168,269 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
   } finally {
     preparedEol?.dispose();
   }
+}
+
+export async function svnLock(input: {
+  cwd?: string;
+  paths: string[];
+  comment: string;
+  workstationLabel?: string;
+  force?: boolean;
+  forceAck?: boolean;
+  operationId?: string;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (readonlyMode()) {
+    return failEnvelope("svn lock", cwd, "READONLY instance");
+  }
+
+  const comment = input.comment.trim();
+  if (!comment) {
+    return failEnvelope("svn lock", cwd, "non-empty lock comment required");
+  }
+  if (comment.length > LOCK_COMMENT_MAX_CHARS) {
+    return failEnvelope("svn lock", cwd, `lock comment exceeds ${LOCK_COMMENT_MAX_CHARS} characters`);
+  }
+  const workstationLabel = input.workstationLabel ?? process.env.SVN_MCP_WORKSTATION_LABEL ?? "";
+  if (!LOCK_WORKSTATION_LABEL.test(workstationLabel)) {
+    return failEnvelope(
+      "svn lock",
+      cwd,
+      "workstationLabel or SVN_MCP_WORKSTATION_LABEL must contain 1..64 characters from [A-Za-z0-9._-]"
+    );
+  }
+  if (input.force && (!input.forceAck || !input.operationId || !UUID_OPERATION_ID.test(input.operationId))) {
+    return failEnvelope("svn lock", cwd, "force:true requires forceAck:true and a valid operationId", {
+      code: "FORCE_ACK_REQUIRED"
+    });
+  }
+
+  const coreInput: SvnLockCoreInput = {
+    paths: input.paths,
+    comment,
+    workstationLabel,
+    force: input.force ?? false
+  };
+  if (input.cwd !== undefined) coreInput.cwd = input.cwd;
+  if (input.operationId) {
+    const fingerprint = stableOperationFingerprint({
+      kind: "svn_lock",
+      cwd: pathIdentityKey(cwd),
+      paths: normalizedOperationPaths(cwd, input.paths),
+      comment,
+      workstationLabel,
+      force: input.force ?? false,
+      forceAck: input.forceAck ?? false
+    });
+    return withDurableOperation({
+      operationId: input.operationId,
+      kind: "svn_lock",
+      fingerprint,
+      command: "svn lock",
+      cwd,
+      execute: () => svnLockCore(coreInput)
+    });
+  }
+
+  return svnLockCore(coreInput);
+}
+
+async function svnLockCore(input: SvnLockCoreInput): Promise<ToolEnvelope> {
+  const guard = await mutatingPathGuard("svn lock", input.cwd, input.paths, { requireExisting: true });
+  if (!guard.ok) return guard.envelope;
+  for (const target of guard.paths) {
+    const hit = neverCommitHit(target, guard.wcRoot);
+    if (hit) return failEnvelope("svn lock", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
+  }
+
+  const storedComment = `[svn-agent-mcp workstation=${input.workstationLabel}] ${input.comment}`;
+  const commentTemp = writeMessageTemp("svn-agent-lock-", storedComment);
+  try {
+    const run = await runSvn([
+      "lock",
+      ...(input.force ? ["--force"] : []),
+      "-F",
+      commentTemp.file,
+      "--",
+      ...guard.paths.map(escapeSvnTarget)
+    ], guard.cwd);
+    return {
+      ...envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) }),
+      paths: guard.paths.map((target) => repoRelativePath(target, guard.wcRoot)),
+      comment: storedComment,
+      workstation_label: input.workstationLabel,
+      force: input.force
+    };
+  } finally {
+    fs.rmSync(commentTemp.dir, { recursive: true, force: true });
+  }
+}
+
+export async function svnUnlock(input: {
+  cwd?: string;
+  paths: string[];
+  force?: boolean;
+  forceAck?: boolean;
+  operationId?: string;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (readonlyMode()) {
+    return failEnvelope("svn unlock", cwd, "READONLY instance");
+  }
+  if (input.force && (!input.forceAck || !input.operationId || !UUID_OPERATION_ID.test(input.operationId))) {
+    return failEnvelope("svn unlock", cwd, "force:true requires forceAck:true and a valid operationId", {
+      code: "FORCE_ACK_REQUIRED"
+    });
+  }
+
+  const coreInput: SvnUnlockCoreInput = {
+    paths: input.paths,
+    force: input.force ?? false
+  };
+  if (input.cwd !== undefined) coreInput.cwd = input.cwd;
+  if (input.operationId) {
+    const fingerprint = stableOperationFingerprint({
+      kind: "svn_unlock",
+      cwd: pathIdentityKey(cwd),
+      paths: normalizedOperationPaths(cwd, input.paths),
+      force: input.force ?? false,
+      forceAck: input.forceAck ?? false
+    });
+    return withDurableOperation({
+      operationId: input.operationId,
+      kind: "svn_unlock",
+      fingerprint,
+      command: "svn unlock",
+      cwd,
+      execute: () => svnUnlockCore(coreInput)
+    });
+  }
+
+  return svnUnlockCore(coreInput);
+}
+
+async function svnUnlockCore(input: SvnUnlockCoreInput): Promise<ToolEnvelope> {
+  const guard = await mutatingPathGuard("svn unlock", input.cwd, input.paths, { requireExisting: true });
+  if (!guard.ok) return guard.envelope;
+  for (const target of guard.paths) {
+    const hit = neverCommitHit(target, guard.wcRoot);
+    if (hit) return failEnvelope("svn unlock", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
+  }
+
+  if (!input.force) {
+    const inspected = await inspectLockState({ cwd: guard.cwd, paths: guard.paths });
+    if (!inspected.ok) {
+      return {
+        ...inspected.envelope,
+        command: "svn unlock",
+        code: "LOCK_STATUS_UNAVAILABLE",
+        note: inspected.envelope.note || "unable to verify the current repository lock token"
+      };
+    }
+    for (const row of inspected.rows) {
+      const repositoryToken = row.repository_lock?.token;
+      if (repositoryToken && repositoryToken !== row.local_lock?.token) {
+        return {
+          ...failEnvelope(
+            "svn unlock",
+            guard.cwd,
+            "working copy does not hold the matching repository lock token; use force:true with forceAck:true and operationId to steal it"
+          ),
+          code: "LOCK_TOKEN_REQUIRED",
+          path: row.path,
+          repository_locked: true,
+          local_token_possession: Boolean(row.local_lock?.token)
+        };
+      }
+    }
+  }
+
+  const run = await runSvn([
+    "unlock",
+    ...(input.force ? ["--force"] : []),
+    "--",
+    ...guard.paths.map(escapeSvnTarget)
+  ], guard.cwd);
+  return {
+    ...envelopeFromRun({ run, ok: run.exitCode === 0, note: run.exitCode === 0 ? "" : noteFromRun(run) }),
+    paths: guard.paths.map((target) => repoRelativePath(target, guard.wcRoot)),
+    force: input.force ?? false
+  };
+}
+
+export async function svnNeedsLock(input: {
+  cwd?: string;
+  paths: string[];
+  action: "set" | "remove";
+  riskAck?: boolean;
+  operationId?: string;
+}): Promise<ToolEnvelope> {
+  const cwd = resolveCwd(input.cwd);
+  if (readonlyMode()) {
+    return failEnvelope("svn needs-lock", cwd, "READONLY instance");
+  }
+  if (input.action !== "set" && input.action !== "remove") {
+    return failEnvelope("svn needs-lock", cwd, "action must be set or remove");
+  }
+  if (input.action === "remove" && input.riskAck !== true) {
+    return {
+      ...failEnvelope("svn needs-lock", cwd, "riskAck required to remove svn:needs-lock"),
+      code: "RISK_ACK_REQUIRED"
+    };
+  }
+
+  if (input.operationId) {
+    const { operationId, ...coreInput } = input;
+    const fingerprint = stableOperationFingerprint({
+      kind: "svn_needs_lock",
+      cwd: pathIdentityKey(cwd),
+      paths: normalizedOperationPaths(cwd, input.paths),
+      action: input.action,
+      riskAck: input.riskAck ?? false
+    });
+    return withDurableOperation({
+      operationId,
+      kind: "svn_needs_lock",
+      fingerprint,
+      command: "svn needs-lock",
+      cwd,
+      execute: () => svnNeedsLock(coreInput)
+    });
+  }
+
+  const guard = await mutatingPathGuard("svn needs-lock", input.cwd, input.paths, { requireExisting: true });
+  if (!guard.ok) return guard.envelope;
+  for (const target of guard.paths) {
+    const stat = statTargetForMutation("svn needs-lock", guard.cwd, target);
+    if (!stat.ok) return stat.envelope;
+    if (!stat.stat.isFile() || stat.lstat.isSymbolicLink()) {
+      return failEnvelope("svn needs-lock", guard.cwd, `svn:needs-lock requires regular versioned files: ${repoRelativePath(target, guard.wcRoot)}`);
+    }
+    const hit = neverCommitHit(target, guard.wcRoot);
+    if (hit) return failEnvelope("svn needs-lock", guard.cwd, neverCommitNote(hit, target, guard.wcRoot));
+  }
+
+  const infoRun = await runSvn(["info", "--xml", "--", ...guard.paths.map(escapeSvnTarget)], guard.cwd);
+  if (infoRun.exitCode !== 0 || parseInfoXml(infoRun.stdout).length < guard.paths.length) {
+    return envelopeFromRun({ run: infoRun, ok: false, note: infoRun.exitCode === 0 ? "target not versioned" : noteFromRun(infoRun) });
+  }
+  const args = input.action === "set"
+    ? ["propset", "--", "svn:needs-lock", "*", ...guard.paths.map(escapeSvnTarget)]
+    : ["propdel", "--", "svn:needs-lock", ...guard.paths.map(escapeSvnTarget)];
+  const run = await runSvn(args, guard.cwd);
+  const status = run.exitCode === 0 ? await svnStatus({ cwd: guard.cwd, paths: guard.paths }) : null;
+  return {
+    ...envelopeFromRun({
+      run,
+      ok: run.exitCode === 0,
+      changed_paths: status?.changed_paths ?? [],
+      conflicts: status?.conflicts ?? [],
+      note: run.exitCode === 0 ? "" : noteFromRun(run)
+    }),
+    property: "svn:needs-lock",
+    action: input.action,
+    paths: guard.paths.map((target) => repoRelativePath(target, guard.wcRoot))
+  };
 }
 
 async function prepareAddedFileEol(

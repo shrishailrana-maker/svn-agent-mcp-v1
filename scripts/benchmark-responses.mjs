@@ -18,10 +18,13 @@ const svnversion = svnVersionExecutable();
 const server = path.join(root, "dist", "index.js");
 const enforceBudgets = process.argv.includes("--check");
 const schemaBudgets = {
-  allInputSchemas: 20000,
+  // v1.5.0 adds four bounded lock tools and explicit non-destructive
+  // annotations to every tool. Keep roughly five percent headroom above the
+  // measured canonical 29-tool contract so later growth still fails closed.
+  allInputSchemas: 23500,
   selectedInputSchemas: 5500,
-  allToolDefinitions: 24000,
-  selectedToolDefinitions: 6500
+  allToolDefinitions: 29500,
+  selectedToolDefinitions: 7000
 };
 const compactBudgets = {
   "clean status": 250,
@@ -43,8 +46,8 @@ const receiptBudgets = {
 };
 const receiptTools = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 const profileSchemaBudgets = {
-  docs: { toolCount: 8, inputSchemas: 7000, toolDefinitions: 8000 },
-  review: { toolCount: 11, inputSchemas: 9700, toolDefinitions: 11000 }
+  docs: { toolCount: 8, inputSchemas: 7000, toolDefinitions: 8800 },
+  review: { toolCount: 11, inputSchemas: 9700, toolDefinitions: 12250 }
 };
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });

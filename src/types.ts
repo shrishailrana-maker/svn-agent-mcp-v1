@@ -34,6 +34,20 @@ export interface WcInfo {
   repo_root: string | null;
   wc_root: string | null;
   revision: number | null;
+  lock?: SvnLockInfo | null;
+}
+
+/** Metadata returned by `svn info --xml` for a repository lock.
+ *
+ * The token is retained only for internal comparison. Public lock responses
+ * must never copy it into an envelope or receipt.
+ */
+export interface SvnLockInfo {
+  token: string | null;
+  owner: string | null;
+  comment: string | null;
+  created: string | null;
+  expires: string | null;
 }
 
 export interface RunResult {

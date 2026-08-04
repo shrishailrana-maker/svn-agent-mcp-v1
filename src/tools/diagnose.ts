@@ -2,7 +2,7 @@ import { createEnvelope, failEnvelope, noteFromRun } from "../envelope.js";
 import { resolveCwd, resolveTargetsInsideWc } from "../guards.js";
 import { escapeSvnTarget, runSvn, startupProbe } from "../runner.js";
 import type { RunResult, ToolEnvelope } from "../types.js";
-import { getWcContext } from "./readonly.js";
+import { getWcContext, svnLockStatus } from "./readonly.js";
 
 type DiagnosticCheck = {
   name: string;
@@ -102,6 +102,40 @@ export async function svnDiagnose(input: { cwd?: string; paths?: string[] }): Pr
     suggestions.add("Local status failed; run svn_cleanup if the working copy is locked or damaged.");
   }
 
+  let lockDiagnostics: Array<Record<string, unknown>> = [];
+  if (input.paths && input.paths.length > 0) {
+    const lockStatus = await svnLockStatus({ cwd: context.cwd, paths: resolved.paths, maxItems: 500 });
+    if (lockStatus.ok) {
+      const locks = Array.isArray(lockStatus.locks)
+        ? lockStatus.locks.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+        : [];
+      lockDiagnostics = locks.filter((row) => ["held-elsewhere", "orphaned-token", "stale-candidate"].includes(String(row.state)));
+      checks.push({
+        name: "repository_locks",
+        ok: true,
+        command: lockStatus.command,
+        note: lockDiagnostics.length > 0 ? "lock attention required" : ""
+      });
+      for (const row of lockDiagnostics) {
+        const state = String(row.state);
+        if (state === "held-elsewhere") {
+          suggestions.add(`Repository lock held elsewhere: ${String(row.path ?? "target")}`);
+        } else if (state === "orphaned-token") {
+          suggestions.add(`Working copy has an orphaned lock token: ${String(row.path ?? "target")}`);
+        } else if (state === "stale-candidate") {
+          suggestions.add(`Repository lock is older than seven days and is a stale candidate: ${String(row.path ?? "target")}`);
+        }
+      }
+    } else {
+      checks.push({
+        name: "repository_locks",
+        ok: false,
+        command: lockStatus.command,
+        note: lockStatus.note || "repository lock status unavailable"
+      });
+    }
+  }
+
   return {
     ...createEnvelope({
       ok: health !== "error",
@@ -115,7 +149,8 @@ export async function svnDiagnose(input: { cwd?: string; paths?: string[] }): Pr
     wc_root: context.wcRoot,
     remote_accessible: remoteAccessible,
     checks,
-    suggestions: [...suggestions]
+    suggestions: [...suggestions],
+    lock_diagnostics: lockDiagnostics
   };
 }
 

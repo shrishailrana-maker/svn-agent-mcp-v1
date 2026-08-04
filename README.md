@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.4.0`; each source clone can prepare a local runtime under `releases/v1.4.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.5.0`; each source clone can prepare a local runtime under `releases/v1.5.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -250,7 +250,7 @@ paths, and UUID `operationId`. Without a token it captures the current explicit-
 update, keeping the common workflow to one call. Its normal response is a compact receipt. Use
 `operation:"detail"` with the returned `detailOperationId` and cursor to
 page bounded stage evidence only when an audit needs it. This adds no advertised tool schema; the
-full profile remains at 25 tools.
+full profile advertises 29 canonical tools. The focused `docs` and `review` profiles remain unchanged.
 
 Scheduled-added files are not valid `svn update` operands, so safe mode omits only those files from
 the pinned update while still verifying the expected repository HEAD. They remain in the exact
@@ -258,7 +258,7 @@ precommit and commit scope.
 
 Mutation retries can include a UUID `operationId` on `svn_update`, `svn_commit` (including prepare
 and safe mode),
-`eol_fix_verified`, and `svn_resolve`. The server binds that ID to normalized inputs and stores a
+`eol_fix_verified`, `svn_resolve`, `svn_lock`, `svn_unlock`, and `svn_needs_lock`. The server binds that ID to normalized inputs and stores a
 bounded receipt outside the working copy. An identical retry replays the prior result after a client
 timeout or MCP restart; a concurrent or changed request with the same ID is refused. The receipt is
 local to one machine, not a distributed lock between machines. `SVN_MCP_OPERATION_DIR` can relocate
@@ -267,6 +267,38 @@ The resolved store path is refused when it sits inside any SVN working copy. Ter
 orphan lock/temp files are pruned within fixed count, byte, age, and record-size limits; retained
 unfinished or unreadable records are never deleted to make room, so new operations fail closed when
 those records exhaust capacity.
+
+## Repository locks
+
+Use `svn_lock` and `svn_unlock` for repository locks shared by working copies on different
+machines. `svn_lock` requires a non-empty comment and a workstation label from
+`workstationLabel` or `SVN_MCP_WORKSTATION_LABEL` (`[A-Za-z0-9._-]`, one to 64 characters). The
+server stores the bounded comment as `[svn-agent-mcp workstation=<label>] <comment>`.
+`svn_lock_status` compares local and repository `svn info --xml` state and returns only a boolean
+for local token possession. It never returns a lock token. Normal unlock refuses a mismatched
+working-copy token; stealing a lock requires `force:true`, `forceAck:true`, and a UUID
+`operationId`. `svn_needs_lock` sets `svn:needs-lock=*` or removes it from regular versioned files;
+removal requires `riskAck:true`.
+
+Lock status reports `held-elsewhere`, `orphaned-token`, and `stale-candidate` diagnostics. A stale
+candidate is a lock older than seven days. All lock and property mutations keep the normal
+working-copy containment, never-commit, durable-receipt, and `--readonly` guards.
+
+### Host approval settings
+
+The package does not edit Codex configuration. Set host policy outside the repository when the
+server must run without approval prompts:
+
+```toml
+approval_policy = "never"
+
+[mcp_servers.svn]
+default_tools_approval_mode = "approve"
+```
+
+Every registered SVN tool advertises `annotations.destructiveHint = false`. The host settings above
+are persistent server-scoped configuration; keep them in the host Codex config, not in npm package
+code or a working copy.
 
 Repositories can make EOL handling automatic for new files:
 

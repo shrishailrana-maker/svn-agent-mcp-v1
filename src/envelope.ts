@@ -36,10 +36,15 @@ export function quoteArgForDisplay(arg: string): string {
 
 export function redactText(value: string): string {
   const withSafeUrl = redactUrlUserinfo(value);
-  return withSafeUrl.replace(
+  const withoutCredentials = withSafeUrl.replace(
     /([?&](?:access_token|api[_-]?key|auth|client[_-]?id|email|key|login|pass(?:word)?|secret|token|user(?:name)?)=)[^&#\s]*/gi,
     "$1***"
   );
+  // `svn info --xml` includes a repository lock token. It is a bearer
+  // credential, so redact it even in full diagnostic envelopes and logs.
+  return withoutCredentials
+    .replace(/(<token\b[^>]*>)[\s\S]*?(<\/token>)/gi, "$1***$2")
+    .replace(/(\bLock Token\s*:\s*)[^\s\r\n]+/gi, "$1***");
 }
 
 function redactUrlUserinfo(value: string): string {

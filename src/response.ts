@@ -41,6 +41,9 @@ const MUTATION_STATUS: Record<string, string> = {
   svn_delete: "deleted",
   svn_export: "exported",
   svn_import: "imported",
+  svn_lock: "locked",
+  svn_unlock: "unlocked",
+  svn_needs_lock: "property-set",
   svn_move: "renamed",
   svn_path_change: "changed",
   svn_prepare_commit: "prepared",
@@ -63,7 +66,7 @@ const COMPACT_DIFF_PREVIEW_CHAR_LIMIT = 512;
 const COMPACT_CONFLICT_PAGE_SIZE = 100;
 const COMPACT_TOP_FOLDER_LIMIT = 25;
 const COMPACT_PREPARE_PATH_LIMIT = 25;
-const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_prepare_commit", "svn_update", "svn_commit"]);
+const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_prepare_commit", "svn_update", "svn_commit", "svn_lock", "svn_unlock", "svn_needs_lock"]);
 
 export function defaultResponseMode(
   env: Readonly<Record<string, string | undefined>> = process.env
@@ -190,6 +193,10 @@ function shapePayload(
     return compactPropget(payload, request);
   }
 
+  if (compactMode && tool === "svn_lock_status") {
+    return compactLockStatus(payload, request);
+  }
+
   if (compactMode && MUTATION_STATUS[tool]) {
     return compactMutation(tool, payload, request);
   }
@@ -202,6 +209,9 @@ function receiptPayload(
   payload: ToolEnvelope,
   request: Record<string, unknown>
 ): Record<string, unknown> {
+  if (tool === "svn_lock" || tool === "svn_unlock" || tool === "svn_needs_lock") {
+    return payload.ok ? compactMutation(tool, payload, request) : compactError(payload, request);
+  }
   if (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit")) {
     return compactPrepareReceipt(payload);
   }
@@ -444,6 +454,13 @@ function compactDiagnose(payload: ToolEnvelope, request: Record<string, unknown>
   const nextOffset = offset + page.length;
   const truncated = nextOffset < selected.length;
   const suggestions = stringArray(payload.suggestions);
+  const lockDiagnostics = recordArray(payload.lock_diagnostics).slice(0, 100).map((row) => ({
+    path: receiptValue(row.path),
+    state: receiptValue(row.state),
+    owner: receiptValue(row.owner),
+    comment: receiptValue(row.comment),
+    workstationLabel: receiptValue(row.workstation_label)
+  }));
   return {
     ok: payload.ok,
     health: payload.health,
@@ -457,6 +474,7 @@ function compactDiagnose(payload: ToolEnvelope, request: Record<string, unknown>
     },
     ...(payload.note ? { note: payload.note } : {}),
     ...(suggestions.length > 0 ? { suggestions } : {}),
+    ...(lockDiagnostics.length > 0 ? { lockDiagnostics } : {}),
     ...(truncated ? { truncated: true, nextCursor: String(nextOffset) } : {})
   };
 }
@@ -539,6 +557,34 @@ function compactBlame(payload: ToolEnvelope, request: Record<string, unknown>): 
     hasMore: payload.has_more === true,
     ...(payload.ignore_eol === false ? { eolChangesIncluded: true } : {}),
     ...(payload.next_cursor ? { nextCursor: payload.next_cursor } : {})
+  };
+}
+
+function compactLockStatus(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  if (!payload.ok) {
+    return compactError(payload, request);
+  }
+  const source = recordArray(payload.locks);
+  const rows = source.map((row) => ({
+    path: receiptValue(row.path),
+    repositoryPath: receiptValue(row.repository_path),
+    repositoryLocked: row.repository_locked === true,
+    owner: typeof row.owner === "string" ? redactText(row.owner).slice(0, 256) : null,
+    created: typeof row.created === "string" ? row.created.slice(0, 64) : null,
+    expires: typeof row.expires === "string" ? row.expires.slice(0, 64) : null,
+    comment: typeof row.comment === "string" ? redactText(row.comment).slice(0, 512) : null,
+    ...(typeof row.workstation_label === "string" ? { workstationLabel: row.workstation_label.slice(0, 64) } : {}),
+    localTokenPossession: row.local_token_possession === true,
+    state: typeof row.state === "string" ? row.state : "unlocked"
+  }));
+  return {
+    ok: true,
+    locks: rows,
+    lockCount: numberValue(payload.lock_count),
+    ...(payload.truncated === true || typeof payload.next_cursor === "string"
+      ? { truncated: true }
+      : {}),
+    ...(typeof payload.next_cursor === "string" ? { nextCursor: payload.next_cursor } : {})
   };
 }
 
@@ -626,12 +672,12 @@ function compactSelfCheck(payload: ToolEnvelope, request: Record<string, unknown
   };
 }
 
-function redactStructuredValue(value: unknown): unknown {
+function redactStructuredValue(value: unknown, key = ""): unknown {
   if (typeof value === "string") {
-    return redactText(value);
+    return key.toLowerCase() === "token" ? "***" : redactText(value);
   }
   if (Array.isArray(value)) {
-    return value.map(redactStructuredValue);
+    return value.map((item) => redactStructuredValue(item, key));
   }
   if (!value || typeof value !== "object") {
     return value;
@@ -643,7 +689,7 @@ function redactStructuredValue(value: unknown): unknown {
   }
 
   return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactStructuredValue(item)])
+    Object.entries(value as Record<string, unknown>).map(([childKey, item]) => [childKey, redactStructuredValue(item, childKey)])
   );
 }
 
@@ -1199,6 +1245,21 @@ function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
 }
 
 function compactMutation(tool: string, payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {
+  if (tool === "svn_lock" || tool === "svn_unlock" || tool === "svn_needs_lock") {
+    const result: Record<string, unknown> = {
+      ok: true,
+      action: tool === "svn_needs_lock" ? payload.action ?? "set" : tool === "svn_lock" ? "lock" : "unlock",
+      ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
+      ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
+      ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
+      paths: stringArray(payload.paths).slice(0, 500).map((value) => receiptValue(value)),
+      ...(payload.force === true ? { force: true } : {}),
+      ...(typeof payload.workstation_label === "string" ? { workstationLabel: payload.workstation_label.slice(0, 64) } : {}),
+      ...(typeof payload.comment === "string" ? { comment: redactText(payload.comment).slice(0, 512) } : {})
+    };
+    if (payload.action === "remove" && payload.code) result.code = payload.code;
+    return result;
+  }
   if (tool === "svn_revert" && request.dryRun !== false) {
     return {
       ok: true,

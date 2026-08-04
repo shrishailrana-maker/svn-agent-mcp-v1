@@ -14,7 +14,7 @@ import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
 import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "./tools/composite.js";
 import { svnDiagnose } from "./tools/diagnose.js";
-import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "./tools/readonly.js";
+import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLockStatus, svnLog, svnPropget, svnStatus } from "./tools/readonly.js";
 import { svnSelfCheck } from "./tools/selfcheck.js";
 import {
   svnAdd,
@@ -23,6 +23,8 @@ import {
   svnDelete,
   svnExport,
   svnImport,
+  svnLock,
+  svnNeedsLock,
   svnMove,
   svnPathChange,
   svnPropset,
@@ -31,6 +33,7 @@ import {
   svnResolve,
   svnResolved,
   svnRevert,
+  svnUnlock,
   svnUpdate
 } from "./tools/mutating.js";
 import type { ToolEnvelope } from "./types.js";
@@ -39,6 +42,14 @@ export const serverName = "svn";
 export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 export type ToolProfile = "full" | "docs" | "review";
+
+/** Canonical tools that never mutate SVN state. Keep this list in one place
+ * so MCP annotations stay accurate when registration grows. */
+export const readOnlyToolNames = new Set([
+  "svn_self_check", "svn_diagnose", "svn_status", "svn_info", "svn_snapshot",
+  "svn_diff", "svn_log", "svn_cat", "svn_blame", "eol_check", "svn_propget",
+  "svn_precommit", "svn_lock_status"
+]);
 
 export const fieldProjectionNames = {
   svn_status: ["revision", "changedPaths", "counts", "items", "conflicts"],
@@ -91,7 +102,10 @@ export const advancedInputNames = {
     "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId", "precommitToken",
     "baselineToken", "detailOperationId", "cursor", "maxChars"
   ],
-  svn_resolve: ["operationId"]
+  svn_resolve: ["operationId"],
+  svn_lock: ["operationId"],
+  svn_unlock: ["operationId"],
+  svn_needs_lock: ["operationId"]
 } as const;
 
 const docsToolNames = [
@@ -139,7 +153,8 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool = ((name: string, config: unknown, callback: unknown) => {
     profileRegistrations.set(name, { config, callback });
     const advertised = enabledNames ? enabledNames.has(name) : !hiddenLegacyToolNames.has(name);
-    const publicConfig = advertised && enabledNames ? focusedProfileConfig(name, config) : config;
+    const focusedConfig = advertised && enabledNames ? focusedProfileConfig(name, config) : config;
+    const publicConfig = withToolAnnotations(name, focusedConfig);
     const tool = register(name, publicConfig as never, callback as never);
     if (!advertised) {
       tool.disable();
@@ -152,6 +167,8 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL")
     .refine((value) => !repositoryUrlHasCredentials(value), "repository URL must not contain credentials");
   const commitMessage = z.string().min(1).max(16000).regex(noNul, "must not contain NUL");
+  const lockComment = z.string().min(1).max(4000).regex(noNul, "must not contain NUL");
+  const workstationLabel = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, "workstationLabel must use 1..64 characters from [A-Za-z0-9._-]").optional();
   const cwd = filesystemPath.refine((value) => path.isAbsolute(value), "cwd must be absolute")
     .optional().describe("Absolute WC directory; required for relative paths.");
   const paths = z.array(filesystemPath).min(1).max(500, {
@@ -219,6 +236,15 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       }
     },
     async (args, extra) => handleTool("svn_diagnose", args, extra.signal, () => svnDiagnose(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_lock_status",
+    {
+      description: "Return bounded repository lock state without exposing lock tokens.",
+      inputSchema: { cwd, paths, maxItems, cursor, ...response }
+    },
+    async (args, extra) => handleTool("svn_lock_status", args, extra.signal, () => svnLockStatus(compactArgs(args)))
   );
 
   server.registerTool(
@@ -461,6 +487,53 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   );
 
   server.registerTool(
+    "svn_lock",
+    {
+      description: "Acquire guarded repository locks with a workstation-labelled comment.",
+      inputSchema: {
+        cwd,
+        paths,
+        comment: lockComment,
+        workstationLabel,
+        force: z.boolean().optional(),
+        forceAck: z.boolean().optional(),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_lock", args, extra.signal, () => svnLock(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_unlock",
+    {
+      description: "Release guarded repository locks, refusing mismatched working-copy tokens.",
+      inputSchema: {
+        cwd,
+        paths,
+        force: z.boolean().optional(),
+        forceAck: z.boolean().optional(),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_unlock", args, extra.signal, () => svnUnlock(compactArgs(args)))
+  );
+
+  server.registerTool(
+    "svn_needs_lock",
+    {
+      description: "Set or remove svn:needs-lock on explicit regular versioned files.",
+      inputSchema: {
+        cwd,
+        paths,
+        action: z.enum(["set", "remove"]),
+        riskAck: z.boolean().optional(),
+        ...response
+      }
+    },
+    async (args, extra) => handleTool("svn_needs_lock", args, extra.signal, () => svnNeedsLock(compactArgs(args)))
+  );
+
+  server.registerTool(
     "svn_commit",
     {
       description: "Guarded commit with explicit paths and message.",
@@ -683,6 +756,20 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   return server;
 }
 
+function withToolAnnotations(name: string, config: unknown): unknown {
+  if (!config || typeof config !== "object") {
+    return config;
+  }
+  return {
+    ...(config as Record<string, unknown>),
+    annotations: {
+      ...((config as { annotations?: Record<string, unknown> }).annotations ?? {}),
+      destructiveHint: false,
+      readOnlyHint: readOnlyToolNames.has(name)
+    }
+  };
+}
+
 function focusedProfileConfig(name: string, config: unknown): unknown {
   if (!config || typeof config !== "object") {
     return config;
@@ -794,7 +881,7 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
       extras.file = validatedPath("file", args.file);
     }
   }
-  if (["svn_diff", "svn_update", "svn_commit", "svn_prepare_commit", "eol_fix_verified", "svn_resolve", "svn_resolved"]
+  if (["svn_diff", "svn_update", "svn_commit", "svn_prepare_commit", "eol_fix_verified", "svn_resolve", "svn_resolved", "svn_lock", "svn_unlock", "svn_needs_lock"]
       .includes(name) && args.operationId !== undefined) {
     if (typeof args.operationId !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args.operationId)) {
