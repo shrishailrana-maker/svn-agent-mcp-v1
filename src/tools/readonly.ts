@@ -118,6 +118,7 @@ export async function svnStatus(input: {
   includeIgnored?: boolean;
   hideNoise?: boolean;
   includeRevisionState?: boolean;
+  depth?: "empty";
 }): Promise<ToolEnvelope> {
   const context = await getWcContext(input.cwd, input.paths ?? []);
   if (!context.ok) {
@@ -134,6 +135,7 @@ export async function svnStatus(input: {
     "status",
     "--xml",
     ...(input.includeIgnored ? ["--no-ignore"] : []),
+    ...(input.depth ? ["--depth", input.depth] : []),
     ...(targets.length > 0 ? ["--", ...resolved.paths.map(escapeSvnTarget)] : [])
   ];
   const run = await runSvn(args, context.cwd);
@@ -143,7 +145,9 @@ export async function svnStatus(input: {
   const versionState = versionRun?.exitCode === 0
     ? parseSvnVersion(versionRun.stdout)
     : { range: null, mixed: false, modified: false, switched: false, partial: false };
-  const parsed = run.exitCode === 0 ? parseStatusXml(run.stdout) : { changed_paths: [], conflicts: [] };
+  const parsed: ReturnType<typeof parseStatusXml> = run.exitCode === 0
+    ? parseStatusXml(run.stdout)
+    : { changed_paths: [], conflicts: [], out_of_date_paths: [] };
   if (run.exitCode === 0 && input.includeIgnored && /W155010/.test(`${run.stderr}\n${run.stdout}`)) {
     const knownPaths = new Set(parsed.changed_paths.map((entry) => pathIdentityKey(path.resolve(context.cwd, entry.path))));
     for (const target of resolved.paths) {
@@ -232,7 +236,13 @@ export async function svnInfo(input: { cwd?: string; paths?: string[] }): Promis
   }
 
   const first = entries[0] ?? context.info;
-  const remoteHeadRevision = await remoteHeadForTargets(context.cwd, resolved.paths);
+  let remoteHeadRevision = await remoteHeadForTargets(context.cwd, resolved.paths);
+  if (remoteHeadRevision === null) {
+    remoteHeadRevision = await remoteHeadForTargets(context.cwd, [first.repo_root ?? context.info.repo_root ?? context.wcRoot]);
+  }
+  const remoteHeadUnavailableReason = remoteHeadRevision === null
+    ? "repository HEAD unavailable after scoped and repository-root probes"
+    : null;
   if (remoteHeadRevision !== null && revisionRange && remoteHeadRevision > revisionRange.max) {
     versionNotes.push(`remote HEAD newer than working copy (${remoteHeadRevision} > ${revisionRange.max})`);
   }
@@ -254,6 +264,7 @@ export async function svnInfo(input: { cwd?: string; paths?: string[] }): Promis
     switched,
     partial,
     remote_head_revision: remoteHeadRevision,
+    ...(remoteHeadUnavailableReason ? { remote_head_unavailable_reason: remoteHeadUnavailableReason } : {}),
     stale_base: remoteHeadRevision !== null && revisionRange !== null ? remoteHeadRevision > revisionRange.max : false
   };
 }

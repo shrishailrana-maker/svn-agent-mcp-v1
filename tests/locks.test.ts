@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createEnvelope } from "../src/envelope.js";
+import { COMMIT_MESSAGE_REQUIREMENT, RISK_ACK_PATH_THRESHOLD } from "../src/guards.js";
 import { createServer, readOnlyToolNames } from "../src/index.js";
 import { parseInfoXml } from "../src/parse/infoXml.js";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
@@ -263,6 +264,20 @@ describe("repository lock support", () => {
       await client.connect(clientTransport);
       const listed = await client.listTools();
       expect(listed.tools).toHaveLength(29);
+      const commit = listed.tools.find((tool) => tool.name === "svn_commit");
+      expect(commit?.description).toContain(COMMIT_MESSAGE_REQUIREMENT);
+      expect(commit?.description).toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`);
+      const imported = listed.tools.find((tool) => tool.name === "svn_import");
+      expect(imported?.description).toContain(COMMIT_MESSAGE_REQUIREMENT);
+      for (const toolName of ["svn_diff", "eol_check", "eol_fix_verified"]) {
+        const tool = listed.tools.find((candidate) => candidate.name === toolName);
+        expect(tool?.description).toContain("eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true)");
+        expect(tool?.description).toContain("LF/BOM");
+        expect(tool?.description).toContain("byte/content preservation");
+      }
+      for (const tool of listed.tools.filter((candidate) => candidate.name !== "svn_commit")) {
+        expect(tool.description ?? "").not.toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`);
+      }
       for (const tool of listed.tools) {
         expect(tool.annotations?.destructiveHint).toBe(false);
         expect(tool.annotations?.readOnlyHint).toBe(readOnlyToolNames.has(tool.name));

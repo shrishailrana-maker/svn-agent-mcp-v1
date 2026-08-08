@@ -4,6 +4,7 @@ import { parseBlameXml } from "../src/parse/blameXml.js";
 import { createDiffAccumulator, parseDiffText } from "../src/parse/diffText.js";
 import { parseInfoXml } from "../src/parse/infoXml.js";
 import { parseLogXml } from "../src/parse/logXml.js";
+import { parseListXml } from "../src/parse/listXml.js";
 import { parseStatusXml } from "../src/parse/statusXml.js";
 import { parseUpdateText } from "../src/parse/updateText.js";
 
@@ -96,6 +97,7 @@ describe("SVN text and XML parsers", () => {
 </info>`);
 
     expect(parsed[0]).toEqual({
+      kind: "dir",
       path: ".",
       url: "file:///repo/trunk",
       repo_root: "file:///repo",
@@ -149,6 +151,44 @@ describe("SVN text and XML parsers", () => {
         changed_paths: [{ status: "M", path: "/trunk/a" }]
       }
     ]);
+  });
+
+  it("identifies repository-side changes from show-updates status XML", () => {
+    const parsed = parseStatusXml(`<?xml version="1.0"?>
+<status>
+  <target path=".">
+    <entry path="src/current.ts">
+      <wc-status item="modified" revision="7" />
+      <repos-status item="modified" props="none" />
+    </entry>
+    <entry path="src/property.ts">
+      <wc-status item="normal" revision="7" />
+      <repos-status item="none" props="modified" />
+    </entry>
+    <entry path="src/unchanged.ts">
+      <wc-status item="modified" revision="8" />
+      <repos-status item="none" props="none" />
+    </entry>
+  </target>
+</status>`);
+
+    expect((parsed as unknown as Record<string, unknown>).out_of_date_paths).toEqual([
+      "src/current.ts",
+      "src/property.ts"
+    ]);
+  });
+
+  it("parses and bounds immediate repository list entries", () => {
+    const parsed = parseListXml(`<?xml version="1.0"?>
+<lists><list path="https://example.test/svn/project/src">
+  <entry kind="file"><name>alpha&amp;beta.ts</name></entry>
+  <entry kind="dir"><name>generated</name></entry>
+</list></lists>`, 1);
+
+    expect(parsed).toEqual({
+      entries: [{ name: "alpha&beta.ts", kind: "file" }],
+      truncated: true
+    });
   });
 
   it("preserves a broken or stolen update lock status", () => {

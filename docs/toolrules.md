@@ -30,5 +30,7 @@ project instructions, or build scripts.
 - Multi-line strings to native exes: single-quoted here-strings with the closing `'@` at column 0.
 - For SVN EOL repair, use MCP `eol_fix_verified` or its resolved `unix2dos`/`dos2unix` tools.
   Do not use PowerShell byte rewrites or redirects on tracked text files.
+- Follow `eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)` for verified recovery.
+  Preserve LF/BOM evidence, normalized-content hashes, and concurrent-edit reports.
 - For SVN property reads/writes, use MCP `svn_propget` and guarded `svn_propset` before falling
   back to raw `svn propget` / `svn propset`.

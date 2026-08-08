@@ -22,6 +22,7 @@ export function parseInfoXml(xml: string): WcInfo[] {
 
   return asArray(parsed.info?.entry).map((entry) => {
     const entryObj = entry as {
+      kind?: string;
       path?: string;
       revision?: string | number;
       url?: string;
@@ -33,6 +34,7 @@ export function parseInfoXml(xml: string): WcInfo[] {
     const lock = parseLock(entryObj.lock);
 
     return {
+      kind: entryObj.kind === "file" || entryObj.kind === "dir" ? entryObj.kind : null,
       path: entryObj.path ?? null,
       url: entryObj.url ?? null,
       repo_root: entryObj.repository?.root ?? null,

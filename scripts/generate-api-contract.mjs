@@ -21,8 +21,9 @@ try {
     schemaVersion: 1,
     server: { name: serverName, version: serverVersion },
     globalResponseControls: {
-      humanText: "boolean; default false",
+      humanText: "boolean; compatibility input; every mode except structured-only returns one bounded text block",
       responseBudgets: {
+        textContentChars: 1024,
         compactLogBytes: 24576,
         compactDiffBytes: 28672
       },

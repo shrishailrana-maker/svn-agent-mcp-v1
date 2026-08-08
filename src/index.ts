@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
 import { failEnvelope, redactText } from "./envelope.js";
-import { readonlyMode as isReadonlyMode } from "./guards.js";
+import { COMMIT_MESSAGE_REQUIREMENT, RISK_ACK_PATH_THRESHOLD, readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
 import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "./tools/composite.js";
@@ -55,7 +55,7 @@ export const fieldProjectionNames = {
   svn_status: ["revision", "changedPaths", "counts", "items", "conflicts"],
   svn_info: [
     "root", "revision", "url", "repositoryRoot", "mixedRevision", "revisionRange",
-    "localModifications", "switched", "partial", "remoteHeadRevision", "staleBase"
+    "localModifications", "switched", "partial", "remoteHeadRevision", "remoteHeadUnavailableReason", "staleBase"
   ],
   svn_snapshot: [
     "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
@@ -76,7 +76,9 @@ export const fieldProjectionNames = {
   svn_update: [
     "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision", "remoteHeadRevision",
     "changedPaths", "counts", "conflicts", "expectedRemoteHead", "observedRemoteHead",
-    "baselineToken", "collision", "collisionPaths", "pathStates", "recommendedAction"
+    "baselineToken", "collision", "collisionPaths", "pathStates", "scopeKind", "scopeComplete",
+    "omittedRepositoryAdditions", "omittedRepositoryAdditionCount", "omittedRepositoryAdditionsTruncated",
+    "scopeCheckUnavailableReason", "recommendedAction"
   ],
   svn_commit: [
     "revision", "committedRevision", "committedPaths", "committedCount", "pathCount", "baseRevision",
@@ -85,7 +87,9 @@ export const fieldProjectionNames = {
     "verdict", "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision",
     "expectedRemoteHead", "observedRemoteHead", "updatedPaths", "unexpectedTouchedPaths",
     "finalCommitScope", "conflicts", "precommitToken", "operation", "finalScopeClean", "scopeUniform",
-    "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor"
+    "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor",
+    "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated", "postStatusScope", "postStatusPaths",
+    "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean"
   ]
 } as const;
 
@@ -113,6 +117,7 @@ const docsToolNames = [
 ] as const;
 const reviewToolNames = [...docsToolNames, "svn_diff", "svn_cat", "svn_blame"] as const;
 const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved", "svn_prepare_commit"]);
+const eolRecoveryWorkflow = "Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.";
 
 export function configuredToolProfile(value = process.env.SVN_MCP_TOOL_PROFILE): ToolProfile {
   const normalized = value?.trim().toLowerCase() || "full";
@@ -277,7 +282,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       inputSchema: {
         cwd,
         paths: optionalPaths,
-        fields: z.array(z.enum(fieldProjectionNames.svn_info)).max(11).optional(),
+        fields: z.array(z.enum(fieldProjectionNames.svn_info)).max(12).optional(),
         ...response
       }
     },
@@ -307,7 +312,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_diff",
     {
-      description: "Return a bounded scoped diff and per-file counts.",
+      description: `Return a bounded scoped diff and per-file counts. ${eolRecoveryWorkflow}`,
       inputSchema: {
         cwd,
         paths,
@@ -384,7 +389,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "eol_check",
     {
-      description: "Check EOL, BOM, and svn:eol-style.",
+      description: `Check EOL, BOM, and svn:eol-style. ${eolRecoveryWorkflow}`,
       inputSchema: {
         cwd,
         paths,
@@ -462,7 +467,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "eol_fix_verified",
     {
-      description: "Normalize and verify one or a bounded batch of explicit files.",
+      description: `Normalize and verify one or a bounded batch of explicit files. ${eolRecoveryWorkflow}`,
       inputSchema: {
         cwd,
         path: filesystemPath.optional().describe("One explicit file; use either path or paths."),
@@ -536,7 +541,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: "Guarded commit with explicit paths and message.",
+      description: `Guarded commit with explicit paths and message. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
       inputSchema: {
         cwd,
         paths,
@@ -544,14 +549,16 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
           "commit (default), prepare, safe end-to-end commit, or paged safe-operation detail."
         ),
         message: commitMessage.optional().describe(
-          "Required for commit/safe; ignored for prepare/detail."
+          `Required for commit/safe; ignored for prepare/detail. ${COMMIT_MESSAGE_REQUIREMENT}`
         ),
         revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision").optional().describe(
           "Required for operation:prepare and operation:safe."
         ),
         expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
         lineLimit,
-        riskAck: z.boolean().optional(),
+        riskAck: z.boolean().optional().describe(
+          `Set riskAck:true when more than ${RISK_ACK_PATH_THRESHOLD} paths are in the commit scope or another G6 signal is present.`
+        ),
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
         expandDescendants,
@@ -607,7 +614,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_update",
     {
-      description: "Guarded update with conflicts postponed.",
+      description: "Guarded update with conflicts postponed. Exact-file updates report omitted repository additions and recommend updating the containing directory. Unknown target metadata reports incomplete evidence and recommends inspection; confirmed directory scopes report complete-scope evidence.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -740,12 +747,12 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_import",
     {
-      description: "Import with an explicit source, URL, and message.",
+      description: `Import with an explicit source, URL, and message. ${COMMIT_MESSAGE_REQUIREMENT}`,
       inputSchema: {
         cwd,
         src: filesystemPath,
         url: repositoryLocation,
-        message: commitMessage,
+        message: commitMessage.describe(COMMIT_MESSAGE_REQUIREMENT),
         ...response
       }
     },

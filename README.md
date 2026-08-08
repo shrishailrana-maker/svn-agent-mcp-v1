@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.5.0`; each source clone can prepare a local runtime under `releases/v1.5.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.6.0`; each source clone can prepare a local runtime under `releases/v1.6.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -154,17 +154,23 @@ The completed historical project backlog was migrated as issues
 vulnerabilities through the private process in `SECURITY.md`, not a public issue.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
-`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 25
+`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 29
 canonical tools, `docs` exposes the 8-tool edit/commit workflow, and `review` adds bounded diff,
 cat, and blame for 11 tools total. Focused profiles reduce tool-definition context without changing
 any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
 workflow needs another operation.
 `SVN_MCP_RESPONSE_MODE` selects `compact` (default), `receipt`, `structured-only`, `standard`, or
-`full` responses. `structuredContent` is authoritative and `content` is empty by default; pass
-`humanText:true` when a client needs a short text receipt. `structured-only` makes that intent
-explicit. `receipt` is the smallest stable contract for status, snapshot, precommit, update, and
-commit. Use `responseMode:"full"` only when bounded raw SVN diagnostics and machine paths are
-needed.
+`full` responses. `structuredContent` is authoritative. Every mode except `structured-only` returns
+exactly one bounded text block by default; `structured-only` returns no text block. The text block is
+a short summary and never replaces structured data. `humanText` remains accepted for compatibility,
+but it does not change this bound. `receipt` is the smallest stable contract for status, snapshot,
+precommit, update, and commit. Use `responseMode:"full"` only when bounded raw SVN diagnostics and
+machine paths are needed.
+
+If a call returns neither usable text nor a structured result, classify it as a harness or transport
+drop. Disclose `SVN MCP empty`, preserve the same explicit path scope, and use bounded native `svn`
+fallback steps for that operation. Retry the MCP later and prefer it again when it returns a usable
+response; do not use the fallback to bypass a guard refusal.
 Non-guard failures retain bounded path-sanitized stdout/stderr diagnostics outside full mode;
 compact guard refusals return only a typed guard code, one-line reason, and affected-path count.
 Other development/test escape hatches are `SVN_AGENT_BIN_DIR`, `SVN_AGENT_SVN_PATH`, `SVN_AGENT_DOS2UNIX_DIR`,
@@ -228,12 +234,42 @@ A READY precommit also returns a short-lived `precommitToken` bound to exact pat
 revisions, content hashes, repository policy, diff identity, and observed remote revision. Passing
 that token to `svn_commit` makes the commit refuse if the verified state changed in between.
 
+Commit messages for `svn_commit` and `svn_import` require a subject, a blank second line, and at
+least one `- ` verification bullet. A `svn_commit` scope with more than 8 paths requires
+`riskAck:true`; exactly 8 paths does not trigger this path-count signal. Other risk signals keep
+their existing G6 behavior.
+
 Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
 to refuse if repository HEAD moved since the caller's probe. Use
 `svn_precommit requireUniformRevision:true` when a release handoff must not proceed from a
 mixed-revision working copy. The default remains backward compatible and reports mixed revisions
 without blocking ordinary precommit work.
+
+Parallel agents can create a valid mixed-revision working copy. A commit receipt may report
+`workingCopyMixed:true` while the commit remains valid. `baseRevision:null` means no single base
+revision describes every committed path; use `baseRevisionRange` for the useful range. Treat mixed
+state as evidence, not failure by itself. Check the separate out-of-date and conflict diagnostics
+before deciding whether to stop.
+Compact `OUT_OF_DATE` refusals identify bounded `outOfDatePaths`, `outOfDatePathCount`, and
+`outOfDatePathsTruncated` fields. They retain `workingCopyMixed` and `revisionRange` when both
+conditions are present.
+
+An exact-file `svn_update` reports `scopeKind:"exact-file"` and `scopeComplete:false` because it
+does not prove that sibling repository additions were fetched. `omittedRepositoryAdditions` lists
+bounded missing siblings, and `recommendedAction:"update-containing-directory"` points to the
+directory-complete follow-up. Directory and working-copy updates report their own `scopeKind` and
+can report `scopeComplete:true` when the selected scope is complete.
+If bounded SVN metadata cannot classify every target, the result uses `scopeKind:"unknown"` and
+`scopeComplete:false`. `scopeCheckUnavailableReason` explains the failure, and
+`recommendedAction:"inspect-target-metadata"` directs the next check. Omitted-addition counts are
+not authoritative for an unknown scope.
+
+`svn_commit` keeps `postStatusClean` for compatibility, but it applies only to the committed path
+scope. Read `postStatusScope:"committed-paths"` and `postStatusPaths` to identify that scope. The
+separate `workingCopyClean` field reports the whole-working-copy check. Do not infer whole-working-copy
+cleanliness from `postStatusClean`; these explicit fields remove the ambiguity without deprecating it
+in 1.6.0.
 
 `svn_commit operation:"prepare"` performs a pinned update of explicit intended paths with conflicts
 postponed, checks an optional expected remote HEAD, refuses any path touched outside that scope, and
@@ -314,6 +350,21 @@ call, skips binaries and excluded byte-exact fixtures, and refuses before schedu
 fails. `eol_fix_verified` also accepts a bounded explicit `paths` batch for tracked-file repairs.
 `svn_diff` and `svn_blame` ignore EOL-only churn by default; use `showEolChanges:true` only for EOL
 diagnostics.
+
+### Verified EOL recovery
+
+Use this sequence for a tracked file with LF, mixed line endings, or BOM damage:
+
+1. Call `eol_check` on the explicit path and record `kind`, `has_bom`, and `mismatch`.
+2. Call `eol_fix_verified` on each failing path. It applies the repository target, removes the BOM
+   by default, hashes canonical LF/no-BOM content, and preserves concurrent edits or guarded paths.
+3. Call `svn_diff` with `ignoreEol:true`. An empty content diff or `eolOnly:true` proves that the
+   repair changed line endings only. Remaining additions, removals, or property changes need review.
+
+For example, an LF file with a BOM reports `kind:"lf"`, `has_bom:true` in `eol_check`; after
+`eol_fix_verified`, `after.has_bom:false` and `pure_eol_churn:true` provide repair evidence. The
+final `svn_diff({"paths":["src/example.cs"],"ignoreEol":true})` call proves byte/content intent
+without dumping an unbounded diff.
 
 ## Commands
 

@@ -282,13 +282,15 @@ try {
     const directoryCommit = await callOk(client, "svn_commit", {
       cwd: workingCopy,
       paths: ["guarded-directory"],
-      message: "Commit directory property\n\n- Exercise directory commit guards\n- Verify descendant residue\n",
+      message: "Commit directory property\n\n- Exercise directory commit guards\n- Verify descendant scope evidence\n",
       allowDirectoryTargets: true
     });
     assert(
-      directoryCommit.postStatusClean === false
-        && directoryCommit.residue.some((item) => item.path === "guarded-directory/child.txt" && item.status === "modified"),
-      "acknowledged directory commit did not report descendant residue"
+      directoryCommit.postStatusClean === true
+        && directoryCommit.postStatusScope === "committed-paths"
+        && directoryCommit.postStatusPaths.includes("guarded-directory")
+        && directoryCommit.workingCopyClean === false,
+      "acknowledged directory commit did not distinguish committed scope from the dirty working copy"
     );
     passed.push("directory-commit-guard");
 

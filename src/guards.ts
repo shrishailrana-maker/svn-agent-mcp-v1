@@ -36,6 +36,9 @@ export const sensitiveNeverCommitGlobs = [
 
 export const neverCommitGlobs = [...overridableNeverCommitGlobs, ...sensitiveNeverCommitGlobs];
 
+export const COMMIT_MESSAGE_REQUIREMENT = "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.";
+export const RISK_ACK_PATH_THRESHOLD = 8;
+
 type RepositoryPolicy = {
   neverCommit?: {
     allow?: string[];
@@ -220,8 +223,8 @@ export function neverCommitNote(hit: string, absPath: string, wcRoot: string): s
 export function riskySignals(absPaths: string[], wcRoot: string, statusByPath?: Map<string, string>): string[] {
   const signals = new Set<string>();
 
-  if (absPaths.length > 8) {
-    signals.add("more than 8 paths");
+  if (absPaths.length > RISK_ACK_PATH_THRESHOLD) {
+    signals.add(`more than ${RISK_ACK_PATH_THRESHOLD} paths`);
   }
 
   for (const absPath of absPaths) {
@@ -329,7 +332,7 @@ export function validateCommitMessage(message: string): CommitMessageValidation 
     valid: false,
     warningCode: "COMMIT_MESSAGE_FORMAT",
     failedRule: `missing ${joinRuleNames(failures)}`,
-    warningDetail: "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
+    warningDetail: COMMIT_MESSAGE_REQUIREMENT,
     suggestedMessage: `${subject}\n\n- Describe verification performed`,
     blocking: true
   };

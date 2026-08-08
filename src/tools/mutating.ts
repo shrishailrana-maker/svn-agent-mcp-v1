@@ -32,6 +32,8 @@ import {
 } from "../guards.js";
 import { parseCommittedRevision } from "../parse/commitText.js";
 import { parseInfoXml } from "../parse/infoXml.js";
+import { parseListXml } from "../parse/listXml.js";
+import { parseStatusXml } from "../parse/statusXml.js";
 import { parseUpdateText } from "../parse/updateText.js";
 import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
 import { processWorkflowEvidence, workflowScope } from "../workflowEvidence.js";
@@ -45,7 +47,7 @@ import {
   type WorkflowPathState
 } from "../workflowState.js";
 import { currentRequestCancellationSignal, escapeSvnTarget, runSvn, runSvnVersion } from "../runner.js";
-import type { ChangedPath, Conflict, RunResult, ToolEnvelope } from "../types.js";
+import type { ChangedPath, Conflict, RunResult, ToolEnvelope, WcInfo } from "../types.js";
 import {
   getWcContext,
   parseSvnVersion,
@@ -62,6 +64,11 @@ const DESCENDANT_SCAN_DEPTH_LIMIT = 256;
 const LOCK_WORKSTATION_LABEL = /^[A-Za-z0-9._-]{1,64}$/;
 const LOCK_COMMENT_MAX_CHARS = 4000;
 const UUID_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const OUT_OF_DATE_PATH_LIMIT = 100;
+const POST_STATUS_PATH_LIMIT = 100;
+const UPDATE_SCOPE_PARENT_LIMIT = 10;
+const UPDATE_SCOPE_ENTRY_LIMIT = 5000;
+const UPDATE_OMITTED_ADDITION_LIMIT = 100;
 
 type SvnLockCoreInput = {
   cwd?: string;
@@ -695,22 +702,42 @@ export async function svnCommit(input: {
     const run = await runSvn(["commit", "-F", messageTemp.file, "--depth", "empty", "--", ...commitPaths.map(escapeSvnTarget)], guard.cwd);
     const revision = parseCommittedRevision(`${run.stdout}\n${run.stderr}`);
     const commitSucceeded = run.exitCode === 0 && revision !== null;
+    const outOfDate = commitSucceeded
+      ? null
+      : await diagnoseOutOfDateCommit(run, guard.cwd, guard.wcRoot, commitPaths);
     const deletedPaths = new Set(preCommitChanges
       .filter((entry) => entry.status === "D")
       .map((entry) => pathIdentityKey(path.resolve(guard.wcRoot, entry.path))));
-    const postStatusPaths = scopedPaths.filter((target) => !deletedPaths.has(pathIdentityKey(target)));
-    const postStatus = commitSucceeded && postStatusPaths.length > 0
-      ? await svnStatus({ cwd: guard.cwd, paths: postStatusPaths })
+    const postStatusTargets = commitPaths.filter((target) => !deletedPaths.has(pathIdentityKey(target)));
+    const postStatus = commitSucceeded && postStatusTargets.length > 0
+      ? await svnStatus({ cwd: guard.cwd, paths: postStatusTargets, depth: "empty" })
       : null;
-    const postStatusClean = commitSucceeded && (postStatusPaths.length === 0
+    const postStatusClean = commitSucceeded && (postStatusTargets.length === 0
       || Boolean(postStatus?.ok && postStatus.changed_paths.length === 0 && postStatus.conflicts.length === 0));
+    const workingCopyStatus = commitSucceeded ? await svnStatus({ cwd: guard.wcRoot }) : null;
+    const workingCopyClean = workingCopyStatus?.ok
+      ? workingCopyStatus.changed_paths.length === 0 && workingCopyStatus.conflicts.length === 0
+      : null;
     const postVersionRun = commitSucceeded ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
     const postVersion = postVersionRun?.exitCode === 0 ? parseSvnVersion(postVersionRun.stdout) : null;
+    const reportedVersion = postVersion ?? baseVersion;
+    const failureNote = outOfDate
+      ? Number(outOfDate.out_of_date_path_count) > 0
+        ? "commit blocked by out-of-date paths; run svn_update for the listed paths, resolve conflicts, then retry"
+        : "commit blocked by an out-of-date condition; exact paths unavailable; update the explicit commit scope, resolve conflicts, then retry"
+      : run.exitCode !== 0
+        ? noteFromRun(run)
+        : revision === null
+          ? "svn reported success without a committed revision"
+          : "";
     const noteParts = [
-      run.exitCode !== 0 ? noteFromRun(run) : revision === null ? "svn reported success without a committed revision" : "",
-      ...warnings,
-      commitSucceeded && !postStatusClean ? "post-status has residue" : ""
+      failureNote,
+      ...(outOfDate ? [] : warnings),
+      commitSucceeded && !postStatusClean ? "committed-path post-status has residue" : "",
+      commitSucceeded && workingCopyClean === false ? "working copy has uncommitted changes" : "",
+      commitSucceeded && workingCopyClean === null ? "whole-working-copy post-status unavailable" : ""
     ].filter(Boolean);
+    const boundedPostStatusPaths = committedPaths.slice(0, POST_STATUS_PATH_LIMIT);
 
     return {
       ...envelopeFromRun({
@@ -721,6 +748,7 @@ export async function svnCommit(input: {
         conflicts: postStatus?.conflicts ?? [],
         note: noteParts.join("; ")
       }),
+      wc_root: guard.wcRoot,
       revision,
       committed_revision: revision,
       committed_paths: commitSucceeded ? committedPaths : [],
@@ -736,15 +764,114 @@ export async function svnCommit(input: {
       content_hashes_truncated: false,
       post_status: postStatus?.changed_paths ?? [],
       post_status_clean: postStatusClean,
-      working_copy_mixed: postVersion?.mixed ?? null,
-      revision_range: postVersion?.range ?? null,
+      ...(commitSucceeded
+        ? {
+            post_status_scope: "committed-paths",
+            post_status_paths: boundedPostStatusPaths,
+            post_status_path_count: committedPaths.length,
+            ...(committedPaths.length > boundedPostStatusPaths.length ? { post_status_paths_truncated: true } : {}),
+            working_copy_clean: workingCopyClean
+          }
+        : {}),
+      working_copy_mixed: reportedVersion?.mixed ?? null,
+      mixed_revision: reportedVersion?.mixed ?? null,
+      revision_range: reportedVersion?.range ?? null,
       risk_signals: riskSignals,
+      ...(outOfDate ?? {}),
       ...(input.precommitToken ? { precommit_token: input.precommitToken } : {}),
       ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
     };
   } finally {
     fs.rmSync(messageTemp.dir, { recursive: true, force: true });
   }
+}
+
+async function diagnoseOutOfDateCommit(
+  commitRun: RunResult,
+  cwd: string,
+  wcRoot: string,
+  commitPaths: string[]
+): Promise<Record<string, unknown> | null> {
+  const commitOutput = `${commitRun.stderr}\n${commitRun.stdout}`;
+  if (!commitFailureReportsOutOfDate(commitOutput)) {
+    return null;
+  }
+
+  const statusRun = await runSvn([
+    "status",
+    "--show-updates",
+    "--xml",
+    "--depth",
+    "empty",
+    "--",
+    ...commitPaths.map(escapeSvnTarget)
+  ], cwd);
+  let repositoryChangedPaths: string[] = [];
+  let statusProbeIncomplete = statusRun.exitCode !== 0 || statusRun.truncated === true;
+  if (statusRun.exitCode === 0 && !statusRun.truncated) {
+    try {
+      repositoryChangedPaths = parseStatusXml(statusRun.stdout).out_of_date_paths;
+    } catch {
+      statusProbeIncomplete = true;
+    }
+  }
+
+  return classifyOutOfDateCommitEvidence({
+    commitOutput,
+    repositoryChangedPaths,
+    statusProbeIncomplete,
+    cwd,
+    wcRoot
+  });
+}
+
+export function classifyOutOfDateCommitEvidence(input: {
+  commitOutput: string;
+  repositoryChangedPaths: string[];
+  statusProbeIncomplete: boolean;
+  cwd: string;
+  wcRoot: string;
+}): Record<string, unknown> | null {
+  if (!commitFailureReportsOutOfDate(input.commitOutput)) {
+    return null;
+  }
+
+  const candidates = input.repositoryChangedPaths.map((candidate) =>
+    path.isAbsolute(candidate) ? candidate : path.resolve(input.cwd, candidate)
+  );
+  const relativePaths = uniqueRelativePaths(candidates, input.wcRoot);
+  const boundedPaths = relativePaths.slice(0, OUT_OF_DATE_PATH_LIMIT);
+  const diagnosisUnavailableReason = input.statusProbeIncomplete
+    ? relativePaths.length > 0
+      ? "bounded status probe was incomplete; exact out-of-date path list may be partial"
+      : "commit reported an out-of-date condition, but the bounded status probe was incomplete and found no exact paths"
+    : relativePaths.length === 0
+      ? "commit reported an out-of-date condition, but the bounded status probe found no exact paths"
+      : null;
+  return {
+    code: "OUT_OF_DATE",
+    guard_code: "OUT_OF_DATE",
+    out_of_date_paths: boundedPaths,
+    out_of_date_path_count: relativePaths.length,
+    out_of_date_paths_truncated: input.statusProbeIncomplete || relativePaths.length > boundedPaths.length,
+    ...(diagnosisUnavailableReason ? { out_of_date_diagnosis_unavailable_reason: diagnosisUnavailableReason } : {})
+  };
+}
+
+function commitFailureReportsOutOfDate(output: string): boolean {
+  return /\b(?:E155011|E160028)\b/i.test(output);
+}
+
+function uniqueRelativePaths(paths: string[], wcRoot: string): string[] {
+  const unique = new Map<string, string>();
+  for (const candidate of paths) {
+    if (!isInsideOrEqual(candidate, wcRoot)) {
+      continue;
+    }
+    const relative = repoRelativePath(candidate, wcRoot);
+    unique.set(pathIdentityKey(candidate), relative);
+  }
+  return [...unique.values()].sort((left, right) => left.localeCompare(right));
 }
 
 async function hashCommitTargets(
@@ -1084,6 +1211,12 @@ export async function svnUpdate(input: {
       .map((target) => repoRelativePath(target, context.wcRoot));
   }
 
+  const updateScope = await captureUpdateScope(
+    context.cwd,
+    targets,
+    input.updateAll === true
+  );
+
   let observedRemoteHead: number | null | undefined;
   if (input.expectedRemoteHead !== undefined) {
     observedRemoteHead = await remoteHeadForTargets(
@@ -1136,6 +1269,9 @@ export async function svnUpdate(input: {
   const resultingRevision = versionState?.range && versionState.range.min === versionState.range.max
     ? versionState.range.min
     : null;
+  const scopeReceipt = run.exitCode === 0
+    ? await finalizeUpdateScope(updateScope, context.cwd, context.wcRoot, input.revision ?? "HEAD")
+    : updateScopeReceipt(updateScope);
   const baselineReceipt = input.baselineToken && baselineStates && beforeStates
     ? baselineCollisionReceipt(
         input.baselineToken,
@@ -1162,12 +1298,238 @@ export async function svnUpdate(input: {
     revision_range: versionState?.range ?? null,
     mixed_revision: versionState?.mixed ?? false,
     wc_root: context.wcRoot,
+    ...scopeReceipt,
     ...baselineReceipt,
     ...(skippedAddedPaths.length > 0 ? { skipped_added_paths: skippedAddedPaths } : {}),
     ...(input.expectedRemoteHead !== undefined
       ? { expected_remote_head: input.expectedRemoteHead, observed_remote_head: observedRemoteHead ?? null }
       : {})
   };
+}
+
+type UpdateScope = {
+  kind: "working-copy" | "directory" | "exact-file" | "unknown";
+  parentSnapshots: Array<{
+    localDirectory: string;
+    repositoryUrl: string;
+    baseRevision: number;
+  }>;
+  parentCount: number;
+  parentsTruncated: boolean;
+  unavailable: boolean;
+};
+
+export function classifyUpdateScopeFromInfo(
+  cwd: string,
+  targets: string[],
+  entries: Array<Pick<WcInfo, "path" | "kind">>
+): UpdateScope["kind"] {
+  if (targets.length === 0) {
+    return "unknown";
+  }
+  const entriesByPath = new Map<string, Pick<WcInfo, "path" | "kind">>();
+  for (const entry of entries) {
+    if (!entry.path) continue;
+    const candidate = path.isAbsolute(entry.path) ? entry.path : path.resolve(cwd, entry.path);
+    entriesByPath.set(pathIdentityKey(candidate), entry);
+  }
+  const kinds = targets.map((target) => entriesByPath.get(pathIdentityKey(target))?.kind ?? null);
+  return kinds.every((kind) => kind === "file")
+    ? "exact-file"
+    : kinds.every((kind) => kind === "dir")
+      ? "directory"
+      : "unknown";
+}
+
+async function captureUpdateScope(
+  cwd: string,
+  targets: string[],
+  updateAll: boolean
+): Promise<UpdateScope> {
+  if (updateAll || targets.length === 0) {
+    return {
+      kind: "working-copy",
+      parentSnapshots: [],
+      parentCount: 0,
+      parentsTruncated: false,
+      unavailable: false
+    };
+  }
+
+  const metadataRun = await runSvn([
+    "info",
+    "--xml",
+    "--depth",
+    "empty",
+    "--",
+    ...targets.map(escapeSvnTarget)
+  ], cwd);
+  let classifiedKind: UpdateScope["kind"] = "unknown";
+  if (metadataRun.exitCode === 0 && !metadataRun.truncated) {
+    try {
+      const entries = parseInfoXml(metadataRun.stdout);
+      classifiedKind = classifyUpdateScopeFromInfo(cwd, targets, entries);
+    } catch {
+      classifiedKind = "unknown";
+    }
+  }
+  if (classifiedKind !== "exact-file") {
+    return {
+      kind: classifiedKind,
+      parentSnapshots: [],
+      parentCount: 0,
+      parentsTruncated: false,
+      unavailable: classifiedKind === "unknown"
+    };
+  }
+
+  const allParents = new Map<string, string>();
+  for (const target of targets) {
+    const directory = path.dirname(target);
+    allParents.set(pathIdentityKey(directory), directory);
+  }
+  const selectedParents = [...allParents.values()].slice(0, UPDATE_SCOPE_PARENT_LIMIT);
+  const parentSnapshots: UpdateScope["parentSnapshots"] = [];
+  let unavailable = false;
+  for (const localDirectory of selectedParents) {
+    const infoRun = await runSvn(["info", "--xml", "--", escapeSvnTarget(localDirectory)], cwd);
+    if (infoRun.exitCode !== 0 || infoRun.truncated) {
+      unavailable = true;
+      continue;
+    }
+    try {
+      const info = parseInfoXml(infoRun.stdout)[0];
+      if (!info?.url || info.revision === null) {
+        unavailable = true;
+        continue;
+      }
+      parentSnapshots.push({
+        localDirectory,
+        repositoryUrl: info.url,
+        baseRevision: info.revision
+      });
+    } catch {
+      unavailable = true;
+    }
+  }
+
+  return {
+    kind: "exact-file",
+    parentSnapshots,
+    parentCount: allParents.size,
+    parentsTruncated: allParents.size > selectedParents.length,
+    unavailable
+  };
+}
+
+function updateScopeReceipt(scope: UpdateScope): Record<string, unknown> {
+  if (scope.kind === "working-copy" || scope.kind === "directory") {
+    return { scope_kind: scope.kind, scope_complete: true };
+  }
+  if (scope.kind === "unknown") {
+    return {
+      scope_kind: "unknown",
+      scope_complete: false,
+      omitted_repository_additions: [],
+      omitted_repository_additions_truncated: true,
+      recommended_action: "inspect-target-metadata",
+      scope_check_unavailable_reason: "target kind unavailable from bounded SVN info probe"
+    };
+  }
+  return {
+    scope_kind: scope.kind,
+    scope_complete: false,
+    omitted_repository_additions: [],
+    omitted_repository_additions_truncated: scope.parentsTruncated,
+    recommended_action: "update-containing-directory",
+    ...((scope.unavailable || scope.parentsTruncated)
+      ? { scope_check_unavailable_reason: "bounded containing-directory comparison was incomplete" }
+      : {})
+  };
+}
+
+async function finalizeUpdateScope(
+  scope: UpdateScope,
+  cwd: string,
+  wcRoot: string,
+  targetRevision: string
+): Promise<Record<string, unknown>> {
+  if (scope.kind !== "exact-file") {
+    return updateScopeReceipt(scope);
+  }
+
+  const omitted = new Map<string, string>();
+  let comparisonIncomplete = scope.unavailable || scope.parentsTruncated;
+  for (const snapshot of scope.parentSnapshots) {
+    const base = await repositoryDirectoryEntries(cwd, snapshot.repositoryUrl, String(snapshot.baseRevision));
+    const target = await repositoryDirectoryEntries(cwd, snapshot.repositoryUrl, targetRevision);
+    if (!base.ok || !target.ok || base.truncated || target.truncated) {
+      comparisonIncomplete = true;
+      continue;
+    }
+    const baseNames = new Set(base.names);
+    for (const name of target.names) {
+      if (baseNames.has(name) || !isImmediateRepositoryName(name)) {
+        continue;
+      }
+      const localCandidate = path.resolve(snapshot.localDirectory, name);
+      if (!isInsideOrEqual(localCandidate, snapshot.localDirectory)
+        || !isInsideOrEqual(localCandidate, wcRoot)
+        || fs.existsSync(localCandidate)) {
+        continue;
+      }
+      omitted.set(pathIdentityKey(localCandidate), repoRelativePath(localCandidate, wcRoot));
+    }
+  }
+
+  const allOmitted = [...omitted.values()].sort((left, right) => left.localeCompare(right));
+  const boundedOmitted = allOmitted.slice(0, UPDATE_OMITTED_ADDITION_LIMIT);
+  const truncated = comparisonIncomplete || allOmitted.length > boundedOmitted.length;
+  return {
+    scope_kind: "exact-file",
+    scope_complete: false,
+    omitted_repository_additions: boundedOmitted,
+    omitted_repository_addition_count: allOmitted.length,
+    omitted_repository_additions_truncated: truncated,
+    recommended_action: "update-containing-directory",
+    ...(comparisonIncomplete
+      ? { scope_check_unavailable_reason: "bounded containing-directory comparison was incomplete" }
+      : {})
+  };
+}
+
+async function repositoryDirectoryEntries(
+  cwd: string,
+  repositoryUrl: string,
+  revision: string
+): Promise<{ ok: boolean; names: string[]; truncated: boolean }> {
+  const run = await runSvn([
+    "list",
+    "--xml",
+    "--depth",
+    "immediates",
+    "-r",
+    revision,
+    "--",
+    escapeSvnTarget(repositoryUrl)
+  ], cwd);
+  if (run.exitCode !== 0 || run.truncated) {
+    return { ok: false, names: [], truncated: run.truncated === true };
+  }
+  try {
+    const parsed = parseListXml(run.stdout, UPDATE_SCOPE_ENTRY_LIMIT);
+    return {
+      ok: true,
+      names: parsed.entries.map((entry) => entry.name),
+      truncated: parsed.truncated
+    };
+  } catch {
+    return { ok: false, names: [], truncated: false };
+  }
+}
+
+function isImmediateRepositoryName(value: string): boolean {
+  return value !== "." && value !== ".." && !/[\\/]/.test(value);
 }
 
 export async function svnRevert(input: {

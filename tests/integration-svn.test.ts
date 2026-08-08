@@ -5,10 +5,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { toToolResult } from "../src/response.js";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { classifyOutOfDateCommitEvidence, classifyUpdateScopeFromInfo, svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
@@ -224,6 +225,9 @@ describe("SVN tool integration against a temp repository", () => {
         committed_count: 1,
         path_count: 1,
         post_status_clean: true,
+        post_status_scope: "committed-paths",
+        post_status_paths: ["receipt.txt"],
+        working_copy_clean: true,
         working_copy_mixed: true,
         remote_head_revision: commit.revision,
         eol_verdict: "not_checked"
@@ -252,6 +256,39 @@ describe("SVN tool integration against a temp repository", () => {
         operationId
       });
       expect(mismatch).toMatchObject({ ok: false, code: "OPERATION_ID_CONFLICT", operation_id: operationId });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("separates committed-path cleanliness from whole-working-copy cleanliness", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "committed.txt"), "one\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "unrelated.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["committed.txt", "unrelated.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["committed.txt", "unrelated.txt"],
+        message: commitMessage("Add cleanliness fixtures")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(path.join(fixture.wc, "committed.txt"), "two\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "unrelated.txt"), "two\r\n", "utf8");
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["committed.txt"],
+        message: commitMessage("Update committed scope")
+      });
+
+      expect(committed).toMatchObject({
+        ok: true,
+        post_status_clean: true,
+        post_status_scope: "committed-paths",
+        post_status_paths: ["committed.txt"],
+        working_copy_clean: false
+      });
+      expect(statusByPath((await svnStatus({ cwd: fixture.wc })).changed_paths, fixture.wc).get("unrelated.txt")).toBe("M");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -407,6 +444,47 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("repairs LF plus BOM without changing EOL-blind content", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "lf-bom.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "alpha\r\nbeta\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add LF BOM repair fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from("alpha\nbeta\n", "utf8")
+      ]));
+
+      const fixed = await eolFixVerified({ cwd: fixture.wc, path: relativePath, target: "crlf" });
+      expect(fixed).toMatchObject({
+        ok: true,
+        before: { kind: "lf", has_bom: true },
+        after: { kind: "crlf", has_bom: false },
+        pure_eol_churn: true
+      });
+      expect(fs.readFileSync(file)).toEqual(Buffer.from("alpha\r\nbeta\r\n", "utf8"));
+
+      const ignoredDiff = await svnDiff({ cwd: fixture.wc, paths: [relativePath] });
+      expect(ignoredDiff).toMatchObject({
+        ok: true,
+        ignore_eol: true,
+        per_file: [],
+        total_added: 0,
+        total_removed: 0,
+        diff_excerpt: ""
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("blocks precommit and commit for conflicted paths", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -487,6 +565,175 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("falls back to the repository root for scoped info when the path is absent at HEAD", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "info fallback peer");
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "removed-at-head.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["removed-at-head.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["removed-at-head.txt"],
+        message: commitMessage("Add fallback fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      execFileSync(svnExecutable(), ["delete", "--", path.join(peer, "removed-at-head.txt")], { cwd: peer });
+      execFileSync(svnExecutable(), ["commit", "-m", "remove fallback fixture", "--", path.join(peer, "removed-at-head.txt")], { cwd: peer });
+      const repositoryHead = Number((await svnInfo({ cwd: peer })).remote_head_revision);
+
+      const scoped = await svnInfo({ cwd: fixture.wc, paths: ["removed-at-head.txt"] });
+      expect(scoped).toMatchObject({
+        ok: true,
+        remote_head_revision: repositoryHead,
+        stale_base: true
+      });
+      expect(scoped).not.toHaveProperty("remote_head_unavailable_reason");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("diagnoses an out-of-date commit separately from mixed-revision state", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "out-of-date peer");
+    try {
+      const relativePath = "out-of-date.txt";
+      const localFile = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(localFile, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add out-of-date fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      fs.writeFileSync(path.join(peer, relativePath), "remote\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote out-of-date change", "--", path.join(peer, relativePath)], { cwd: peer });
+      fs.writeFileSync(localFile, "local\r\n", "utf8");
+
+      const refused = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Attempt stale commit")
+      });
+
+      expect(refused).toMatchObject({
+        ok: false,
+        code: "OUT_OF_DATE",
+        guard_code: "OUT_OF_DATE",
+        out_of_date_paths: [relativePath],
+        mixed_revision: true,
+        working_copy_mixed: true
+      });
+      expect(refused.note).toBe("commit blocked by out-of-date paths; run svn_update for the listed paths, resolve conflicts, then retry");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps out-of-date commit paths working-copy-relative from a subdirectory cwd", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "subdirectory out-of-date peer");
+    try {
+      const directory = path.join(fixture.wc, "nested");
+      const relativePath = "nested/out-of-date.txt";
+      fs.mkdirSync(directory);
+      fs.writeFileSync(path.join(fixture.wc, relativePath), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add nested out-of-date fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      fs.writeFileSync(path.join(peer, relativePath), "remote\r\n", "utf8");
+      execFileSync(svnExecutable(), ["commit", "-m", "remote nested change", "--", path.join(peer, relativePath)], { cwd: peer });
+      fs.writeFileSync(path.join(fixture.wc, relativePath), "local\r\n", "utf8");
+
+      const refused = await svnCommit({
+        cwd: directory,
+        paths: ["out-of-date.txt"],
+        message: commitMessage("Attempt nested stale commit")
+      });
+      expect(refused).toMatchObject({
+        ok: false,
+        wc_root: fixture.wc,
+        code: "OUT_OF_DATE",
+        out_of_date_paths: [relativePath]
+      });
+
+      const compact = toToolResult("svn_commit", refused, {
+        responseMode: "compact",
+        request: { paths: ["out-of-date.txt"] }
+      }).structuredContent;
+      expect(compact.outOfDatePaths).toEqual([relativePath]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not relabel marker-free commit output when repository status changed", () => {
+    const wcRoot = path.resolve("diagnostic-wc");
+    const diagnosed = classifyOutOfDateCommitEvidence({
+      commitOutput: "svn: E165001: Hook rejected an out-of-date policy report",
+      repositoryChangedPaths: [path.join(wcRoot, "remote-change.txt")],
+      statusProbeIncomplete: false,
+      cwd: wcRoot,
+      wcRoot
+    });
+
+    expect(diagnosed).toBeNull();
+  });
+
+  it("keeps update scope unknown when a bounded info batch omits a target", () => {
+    const cwd = path.resolve("metadata-wc");
+    const first = path.join(cwd, "first.txt");
+    const second = path.join(cwd, "second.txt");
+
+    expect(classifyUpdateScopeFromInfo(cwd, [first, second], [
+      { path: first, kind: "file" }
+    ])).toBe("unknown");
+  });
+
+  it("does not invent exact paths when only the commit failure reports out-of-date", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "marker-only.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add marker-only fixture")
+      })).ok).toBe(true);
+      fs.writeFileSync(file, "two\r\n", "utf8");
+      installRejectingPreCommitHook(fixture.repo, "svn: E155011: File is out of date");
+
+      const failed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Attempt marker-only commit")
+      });
+
+      expect(failed).toMatchObject({
+        ok: false,
+        code: "OUT_OF_DATE",
+        guard_code: "OUT_OF_DATE",
+        out_of_date_paths: [],
+        out_of_date_path_count: 0,
+        out_of_date_paths_truncated: false,
+        out_of_date_diagnosis_unavailable_reason: "commit reported an out-of-date condition, but the bounded status probe found no exact paths"
+      });
+      expect(failed.note).toBe("commit blocked by an out-of-date condition; exact paths unavailable; update the explicit commit scope, resolve conflicts, then retry");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("detects mixed working-copy roots from subdirectory commit flows", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -511,6 +758,7 @@ describe("SVN tool integration against a temp repository", () => {
         message: commitMessage("Update nested fixture")
       });
       expect(committed.ok).toBe(true);
+      expect(committed.wc_root).toBe(fixture.wc);
       expect(committed.note).toContain("mixed revision working copy");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
@@ -1610,7 +1858,12 @@ describe("SVN tool integration against a temp repository", () => {
         message: commitMessage("Commit directory property only"),
         allowDirectoryTargets: true
       });
-      expect(acknowledged).toMatchObject({ ok: true, post_status_clean: false });
+      expect(acknowledged).toMatchObject({
+        ok: true,
+        post_status_clean: true,
+        post_status_scope: "committed-paths",
+        working_copy_clean: false
+      });
       expect(acknowledged.command).toContain("--depth empty");
       const descendantAfterCommit = await svnStatus({ cwd: fixture.wc, paths: ["commit-dir/child.txt"] });
       expect(statusByPath(descendantAfterCommit.changed_paths, fixture.wc).get("commit-dir/child.txt")).toBe("M");
@@ -1927,6 +2180,154 @@ describe("SVN tool integration against a temp repository", () => {
       const versionedStatus = await svnStatus({ cwd: fixture.wc, paths: ["versioned file.txt"], includeIgnored: true });
       expect(versionedStatus).toMatchObject({ ok: true, changed_paths: [], note: "" });
       expect(versionedStatus.stderr_summary).toBe("");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports repository additions omitted by an exact-file update without widening scope", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "exact update peer");
+    try {
+      const directory = "exact update";
+      const targetPath = `${directory}/target.txt`;
+      const omittedPath = `${directory}/new-from-repository.txt`;
+      fs.mkdirSync(path.join(fixture.wc, directory));
+      fs.writeFileSync(path.join(fixture.wc, targetPath), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [targetPath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [targetPath],
+        message: commitMessage("Add exact update fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      fs.writeFileSync(path.join(peer, targetPath), "two\r\n", "utf8");
+      fs.writeFileSync(path.join(peer, omittedPath), "new\r\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--", path.join(peer, omittedPath)], { cwd: peer });
+      execFileSync(svnExecutable(), [
+        "commit", "-m", "remote exact update changes", "--",
+        path.join(peer, targetPath), path.join(peer, omittedPath)
+      ], { cwd: peer });
+
+      const exact = await svnUpdate({ cwd: fixture.wc, paths: [targetPath] });
+      expect(exact).toMatchObject({
+        ok: true,
+        scope_kind: "exact-file",
+        scope_complete: false,
+        omitted_repository_additions: [omittedPath],
+        omitted_repository_additions_truncated: false,
+        recommended_action: "update-containing-directory"
+      });
+      expect(fs.readFileSync(path.join(fixture.wc, targetPath), "utf8")).toBe("two\r\n");
+      expect(fs.existsSync(path.join(fixture.wc, omittedPath))).toBe(false);
+
+      const directoryUpdate = await svnUpdate({ cwd: fixture.wc, paths: [directory] });
+      expect(directoryUpdate).toMatchObject({
+        ok: true,
+        scope_kind: "directory",
+        scope_complete: true
+      });
+      expect(fs.readFileSync(path.join(fixture.wc, omittedPath), "utf8")).toBe("new\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a missing versioned file in exact-file update scope", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "missing-versioned.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add missing versioned fixture")
+      })).ok).toBe(true);
+      fs.rmSync(file);
+
+      const restored = await svnUpdate({ cwd: fixture.wc, paths: [relativePath] });
+
+      expect(restored).toMatchObject({
+        ok: true,
+        scope_kind: "exact-file",
+        scope_complete: false,
+        recommended_action: "update-containing-directory"
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports unknown incomplete scope when SVN metadata cannot classify a target", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const unknown = await svnUpdate({ cwd: fixture.wc, paths: ["never-versioned.txt"] });
+
+      expect(unknown).toMatchObject({
+        scope_kind: "unknown",
+        scope_complete: false,
+        omitted_repository_additions: [],
+        omitted_repository_additions_truncated: true,
+        recommended_action: "inspect-target-metadata",
+        scope_check_unavailable_reason: "target kind unavailable from bounded SVN info probe"
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("compares exact-file additions with a pinned revision instead of HEAD", async () => {
+    const fixture = createTempWorkingCopy();
+    const peer = path.join(fixture.root, "pinned exact update peer");
+    try {
+      const directory = "pinned exact update";
+      const targetPath = `${directory}/target.txt`;
+      const additionAtPinnedRevision = `${directory}/at-pinned.txt`;
+      const laterHeadAddition = `${directory}/after-pinned.txt`;
+      fs.mkdirSync(path.join(fixture.wc, directory));
+      fs.writeFileSync(path.join(fixture.wc, targetPath), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [targetPath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [targetPath],
+        message: commitMessage("Add pinned exact update fixture")
+      })).ok).toBe(true);
+
+      execFileSync(svnExecutable(), ["checkout", pathToFileURL(fixture.repo).href, peer], { cwd: fixture.root });
+      fs.writeFileSync(path.join(peer, targetPath), "two\r\n", "utf8");
+      fs.writeFileSync(path.join(peer, additionAtPinnedRevision), "pinned\r\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--", path.join(peer, additionAtPinnedRevision)], { cwd: peer });
+      execFileSync(svnExecutable(), [
+        "commit", "-m", "pinned exact update revision", "--",
+        path.join(peer, targetPath), path.join(peer, additionAtPinnedRevision)
+      ], { cwd: peer });
+      const pinnedRevision = Number((await svnInfo({ cwd: peer })).remote_head_revision);
+
+      fs.writeFileSync(path.join(peer, laterHeadAddition), "later\r\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--", path.join(peer, laterHeadAddition)], { cwd: peer });
+      execFileSync(svnExecutable(), ["commit", "-m", "later HEAD addition", "--", path.join(peer, laterHeadAddition)], { cwd: peer });
+      expect(Number((await svnInfo({ cwd: peer })).remote_head_revision)).toBeGreaterThan(pinnedRevision);
+
+      const pinned = await svnUpdate({
+        cwd: fixture.wc,
+        paths: [targetPath],
+        revision: String(pinnedRevision)
+      });
+
+      expect(pinned).toMatchObject({
+        ok: true,
+        requested_revision: String(pinnedRevision),
+        scope_kind: "exact-file",
+        scope_complete: false,
+        omitted_repository_additions: [additionAtPinnedRevision]
+      });
+      expect(pinned.omitted_repository_additions).not.toContain(laterHeadAddition);
+      expect(fs.existsSync(path.join(fixture.wc, additionAtPinnedRevision))).toBe(false);
+      expect(fs.existsSync(path.join(fixture.wc, laterHeadAddition))).toBe(false);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -2593,6 +2994,21 @@ function createTempWorkingCopy(): { root: string; repo: string; wc: string } {
   execFileSync(svnAdminExecutable(), ["create", repo], { cwd: root });
   execFileSync(svnExecutable(), ["checkout", pathToFileURL(repo).href, wc], { cwd: root });
   return { root, repo, wc };
+}
+
+function installRejectingPreCommitHook(repository: string, message: string): void {
+  const hooks = path.join(repository, "hooks");
+  if (process.platform === "win32") {
+    fs.writeFileSync(
+      path.join(hooks, "pre-commit.bat"),
+      `@echo off\r\necho ${message} 1>&2\r\nexit /b 1\r\n`,
+      "utf8"
+    );
+    return;
+  }
+  const hook = path.join(hooks, "pre-commit");
+  fs.writeFileSync(hook, `#!/bin/sh\nprintf '%s\\n' '${message}' >&2\nexit 1\n`, "utf8");
+  fs.chmodSync(hook, 0o755);
 }
 
 function expectSvnArgs(command: string, argsPrefix: string): void {

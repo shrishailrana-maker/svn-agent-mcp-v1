@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.35 — public implementation contract. Single source of truth.**
+**Spec version 1.36 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-08-04.
+hostnames, or product-specific role assignments. Date: 2026-08-08.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -219,14 +219,20 @@ snapshot, precommit, update, and commit: verdict/success, relative changed paths
 conflict and line totals, operation ID when available, and continuation only. Other tools treat
 receipt as compact.
 
-`structuredContent` is authoritative; the MCP `content` array is empty by default to avoid
-returning the same facts twice. `humanText:true` adds a short summary for clients that require one.
-Standard mode preserves the parsed envelope without raw successful stdout, commands, or absolute
-working-copy roots. Full mode preserves the bounded legacy diagnostic envelope, including raw
-successful output and machine paths. Non-full failures retain actionable bounded diagnostics with
+`structuredContent` is authoritative. Every mode except `structured-only` returns exactly one bounded
+text block by default; `structured-only` returns no text block. The text block is a short summary and
+never replaces structured data. `humanText` remains accepted for compatibility but does not change
+this bound. Standard mode preserves the parsed envelope without raw successful stdout, commands, or
+absolute working-copy roots. Full mode preserves the bounded legacy diagnostic envelope, including
+raw successful output and machine paths. Non-full failures retain actionable bounded diagnostics with
 working-copy paths made relative, except typed
 guard refusals omit redundant raw submitted path lists. Response shaping never bypasses path
 validation, guards, EOL checks, mixed-revision checks, or post-mutation verification.
+
+If both usable text and structured content are absent, classify the result as a harness or transport
+drop. Disclose `SVN MCP empty`, preserve the same explicit path scope, and use bounded native `svn`
+fallback steps for the operation. Retry the MCP later and prefer it again after a usable response;
+never use this fallback to bypass a guard refusal.
 
 Compact, receipt, and standard paths are working-copy-relative. High-use tools accept a validated
 `fields` projection. The one shared allowed-field catalog is generated under
@@ -359,7 +365,7 @@ hidden/no-window process option.
   Repository-local `deny` rules are evaluated before repository-local `allow` rules, so a broad
   allow exception cannot bypass a stricter project-specific deny or the immutable credential-file guards.
 - **G5 must-be-changed:** `svn_commit` verifies every listed path is actually modified/added/deleted per scoped status; unknown/clean path → refusal naming the path.
-- **G6 risky-slice ack:** `svn_commit` requires `riskAck:true` when any mechanical signal is present: a delete-scheduled path (status `D`), **more than 8 paths**, `version.ver` among the paths, or a build-system file among the paths (`*.sln`, `*.csproj`, `Directory.Build.props`, `Directory.Build.targets`, `*.props`, `*.targets`, `packages.config`). Refusal lists the triggered signals. Schema-changing / security-sensitive / scope-unclear risk is **not detectable** — the calling client's responsibility (§5.4).
+- **G6 risky-slice ack:** `svn_commit` requires `riskAck:true` when any mechanical signal is present: a delete-scheduled path (status `D`), **more than 8 paths**, `version.ver` among the paths, or a build-system file among the paths (`*.sln`, `*.csproj`, `Directory.Build.props`, `Directory.Build.targets`, `*.props`, `*.targets`, `packages.config`). Exactly 8 paths does not trigger the path-count signal. Refusal lists the triggered signals. Schema-changing / security-sensitive / scope-unclear risk is **not detectable** — the calling client's responsibility (§5.4).
 - **G7 no dangerous flags:** `--force` is emitted only by `svn_lock` or `svn_unlock` when
   `force:true`, `forceAck:true`, and a valid UUID `operationId` are all present. `svn_update`
   always gets `--accept postpone`. `svn_cleanup` never gets
@@ -403,6 +409,17 @@ in `note`. The MCP also returns `svnversion`, `revision_range:{min,max}`, `local
 `switched`, `partial`, `remote_head_revision`, and `stale_base` so clients can distinguish a
 mixed-revision working copy from dirty local edits. Compact callers may project the corresponding
 camel-case fields instead of receiving every metadata field.
+
+Mixed revision is valid evidence during parallel-agent work. A `workingCopyMixed:true` commit
+receipt is not a failure by itself. `baseRevision` is `null` when the committed paths do not share
+one base revision; `baseRevisionRange` carries the useful minimum and maximum. Out-of-date paths,
+unresolved conflicts, and stale-base conditions remain separate diagnostics and must be handled
+before retrying a guarded commit.
+
+Example: agent A edits `src/a.cs` at revision 40 while agent B commits `docs/b.md` at revision 41.
+Agent A's receipt can report `workingCopyMixed:true`, `baseRevision:null`, and
+`baseRevisionRange:{"min":40,"max":41}`. If the receipt has no out-of-date paths or conflicts,
+the mixed state alone does not block the scoped commit.
 
 **`svn_diff`** — `{ cwd?, paths: string[], file?, revision?: RevisionSelector, ignoreEol?: boolean = true, showEolChanges?: boolean = false, lineLimit?: number = 200, diffMode?: "summary"|"counts"|"hunk-headings"|"compact"|"full", maxChars?, maxHunksPerFile?, maxFiles?, fileCursor?, cursor?, operationId? }`
 argv (default): `svn diff --internal-diff -x --ignore-eol-style -- <paths…>` — the generic
@@ -557,6 +574,12 @@ non-blocking for compatibility.
 Intended flow: **precommit → (review summary; fetch full per-file diff only if a count looks
 wrong) → commit.** Two round trips.
 
+For EOL failures, use the verified recovery sequence **`eol_check` → `eol_fix_verified` →
+`svn_diff(ignoreEol:true)`** before repeating precommit. `eol_check` records LF, mixed-EOL, and BOM
+evidence. `eol_fix_verified` applies the repository target, verifies canonical LF/no-BOM content,
+preserves a concurrent edit instead of overwriting it, and runs an ignored-EOL diff. A final
+`svn_diff(ignoreEol:true)` must show no unintended content or property change before commit.
+
 Compact mode returns one authoritative receipt: path count, status counts, diff totals, EOL and
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
 `includeDiff:true` is requested. An early setup/status failure returns a compact diagnostic instead
@@ -639,6 +662,17 @@ repository policy enables `normalizeEol`; existing tracked-file repair remains a
 counted; failures retain bounded per-file evidence. Directories and implicit working-copy scans are
 refused. SHA256 over canonical LF/no-BOM content proves EOL conversion preserved content.
 
+Complete recovery example:
+
+```text
+eol_check(paths:["src/example.cs"]) → kind:"lf", has_bom:true, mismatch:true
+eol_fix_verified(path:"src/example.cs") → after.has_bom:false, pure_eol_churn:true
+svn_diff(paths:["src/example.cs"], ignoreEol:true) → no unintended content/property changes
+```
+
+The sequence is bounded to explicit paths. Never-commit guards run before repair, and a concurrent
+edit is preserved and reported rather than overwritten.
+
 ### 8.4 Mutating tools (all refused under READONLY)
 
 **`svn_add`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false }`
@@ -677,21 +711,30 @@ bind normalized paths, action, and acknowledgement state. All normal mutation gu
 READONLY refuses both actions.
 
 **`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
-Sequence: G1→G6 checks → message format check against §5.8 template (summary line + blank +
-≥1 `- ` bullet; deviation → typed refusal before SVN) → write message to temp
+Sequence: G1→G6 checks → message format check against §5.8 template (subject + blank second line +
+at least one `- ` verification bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
 `svn commit -F <tmpfile> --depth empty -- <paths…>` → delete tmpfile (always, incl. on failure) →
 parse `Committed revision N.` → run scoped `svn status --xml -- <paths…>`.
+`riskAck:true` is required when the explicit commit scope has more than 8 paths or another G6
+mechanical signal. Exactly 8 paths does not require acknowledgement for the path-count signal.
+Compact `OUT_OF_DATE` refusals identify bounded `outOfDatePaths`, `outOfDatePathCount`, and
+`outOfDatePathsTruncated` fields, while retaining `workingCopyMixed` and `revisionRange` when both
+conditions are present.
 If an explicit file path is under newly-added parent directories, the commit argv includes only
 those scheduled-added ancestors plus the explicit path, so the caller does not need to name parent
 directories manually.
 Extra: `{ revision, post_status_clean: boolean, risk_signals: string[] }`. Mixed-revision WC →
 warning in `note`, commit proceeds (D3).
+`postStatusClean` is the compatibility field for the committed path scope only. The receipt also
+publishes `postStatusScope:"committed-paths"`, bounded `postStatusPaths`, and separate
+`workingCopyClean` evidence from a whole-working-copy status check. These fields remove ambiguity;
+`postStatusClean` is not deprecated in 1.6.0.
 Whitespace-only messages are refused. Naming the working-copy root is refused unless
 `allowRoot:true`. Existing directory targets are refused unless `allowDirectoryTargets:true`
 explicitly acknowledges that `--depth empty` commits only the directory node and excludes changed
-descendants. Explicit child paths remain the normal scoped workflow; any descendants left changed
-are reported by the post-status residue.
+descendants. Explicit child paths remain the normal scoped workflow. A changed descendant outside
+the committed scope makes `workingCopyClean:false`; call `svn_status` when its path detail is needed.
 With `expandDescendants:true`, existing directory inputs expand to the bounded, sorted set of all
 currently changed descendants. The exact expanded list is returned and every descendant receives
 the same containment, never-commit, status, conflict, and risk checks as an explicitly named path.
@@ -735,6 +778,15 @@ and bounded top-folder context; past-end pages add `cursorPastEnd:true`.
 bounded per-path receipt with baseline revision, local modification before update, remote touch,
 same-path collision, postponed conflict, and remediation. It does not change SVN's successful
 merge semantics, but prepare and safe modes treat a reported collision as a commit blocker.
+Exact-file updates publish `scopeKind:"exact-file"`, `scopeComplete:false`, bounded
+`omittedRepositoryAdditions`, and `recommendedAction:"update-containing-directory"`; the exact-file
+scope is not directory-complete even when no sibling is currently omitted. Directory and
+working-copy updates publish their selected `scopeKind` and can report `scopeComplete:true` when the
+selected scope is complete. `scopeCheckUnavailableReason` explains bounded comparison failures.
+If the bounded SVN metadata probe cannot classify every target, `scopeKind:"unknown"` and
+`scopeComplete:false` state that completeness was not proven. The receipt includes a bounded
+`scopeCheckUnavailableReason` and `recommendedAction:"inspect-target-metadata"`; any omitted-addition
+count is non-authoritative in this state.
 
 **`svn_revert`** — `{ cwd?, paths: string[], allowRecursive?: boolean = false, dryRun?: boolean = true, riskAck?: boolean = false }`
 `dryRun:true` (default) = preview: returns scoped status + per-file ± counts of what would be
@@ -931,6 +983,17 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.36 / v1.6.0 — 2026-08-08
+
+- Fixes path-scoped remote-head evidence, standard EOL response summaries, out-of-date path
+  diagnostics, scoped companion-file update evidence, and post-commit scope wording (#48–#52).
+- Documents the bounded native-SVN fallback for harness empty replies (#53).
+- Publishes the commit-message contract and the `svn_commit` more-than-8-path `riskAck:true`
+  threshold in affected tool descriptions (#54–#55).
+- Defines `workingCopyMixed:true`, nullable `baseRevision`, and `baseRevisionRange` as expected
+  parallel-agent evidence, not a failure by itself (#56).
+- Preserves and documents the verified LF/BOM EOL recovery workflow and ignored-EOL proof (#57).
 
 ### Spec 1.35 / v1.5.0 — 2026-08-04
 

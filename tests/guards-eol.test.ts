@@ -2,7 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals, validateCommitMessage } from "../src/guards.js";
+import { COMMIT_MESSAGE_REQUIREMENT, RISK_ACK_PATH_THRESHOLD, isCommittableStatus, messageFormatWarning, neverCommitHit, pathIdentityKey, readonlyMode, resolveTargetsInsideWc, riskySignals, validateCommitMessage } from "../src/guards.js";
 import { svnImport } from "../src/tools/mutating.js";
 import { prepareEolNormalization, sniffEol } from "../src/eol.js";
 
@@ -54,8 +54,11 @@ describe("guards and EOL sniffing", () => {
     expect(neverCommitHit(path.join(root, "distillery", "notes.txt"), root)).toBeNull();
     expect(neverCommitHit(path.join(root, "src", "app.ts"), root)).toBeNull();
 
-    const paths = Array.from({ length: 9 }, (_, index) => path.join(root, "src", `f${index}.ts`));
-    expect(riskySignals(paths, root)).toContain("more than 8 paths");
+    expect(RISK_ACK_PATH_THRESHOLD).toBe(8);
+    const pathsAtThreshold = Array.from({ length: RISK_ACK_PATH_THRESHOLD }, (_, index) => path.join(root, "src", `f${index}.ts`));
+    expect(riskySignals(pathsAtThreshold, root)).not.toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths`);
+    const paths = Array.from({ length: RISK_ACK_PATH_THRESHOLD + 1 }, (_, index) => path.join(root, "src", `f${index}.ts`));
+    expect(riskySignals(paths, root)).toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths`);
     expect(riskySignals([path.join(root, "app.csproj")], root)).toContain("build-system file touched");
   });
 
@@ -218,7 +221,7 @@ describe("guards and EOL sniffing", () => {
       valid: false,
       warningCode: "COMMIT_MESSAGE_FORMAT",
       failedRule: "missing blank second line and verification bullet",
-      warningDetail: "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
+      warningDetail: COMMIT_MESSAGE_REQUIREMENT,
       suggestedMessage: "Short only\n\n- Describe verification performed",
       blocking: true
     });

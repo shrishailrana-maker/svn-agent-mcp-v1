@@ -29,6 +29,7 @@ export interface Envelope {
 export type ToolEnvelope = Envelope;
 
 export interface WcInfo {
+  kind?: "file" | "dir" | null;
   path?: string | null;
   url: string | null;
   repo_root: string | null;

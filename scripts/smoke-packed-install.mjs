@@ -104,8 +104,18 @@ try {
     if (!health || health.ok !== true || health.version !== check.package_version) {
       throw new Error(`installed MCP self-check failed: ${JSON.stringify(health)}`);
     }
-    if (response.content.length !== 0) {
-      throw new Error("installed MCP duplicated structured self-check data in content.text");
+    const textBlock = response.content[0];
+    if (response.content.length !== 1 || textBlock?.type !== "text"
+        || textBlock.text.length === 0 || textBlock.text.length > 1024
+        || textBlock.text.includes(JSON.stringify(health))) {
+      throw new Error("installed MCP did not return one bounded, non-duplicating text summary");
+    }
+    const structuredOnly = await client.callTool({
+      name: "svn_self_check",
+      arguments: { responseMode: "structured-only" }
+    });
+    if (structuredOnly.content.length !== 0 || structuredOnly.structuredContent?.ok !== true) {
+      throw new Error("installed MCP structured-only response contract failed");
     }
   } finally {
     await client.close();

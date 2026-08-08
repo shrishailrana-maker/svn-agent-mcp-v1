@@ -66,6 +66,7 @@ const COMPACT_DIFF_PREVIEW_CHAR_LIMIT = 512;
 const COMPACT_CONFLICT_PAGE_SIZE = 100;
 const COMPACT_TOP_FOLDER_LIMIT = 25;
 const COMPACT_PREPARE_PATH_LIMIT = 25;
+const TEXT_CONTENT_CHAR_LIMIT = 1024;
 const RECEIPT_TOOLS = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_prepare_commit", "svn_update", "svn_commit", "svn_lock", "svn_unlock", "svn_needs_lock"]);
 
 export function defaultResponseMode(
@@ -103,11 +104,13 @@ export function toToolResult<T extends ToolEnvelope>(
   const structured = mode === "full"
     ? projected
     : sanitizeNonFullStructuredValue(redactStructuredValue(projected), payload.cwd, responseRoot) as Record<string, unknown>;
-  const humanText = request.humanText === true;
-  const text = mode === "full" ? JSON.stringify(safePayload, null, 2) : summarizeToolResult(tool, structured);
+  const summary = summarizeToolResult(tool, structured, request);
+  const sanitizedSummary = sanitizeNonFullText(redactText(summary), payload.cwd, responseRoot);
+  const text = boundedPreview(sanitizedSummary, TEXT_CONTENT_CHAR_LIMIT - 3).text
+    || `${payload.ok ? "OK" : "ERROR"} ${tool}`;
 
   return {
-    content: humanText ? [{ type: "text", text }] : [],
+    content: mode === "structured-only" ? [] : [{ type: "text", text }],
     structuredContent: structured
   };
 }
@@ -226,10 +229,21 @@ function receiptPayload(
       ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
       ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
       ...(payload.verdict ? { verdict: payload.verdict } : {}),
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.guardCode ? { guardCode: error.guardCode } : {}),
       ...(error.note ? { note: error.note } : {}),
       ...(error.recoveryTool ? { recoveryTool: error.recoveryTool } : {}),
       ...(error.expectedRemoteHead !== undefined ? { expectedRemoteHead: error.expectedRemoteHead } : {}),
-      ...(error.observedRemoteHead !== undefined ? { observedRemoteHead: error.observedRemoteHead } : {})
+      ...(error.observedRemoteHead !== undefined ? { observedRemoteHead: error.observedRemoteHead } : {}),
+      ...(error.outOfDatePaths ? { outOfDatePaths: error.outOfDatePaths } : {}),
+      ...(error.outOfDatePathCount !== undefined ? { outOfDatePathCount: error.outOfDatePathCount } : {}),
+      ...(error.outOfDatePathsTruncated === true ? { outOfDatePathsTruncated: true } : {}),
+      ...(error.baseRevision !== undefined ? { baseRevision: error.baseRevision } : {}),
+      ...(error.baseRevisionRange !== undefined ? { baseRevisionRange: error.baseRevisionRange } : {}),
+      ...(error.remoteHeadRevision !== undefined ? { remoteHeadRevision: error.remoteHeadRevision } : {}),
+      ...(error.mixedRevision !== undefined ? { mixedRevision: error.mixedRevision } : {}),
+      ...(error.workingCopyMixed !== undefined ? { workingCopyMixed: error.workingCopyMixed } : {}),
+      ...(error.revisionRange !== undefined ? { revisionRange: error.revisionRange } : {})
     };
   }
 
@@ -237,10 +251,13 @@ function receiptPayload(
   const sourcePaths = tool === "svn_commit" && payload.committed_paths !== undefined
     ? stringArray(payload.committed_paths)
     : payload.changed_paths.map((item) => item.path);
+  const sourcePathsAreWorkingCopyRelative = tool === "svn_commit" && payload.committed_paths !== undefined;
   const countOnly = request.countOnly === true;
   const changedPaths = countOnly
     ? []
-    : uniqueStrings(sourcePaths.map((item) => workingCopyRelativePath(item, payload.cwd, root)));
+    : uniqueStrings(sourcePaths.map((item) => sourcePathsAreWorkingCopyRelative
+        ? workingCopyRootRelativePath(item, payload.cwd, root)
+        : workingCopyRelativePath(item, payload.cwd, root)));
   const offset = cursorOffset(request.cursor);
   const maxPaths = boundedInteger(request.maxItems, 25, 1, 100);
   const page = changedPaths.slice(offset, offset + maxPaths);
@@ -253,7 +270,7 @@ function receiptPayload(
   const nextOffset = offset + page.length;
   const nextCursor = nextOffset < changedPaths.length ? String(nextOffset) : payload.next_cursor;
 
-  const result = {
+  const result: Record<string, unknown> = {
     ok: true,
     ...(payload.verdict ? { verdict: payload.verdict } : {}),
     ...(baseRevision !== null && baseRevision !== undefined ? { baseRevision } : {}),
@@ -269,6 +286,25 @@ function receiptPayload(
     ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
     ...(nextCursor ? { nextCursor } : {})
   };
+  if (tool === "svn_update") {
+    assignDefined(result, "scopeKind", payload.scope_kind);
+    assignDefined(result, "scopeComplete", payload.scope_complete);
+    const omitted = stringArray(payload.omitted_repository_additions).slice(0, 100);
+    if (payload.omitted_repository_additions !== undefined) result.omittedRepositoryAdditions = omitted;
+    assignDefined(result, "omittedRepositoryAdditionCount", payload.omitted_repository_addition_count);
+    if (payload.omitted_repository_additions_truncated === true) result.omittedRepositoryAdditionsTruncated = true;
+    assignDefined(result, "recommendedAction", payload.recommended_action);
+    assignDefined(result, "scopeCheckUnavailableReason", payload.scope_check_unavailable_reason);
+  }
+  if (tool === "svn_commit") {
+    assignDefined(result, "postStatusClean", payload.post_status_clean);
+    assignDefined(result, "postStatusScope", payload.post_status_scope);
+    const postStatusPaths = stringArray(payload.post_status_paths).slice(0, 100);
+    if (payload.post_status_paths !== undefined) result.postStatusPaths = postStatusPaths;
+    assignDefined(result, "postStatusPathCount", payload.post_status_path_count);
+    if (payload.post_status_paths_truncated === true) result.postStatusPathsTruncated = true;
+    assignDefined(result, "workingCopyClean", payload.working_copy_clean);
+  }
   if (tool === "svn_status" || tool === "svn_snapshot") {
     const snapshotRoot = stringValue(payload.wc_root) || payload.cwd;
     return withSnapshotToken(tool, payload, request, result, {
@@ -299,8 +335,31 @@ const PROJECTION_SAFETY_FIELDS = [
   "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
   "hasMore", "recoveryTool", "remediation",
   "snapshotToken", "unchangedSinceCursor", "changedSinceCursor",
-  "operationId", "idempotentReplay", "operationRecovered"
+  "operationId", "idempotentReplay", "operationRecovered",
+  "remoteHeadUnavailableReason",
+  "scopeKind", "scopeComplete", "omittedRepositoryAdditions", "omittedRepositoryAdditionCount",
+  "omittedRepositoryAdditionsTruncated", "scopeCheckUnavailableReason", "recommendedAction",
+  "postStatusClean", "postStatusScope", "postStatusPaths", "postStatusPathCount",
+  "postStatusPathsTruncated", "workingCopyClean",
+  "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated",
+  "baseRevision", "baseRevisionRange", "remoteHeadRevision", "revisionRange"
 ] as const;
+
+const FALSE_PROJECTION_SAFETY_FIELDS = new Set([
+  "scopeComplete",
+  "postStatusClean",
+  "workingCopyClean"
+]);
+
+const OUT_OF_DATE_PROJECTION_SAFETY_FIELDS = new Set([
+  "outOfDatePaths",
+  "outOfDatePathCount",
+  "outOfDatePathsTruncated",
+  "baseRevision",
+  "baseRevisionRange",
+  "remoteHeadRevision",
+  "revisionRange"
+]);
 
 function applyFieldProjection(
   tool: string,
@@ -338,7 +397,10 @@ function applyFieldProjection(
     revision: payload.revision,
     revisionRange: payload.revision_range,
     mixedRevision: payload.mixed_revision,
-    remoteHeadRevision: payload.remote_head_revision ?? payload.observed_remote_head,
+    remoteHeadRevision: payload.remote_head_revision !== undefined
+      ? payload.remote_head_revision
+      : payload.observed_remote_head,
+    remoteHeadUnavailableReason: payload.remote_head_unavailable_reason,
     changedPaths,
     conflicts,
     ...(standardShape ? boundedConflicts : {}),
@@ -350,7 +412,11 @@ function applyFieldProjection(
   const projected = projectFields(source, fields);
   for (const field of PROJECTION_SAFETY_FIELDS) {
     const value = source[field];
-    if (value !== undefined && value !== false && value !== ""
+    const outOfDateEvidence = source.code === "OUT_OF_DATE" || source.guardCode === "OUT_OF_DATE";
+    if (OUT_OF_DATE_PROJECTION_SAFETY_FIELDS.has(field) && !outOfDateEvidence) {
+      continue;
+    }
+    if (value !== undefined && (value !== false || FALSE_PROJECTION_SAFETY_FIELDS.has(field)) && value !== ""
         && (!Array.isArray(value) || value.length > 0) && projected[field] === undefined) {
       projected[field] = value;
     }
@@ -362,7 +428,14 @@ function applyFieldProjection(
   return { ok: true, ...projected };
 }
 
-const ROOT_RELATIVE_PATH_ARRAY_KEYS = new Set(["committed_paths", "filtered_paths", "missing_paths"]);
+const ROOT_RELATIVE_PATH_ARRAY_KEYS = new Set([
+  "committed_paths",
+  "filtered_paths",
+  "missing_paths",
+  "omitted_repository_additions",
+  "out_of_date_paths",
+  "post_status_paths"
+]);
 const PATH_STRING_KEYS = new Set(["path", "src", "dest", "source", "target"]);
 
 function relativeizeStructuredPaths(value: unknown, cwd: string, wcRoot: string, parentKey = ""): unknown {
@@ -404,8 +477,12 @@ function workingCopyPathIfInside(value: string, cwd: string, wcRoot: string): st
 function compactError(payload: ToolEnvelope, request: Record<string, unknown> = {}): Record<string, unknown> {
   const conflicts = payload.conflicts.slice(0, 100);
   const riskSignals = stringArray(payload.risk_signals);
-  const guardCode = classifyGuardCode(payload.note);
+  const guardCode = stringValue(payload.guard_code) || classifyGuardCode(payload.note);
   const submittedPathCount = stringArray(request.paths).length;
+  const root = stringValue(payload.wc_root) || payload.cwd;
+  const outOfDatePaths = stringArray(payload.out_of_date_paths)
+    .slice(0, 100)
+    .map((candidate) => workingCopyRootRelativePath(candidate, payload.cwd, root));
   return {
     ok: false,
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
@@ -425,6 +502,15 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
     ...(payload.recovery_tool ? { recoveryTool: payload.recovery_tool } : {}),
     ...(payload.expected_remote_head !== undefined ? { expectedRemoteHead: payload.expected_remote_head } : {}),
     ...(payload.observed_remote_head !== undefined ? { observedRemoteHead: payload.observed_remote_head } : {}),
+    ...(outOfDatePaths.length > 0 ? { outOfDatePaths } : {}),
+    ...(payload.out_of_date_path_count !== undefined ? { outOfDatePathCount: payload.out_of_date_path_count } : {}),
+    ...(payload.out_of_date_paths_truncated === true ? { outOfDatePathsTruncated: true } : {}),
+    ...(payload.base_revision !== undefined ? { baseRevision: payload.base_revision } : {}),
+    ...(payload.base_revision_range !== undefined ? { baseRevisionRange: payload.base_revision_range } : {}),
+    ...(payload.remote_head_revision !== undefined ? { remoteHeadRevision: payload.remote_head_revision } : {}),
+    ...(payload.mixed_revision !== undefined ? { mixedRevision: payload.mixed_revision } : {}),
+    ...(payload.working_copy_mixed !== undefined ? { workingCopyMixed: payload.working_copy_mixed } : {}),
+    ...(payload.revision_range !== undefined ? { revisionRange: payload.revision_range } : {}),
     ...(riskSignals.length > 0 ? { riskSignals } : {})
   };
 }
@@ -438,6 +524,7 @@ function classifyGuardCode(note: string): string | null {
   if (/working-copy root.*requires|refusing to .*working-copy root/i.test(note)) return "ROOT_SCOPE";
   if (/directory .*requires allow/i.test(note)) return "DIRECTORY_SCOPE";
   if (/unresolved conflicts?|non-committable status/i.test(note)) return "CONFLICT";
+  if (/out[- ]of[- ]date/i.test(note)) return "OUT_OF_DATE";
   return null;
 }
 
@@ -491,10 +578,11 @@ function compactInfo(payload: ToolEnvelope, request: Record<string, unknown>): R
     switched: payload.switched,
     partial: payload.partial,
     remoteHeadRevision: payload.remote_head_revision,
+    remoteHeadUnavailableReason: payload.remote_head_unavailable_reason,
     staleBase: payload.stale_base
   };
   const fields = stringArray(request.fields);
-  const selected = fields.length > 0
+  const selected: Record<string, unknown> = fields.length > 0
     ? projectFields(available, fields)
     : {
         revision: payload.revision,
@@ -504,8 +592,16 @@ function compactInfo(payload: ToolEnvelope, request: Record<string, unknown>): R
         ...(payload.switched === true ? { switched: true } : {}),
         ...(payload.partial === true ? { partial: true } : {}),
         remoteHeadRevision: payload.remote_head_revision,
+        ...(payload.remote_head_revision === null && payload.remote_head_unavailable_reason
+          ? { remoteHeadUnavailableReason: payload.remote_head_unavailable_reason }
+          : {}),
         staleBase: payload.stale_base
       };
+  if (fields.includes("remoteHeadRevision")
+    && payload.remote_head_revision === null
+    && payload.remote_head_unavailable_reason) {
+    selected.remoteHeadUnavailableReason = payload.remote_head_unavailable_reason;
+  }
   return { ok: true, ...selected };
 }
 
@@ -1347,6 +1443,12 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     assignDefined(receipt, "remoteHeadRevision", payload.remote_head_revision);
     assignDefined(receipt, "eolVerdict", payload.eol_verdict);
     assignDefined(receipt, "workingCopyMixed", payload.working_copy_mixed);
+    assignDefined(receipt, "postStatusScope", payload.post_status_scope);
+    const postStatusPaths = stringArray(payload.post_status_paths).slice(0, 100);
+    if (payload.post_status_paths !== undefined) receipt.postStatusPaths = postStatusPaths;
+    assignDefined(receipt, "postStatusPathCount", payload.post_status_path_count);
+    if (payload.post_status_paths_truncated === true) receipt.postStatusPathsTruncated = true;
+    assignDefined(receipt, "workingCopyClean", payload.working_copy_clean);
     assignDefined(receipt, "precommitToken", payload.precommit_token);
     if (payload.content_hashes !== undefined) {
       receipt.contentHashes = recordArray(payload.content_hashes).slice(0, 100);
@@ -1418,6 +1520,16 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     receipt.resultingRevision = payload.resulting_revision;
     receipt.revisionRange = payload.revision_range;
     receipt.mixedRevision = payload.mixed_revision === true;
+    assignDefined(receipt, "scopeKind", payload.scope_kind);
+    assignDefined(receipt, "scopeComplete", payload.scope_complete);
+    const omittedRepositoryAdditions = stringArray(payload.omitted_repository_additions).slice(0, 100);
+    if (payload.omitted_repository_additions !== undefined) {
+      receipt.omittedRepositoryAdditions = omittedRepositoryAdditions;
+    }
+    assignDefined(receipt, "omittedRepositoryAdditionCount", payload.omitted_repository_addition_count);
+    if (payload.omitted_repository_additions_truncated === true) receipt.omittedRepositoryAdditionsTruncated = true;
+    assignDefined(receipt, "scopeCheckUnavailableReason", payload.scope_check_unavailable_reason);
+    assignDefined(receipt, "recommendedAction", payload.recommended_action);
     if (payload.expected_remote_head !== undefined) {
       receipt.expectedRemoteHead = payload.expected_remote_head;
       receipt.observedRemoteHead = payload.observed_remote_head;
@@ -1622,6 +1734,18 @@ function workingCopyRelativePath(value: string, cwd: string, wcRoot: string): st
   return relativePath(wcRoot, absolute);
 }
 
+function workingCopyRootRelativePath(value: string, cwd: string, wcRoot: string): string {
+  const pathApi = pathImplementationFor(cwd, wcRoot, value);
+  if (pathApi.isAbsolute(value)) {
+    return workingCopyRelativePath(value, cwd, wcRoot);
+  }
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (normalized === ".." || normalized.startsWith("../")) {
+    return workingCopyRelativePath(value, cwd, wcRoot);
+  }
+  return normalized || ".";
+}
+
 function normalizeStatus(value: string): string {
   return STATUS_NAMES[value] ?? value.trim().toLowerCase();
 }
@@ -1634,10 +1758,51 @@ function countByStatus(items: Array<{ status: string }>): Record<string, number>
   return counts;
 }
 
-function summarizeToolResult(tool: string, payload: Record<string, unknown>): string {
+function summarizeToolResult(
+  tool: string,
+  payload: Record<string, unknown>,
+  request: Record<string, unknown>
+): string {
+  if (tool === "eol_check") {
+    return summarizeEolCheck(payload, request);
+  }
+  if (tool === "eol_fix_verified") {
+    return summarizeEolFix(payload, request);
+  }
   if (payload.ok !== true) {
     const note = typeof payload.note === "string" && payload.note ? payload.note : "command failed";
     return `ERROR ${tool}: ${note}`;
+  }
+
+  if (tool === "svn_update" && (payload.scopeComplete ?? payload.scope_complete) === false) {
+    const scopeKind = stringValue(payload.scopeKind) || stringValue(payload.scope_kind) || "unknown";
+    if (scopeKind === "unknown") {
+      return "UPDATE INCOMPLETE: unknown scope; repository addition diagnosis unavailable; next: inspect target metadata, then update the containing directory";
+    }
+    const omitted = numberValue(
+      payload.omittedRepositoryAdditionCount ?? payload.omitted_repository_addition_count
+    ) || stringArray(
+      payload.omittedRepositoryAdditions ?? payload.omitted_repository_additions
+    ).length;
+    return `UPDATE INCOMPLETE: ${scopeKind} scope can be incomplete; ${omitted} repository addition${omitted === 1 ? "" : "s"} omitted; next: run svn_update on the containing directory`;
+  }
+
+  if (tool === "svn_commit") {
+    const postStatusScope = stringValue(payload.postStatusScope) || stringValue(payload.post_status_scope);
+    if (postStatusScope) {
+      const postStatusClean = payload.postStatusClean ?? payload.post_status_clean;
+      const workingCopyClean = payload.workingCopyClean ?? payload.working_copy_clean;
+      const committedScopeState = postStatusClean === true ? "clean" : postStatusClean === false ? "dirty" : "unknown";
+      const workingCopyState = workingCopyClean === true ? "clean" : workingCopyClean === false ? "dirty" : "unknown";
+      const nextAction = postStatusClean === false
+        ? "inspect committed-path residue"
+        : workingCopyClean === false
+          ? "review remaining working-copy changes"
+          : postStatusClean === true && workingCopyClean === true
+            ? "no action"
+            : "inspect post-commit status";
+      return `COMMIT OK: ${postStatusScope} ${committedScopeState}; working copy ${workingCopyState}; next: ${nextAction}`;
+    }
   }
 
   if (tool === "svn_status" && Array.isArray(payload.items)) {
@@ -1655,6 +1820,85 @@ function summarizeToolResult(tool: string, payload: Record<string, unknown>): st
   }
 
   return `OK ${tool}`;
+}
+
+function summarizeEolCheck(payload: Record<string, unknown>, request: Record<string, unknown>): string {
+  const providedCounts = payload.counts && typeof payload.counts === "object"
+    ? payload.counts as Record<string, unknown>
+    : null;
+  const files = recordArray(payload.files);
+  const passed = providedCounts
+    ? numberValue(providedCounts.passed)
+    : files.filter((file) => file.mismatch !== true && file.sniff === "ok").length;
+  const failed = providedCounts
+    ? numberValue(providedCounts.failed)
+    : files.filter((file) => file.mismatch === true).length;
+  const skipped = providedCounts
+    ? numberValue(providedCounts.skipped)
+    : files.filter((file) => file.sniff !== undefined && file.sniff !== "ok").length;
+  const countedTotal = passed + failed + skipped;
+  const requestedTotal = stringArray(request.paths).length || (request.path ? 1 : 0);
+  const total = numberValue(providedCounts?.total) || countedTotal || requestedTotal;
+  const refused = payload.ok !== true && isGuardRefusal(payload);
+  const outcome = refused ? "REFUSED" : payload.ok !== true ? "ERROR" : failed > 0 ? "FAIL" : skipped > 0 ? "REVIEW" : "PASS";
+  const nextAction = refused
+    ? "resolve the refusal and retry eol_check"
+    : payload.ok !== true
+      ? "fix the reported error and retry eol_check"
+    : failed > 0 && skipped > 0
+      ? "run eol_fix_verified for failed files and inspect skipped files"
+      : failed > 0
+        ? "run eol_fix_verified for failed files"
+        : skipped > 0
+          ? "inspect skipped files"
+          : "no action";
+  return `EOL CHECK ${outcome}: ${total} ${fileWord(total)}; ${passed} passed, ${failed} failed, ${skipped} skipped; next: ${nextAction}`;
+}
+
+function summarizeEolFix(payload: Record<string, unknown>, request: Record<string, unknown>): string {
+  const providedCounts = payload.counts && typeof payload.counts === "object"
+    ? payload.counts as Record<string, unknown>
+    : null;
+  const files = recordArray(payload.files);
+  const verified = providedCounts
+    ? numberValue(providedCounts.verified ?? providedCounts.passed)
+    : files.filter((file) => file.ok === true).length
+      || (payload.verified === true || (payload.after !== undefined && request.dryRun !== true) ? 1 : 0);
+  const refused = payload.ok !== true && isGuardRefusal(payload);
+  const failed = providedCounts
+    ? numberValue(providedCounts.failed)
+    : files.filter((file) => file.ok !== true).length || (payload.ok !== true && !refused ? 1 : 0);
+  const skipped = providedCounts ? numberValue(providedCounts.skipped) : 0;
+  const requestedTotal = stringArray(request.paths).length || (request.path ? 1 : 0);
+  const total = numberValue(providedCounts?.total) || verified + failed + skipped || requestedTotal || 1;
+  const outcome = refused
+    ? "REFUSED"
+    : payload.ok === true && failed === 0 && skipped === 0
+    ? "PASS"
+    : verified > 0
+      ? "PARTIAL"
+      : "FAIL";
+  const nextAction = refused
+    ? "resolve the refusal and retry eol_fix_verified"
+    : failed > 0
+    ? "inspect failures and retry eol_fix_verified"
+    : skipped > 0
+      ? "inspect skipped files"
+      : payload.ok === true
+        ? "rerun eol_check"
+        : "fix the reported error and retry eol_fix_verified";
+  return `EOL FIX ${outcome}: ${total} ${fileWord(total)}; ${verified} verified, ${failed} failed, ${skipped} skipped; next: ${nextAction}`;
+}
+
+function isGuardRefusal(payload: Record<string, unknown>): boolean {
+  const guardCode = stringValue(payload.guardCode)
+    || stringValue(payload.guard_code)
+    || classifyGuardCode(stringValue(payload.note));
+  return Boolean(guardCode);
+}
+
+function fileWord(count: number): string {
+  return count === 1 ? "file" : "files";
 }
 
 function sumCounts(value: unknown): number {

@@ -25,9 +25,13 @@ const statusMap: Record<string, string> = {
   none: ""
 };
 
-export function parseStatusXml(xml: string): { changed_paths: ChangedPath[]; conflicts: Conflict[] } {
+export function parseStatusXml(xml: string): {
+  changed_paths: ChangedPath[];
+  conflicts: Conflict[];
+  out_of_date_paths: string[];
+} {
   if (!xml.trim()) {
-    return { changed_paths: [], conflicts: [] };
+    return { changed_paths: [], conflicts: [], out_of_date_paths: [] };
   }
 
   const parsed = parser.parse(xml) as {
@@ -39,6 +43,7 @@ export function parseStatusXml(xml: string): { changed_paths: ChangedPath[]; con
   const targets = asArray(parsed.status?.target);
   const changed_paths: ChangedPath[] = [];
   const conflicts: Conflict[] = [];
+  const outOfDatePaths = new Set<string>();
 
   for (const target of targets) {
     const targetObj = target as { entry?: unknown };
@@ -49,6 +54,10 @@ export function parseStatusXml(xml: string): { changed_paths: ChangedPath[]; con
           item?: string;
           props?: string;
           "tree-conflicted"?: string | boolean;
+        };
+        "repos-status"?: {
+          item?: string;
+          props?: string;
         };
       };
       const item = entryObj["wc-status"]?.item ?? "";
@@ -77,10 +86,20 @@ export function parseStatusXml(xml: string): { changed_paths: ChangedPath[]; con
       if (entryObj["wc-status"]?.["tree-conflicted"] === "true" || entryObj["wc-status"]?.["tree-conflicted"] === true) {
         conflicts.push({ path, type: "tree" });
       }
+
+      const repositoryItem = entryObj["repos-status"]?.item ?? "none";
+      const repositoryProps = entryObj["repos-status"]?.props ?? "none";
+      if (path && (isRepositoryChange(repositoryItem) || isRepositoryChange(repositoryProps))) {
+        outOfDatePaths.add(path);
+      }
     }
   }
 
-  return { changed_paths, conflicts };
+  return { changed_paths, conflicts, out_of_date_paths: [...outOfDatePaths] };
+}
+
+function isRepositoryChange(value: string): boolean {
+  return value !== "" && value !== "none" && value !== "normal";
 }
 
 function asArray<T>(value: T | T[] | undefined): T[] {

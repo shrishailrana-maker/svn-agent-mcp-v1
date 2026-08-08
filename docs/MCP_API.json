@@ -2,11 +2,12 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.5.0"
+    "version": "1.6.0"
   },
   "globalResponseControls": {
-    "humanText": "boolean; default false",
+    "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
     "responseBudgets": {
+      "textContentChars": 1024,
       "compactLogBytes": 24576,
       "compactDiffBytes": 28672
     },
@@ -34,6 +35,7 @@
         "switched",
         "partial",
         "remoteHeadRevision",
+        "remoteHeadUnavailableReason",
         "staleBase"
       ],
       "svn_snapshot": [
@@ -113,6 +115,12 @@
         "collision",
         "collisionPaths",
         "pathStates",
+        "scopeKind",
+        "scopeComplete",
+        "omittedRepositoryAdditions",
+        "omittedRepositoryAdditionCount",
+        "omittedRepositoryAdditionsTruncated",
+        "scopeCheckUnavailableReason",
         "recommendedAction"
       ],
       "svn_commit": [
@@ -152,7 +160,15 @@
         "detailOperationId",
         "detailExpiresAt",
         "detail",
-        "nextCursor"
+        "nextCursor",
+        "outOfDatePaths",
+        "outOfDatePathCount",
+        "outOfDatePathsTruncated",
+        "postStatusScope",
+        "postStatusPaths",
+        "postStatusPathCount",
+        "postStatusPathsTruncated",
+        "workingCopyClean"
       ]
     },
     "advancedInputs": {
@@ -494,7 +510,7 @@
             }
           },
           "fields": {
-            "maxItems": 11,
+            "maxItems": 12,
             "type": "array",
             "items": {
               "type": "string",
@@ -509,6 +525,7 @@
                 "switched",
                 "partial",
                 "remoteHeadRevision",
+                "remoteHeadUnavailableReason",
                 "staleBase"
               ]
             }
@@ -611,7 +628,7 @@
     },
     {
       "name": "svn_diff",
-      "description": "Return a bounded scoped diff and per-file counts.",
+      "description": "Return a bounded scoped diff and per-file counts. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -911,7 +928,7 @@
     },
     {
       "name": "eol_check",
-      "description": "Check EOL, BOM, and svn:eol-style.",
+      "description": "Check EOL, BOM, and svn:eol-style. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1138,7 +1155,7 @@
     },
     {
       "name": "eol_fix_verified",
-      "description": "Normalize and verify one or a bounded batch of explicit files.",
+      "description": "Normalize and verify one or a bounded batch of explicit files. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1440,7 +1457,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit with explicit paths and message.",
+      "description": "Guarded commit with explicit paths and message. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1474,7 +1491,7 @@
             ]
           },
           "message": {
-            "description": "Required for commit/safe; ignored for prepare/detail.",
+            "description": "Required for commit/safe; ignored for prepare/detail. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
             "type": "string",
             "minLength": 1,
             "maxLength": 16000,
@@ -1497,6 +1514,7 @@
             "maximum": 2000
           },
           "riskAck": {
+            "description": "Set riskAck:true when more than 8 paths are in the commit scope or another G6 signal is present.",
             "type": "boolean"
           },
           "allowRoot": {
@@ -1599,7 +1617,7 @@
     },
     {
       "name": "svn_update",
-      "description": "Guarded update with conflicts postponed.",
+      "description": "Guarded update with conflicts postponed. Exact-file updates report omitted repository additions and recommend updating the containing directory. Unknown target metadata reports incomplete evidence and recommends inspection; confirmed directory scopes report complete-scope evidence.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2047,7 +2065,7 @@
     },
     {
       "name": "svn_import",
-      "description": "Import with an explicit source, URL, and message.",
+      "description": "Import with an explicit source, URL, and message. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2074,7 +2092,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 16000,
-            "pattern": "^[^\\x00]*$"
+            "pattern": "^[^\\x00]*$",
+            "description": "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet."
           },
           "responseMode": {
             "type": "string",

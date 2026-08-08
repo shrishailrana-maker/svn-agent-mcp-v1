@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 import {
-  advancedInputNames, configuredToolProfile, handleTool, serverVersion, toolNamesForProfile
+  advancedInputNames, configuredToolProfile, fieldProjectionNames, handleTool, serverVersion, toolNamesForProfile
 } from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
@@ -23,6 +23,21 @@ describe("server entrypoint launch detection", () => {
 
   it("uses the package version as the MCP server version", () => {
     expect(serverVersion).toBe(packageJson.version);
+  });
+
+  it("publishes projections for revision, update-scope, and cleanliness evidence", () => {
+    expect(fieldProjectionNames.svn_info).toEqual(expect.arrayContaining([
+      "remoteHeadRevision", "remoteHeadUnavailableReason"
+    ]));
+    expect(fieldProjectionNames.svn_update).toEqual(expect.arrayContaining([
+      "scopeKind", "scopeComplete", "omittedRepositoryAdditions", "omittedRepositoryAdditionCount",
+      "omittedRepositoryAdditionsTruncated", "scopeCheckUnavailableReason", "recommendedAction"
+    ]));
+    expect(fieldProjectionNames.svn_commit).toEqual(expect.arrayContaining([
+      "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated", "workingCopyMixed",
+      "baseRevision", "baseRevisionRange", "postStatusClean", "postStatusScope", "postStatusPaths",
+      "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean"
+    ]));
   });
 
   it("publishes compact response modes without repeating global controls in every schema", async () => {

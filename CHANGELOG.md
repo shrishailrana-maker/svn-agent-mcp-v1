@@ -4,6 +4,35 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-08
+
+### Fixed
+
+- Fixed path-scoped `svn_info` remote-head evidence and kept root-scoped behavior unchanged (#48).
+- Fixed standard EOL responses so successful and refused `eol_check` and `eol_fix_verified` calls
+  retain a bounded outcome and next action (#49).
+- Distinguished out-of-date paths from valid mixed-revision working copies in guarded commit
+  diagnostics without weakening the refusal (#50).
+- Fixed scoped update evidence for newly added companion files, pinned revisions, missing versioned
+  files, incomplete exact-file scopes, and unclassifiable target metadata (#51).
+- Clarified that `postStatusClean` covers only the committed path scope, not the full working copy
+  (#52).
+- Documented the empty-reply disclosure and bounded native-SVN fallback for harness failures (#53).
+- Exposed the exact commit-message contract in `svn_commit` and `svn_import` descriptions (#54).
+- Exposed the `svn_commit` path threshold and `riskAck:true` requirement for more than 8 paths (#55).
+- Documented `workingCopyMixed`, nullable `baseRevision`, and `baseRevisionRange` for parallel
+  working-copy updates (#56).
+- Documented the verified `eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)` recovery
+  workflow, including LF and BOM evidence (#57).
+
+### Changed
+
+- Bumped the package and lockfile version to 1.6.0. The full profile remains at 29 canonical tools
+  and all registered tools continue to advertise `destructiveHint:false`.
+- Rebased tool-definition budget guardrails around the published 1.6.0 descriptions while keeping
+  roughly five percent growth headroom.
+- Pinned the patched `js-yaml` 3.x legacy line for the Jest toolchain advisory.
+
 ## [1.5.0] - 2026-08-04
 
 ### Added

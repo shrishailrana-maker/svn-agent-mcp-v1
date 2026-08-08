@@ -67,6 +67,9 @@ describe the intended fix or commit plan for a write-capable client.
 - Preserve existing encoding and EOL. Do not normalize whole files.
 - EOL-only churn is not a code change. Check with MCP `svn_diff`; it ignores EOL style by default.
 - If SVN reports inconsistent line endings, use MCP `eol_fix_verified` on that one file. The MCP chooses `unix2dos` or `dos2unix` from `svn:eol-style`, runs the real binary, then re-checks the ignored-EOL diff.
+- Use the verified recovery sequence `eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`.
+  Record LF, mixed-EOL, and BOM findings before repair. Confirm the repair's normalized-content hash,
+  concurrent-edit result, and final ignored-EOL diff before commit.
 - Do not use PowerShell byte rewrites, scripts, pipes, or redirects on tracked text files.
 
 ## Never commit
@@ -74,6 +77,10 @@ describe the intended fix or commit plan for a write-capable client.
 In managed project working copies, never commit `bin/`, `dist/`, `node_modules/`, `coverage/`, `obj/`, `.vs/`, `.cache/`, `*.tsbuildinfo`, generated output, `*.db`, `scratch/**`, secrets, keys, certificates, tool caches, or unrelated drive-by changes. The root `bin/` folder in this MCP repository is versioned source for the bundled runtime tools.
 
 ## Commit message format
+
+`svn_commit` and `svn_import` require a subject, a blank second line, and at least one `- `
+verification bullet. `svn_commit` requires `riskAck:true` when more than 8 explicit paths are in
+its scope; exactly 8 paths does not trigger that signal.
 
 ```text
 <short summary>
