@@ -2869,6 +2869,39 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("pages cat and blame output before the runner buffer limit", async () => {
+    jest.setTimeout(120000);
+    const fixture = createTempWorkingCopy();
+    try {
+      const largeCatPath = path.join(fixture.wc, "large-cat.txt");
+      const largeBlamePath = path.join(fixture.wc, "large-blame.txt");
+      fs.writeFileSync(largeCatPath, "x".repeat(21 * 1024 * 1024) + "\n", "utf8");
+      fs.writeFileSync(largeBlamePath, "x\n".repeat(220000), "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["large-cat.txt", "large-blame.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["large-cat.txt", "large-blame.txt"],
+        message: commitMessage("Add large paging fixtures")
+      })).ok).toBe(true);
+
+      const cat = await svnCat({ cwd: fixture.wc, path: "large-cat.txt", maxChars: 256 });
+      expect(cat).toMatchObject({
+        ok: true,
+        content: "x".repeat(256),
+        page_offset: 0,
+        has_more: true,
+        next_cursor: "256"
+      });
+
+      const blame = await svnBlame({ cwd: fixture.wc, path: "large-blame.txt", maxLines: 1 });
+      expect(blame).toMatchObject({ ok: true, has_more: true, next_cursor: "1" });
+      expect(blame.lines).toHaveLength(1);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      jest.setTimeout(30000);
+    }
+  });
+
   it("stops a safe commit before mutation when a baseline path changed remotely", async () => {
     const fixture = createTempWorkingCopy();
     const peer = path.join(fixture.root, "safe collision peer");

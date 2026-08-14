@@ -289,6 +289,31 @@ export async function runSvnStreamingLines(
   return runExecutableStreamingLines(svnExecutable(), nonInteractiveSvnArgs(args), { cwd, ...options }, onStdoutLine);
 }
 
+export async function runSvnStreamingChunks(
+  args: string[],
+  cwd: string,
+  onStdoutChunk: (chunk: Buffer) => void,
+  options: {
+    timeout?: number;
+    stderrMaxBuffer?: number;
+    signal?: AbortSignal;
+  } = {}
+): Promise<RunResult> {
+  return runExecutableStreamingLines(
+    svnExecutable(),
+    nonInteractiveSvnArgs(args),
+    {
+      cwd,
+      stdoutLineLimit: 1,
+      stdoutMaxLineBytes: 1,
+      stdoutMaxCaptureBytes: 1,
+      stdoutChunkCallback: onStdoutChunk,
+      ...options
+    },
+    () => undefined
+  );
+}
+
 export async function runExecutableStreamingLines(
   executable: string,
   args: string[],
@@ -299,6 +324,7 @@ export async function runExecutableStreamingLines(
     stdoutMaxCaptureBytes?: number;
     stdoutCallbackLineLimit?: number;
     stdoutCallbackMaxBytes?: number;
+    stdoutChunkCallback?: (chunk: Buffer) => void;
     timeout?: number;
     stderrMaxBuffer?: number;
     signal?: AbortSignal;
@@ -367,6 +393,7 @@ export async function runExecutableStreamingLines(
       if (settled) {
         return;
       }
+      options.stdoutChunkCallback?.(chunk);
       consumeStdout(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {

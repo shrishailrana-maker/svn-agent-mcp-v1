@@ -470,12 +470,16 @@ action counts and bounded top-level directory names without emitting the full pa
 
 **`svn_cat`** — `{ cwd?, path: string, revision?: Revision, maxChars?: number = 16000, cursor? }`
 Returns one character-bounded page of one contained working-copy file at an optional revision.
-`hasMore` and `nextCursor` make truncation explicit; binary content is identified and omitted.
+The child output is streamed, so the page limit applies before the runner buffer limit even
+when the source file is larger than 20 MiB. `hasMore` and `nextCursor` make truncation explicit;
+binary content is identified and omitted.
 
 **`svn_blame`** — `{ cwd?, path: string, revision?: Revision, maxLines?: number = 100, cursor?, showEolChanges?: boolean = false }`
 Runs XML blame with `-x --ignore-eol-style` by default so historical EOL rewrites do not steal line
 attribution. `showEolChanges:true` explicitly includes that churn.
-Runs XML blame for one contained path and returns bounded `{line, revision, author, date}` entries.
+Runs XML blame for one contained path and streams entries while retaining only the requested
+`{line, revision, author, date}` page plus one continuation entry. This keeps bounded pages
+usable when the complete XML document is larger than 20 MiB.
 It omits file text by design; callers use `svn_cat` only for the file page they actually need.
 
 **`eol_check`** — `{ cwd?, paths: string[], includePassing?: boolean = false, countOnly?, maxItems?, cursor? }`

@@ -4,6 +4,13 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Streamed `svn_cat` pages so large text files are bounded before the child-process buffer
+  limit, while preserving character cursors and binary detection.
+- Streamed `svn_blame` XML entries so bounded line pages do not require retaining the full
+  blame document in memory.
+
 ## [1.6.0] - 2026-08-08
 
 ### Fixed

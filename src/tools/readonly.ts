@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { XMLParser } from "fast-xml-parser";
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun, redactText } from "../envelope.js";
 import { makeEolCheck } from "../eol.js";
@@ -25,7 +26,7 @@ import { parseInfoXml } from "../parse/infoXml.js";
 import { parseLogXml } from "../parse/logXml.js";
 import { parseStatusXml } from "../parse/statusXml.js";
 import { svnXmlEntityLimits } from "../parse/xmlOptions.js";
-import { escapeSvnTarget, runSvn, runSvnStreamingLines, runSvnVersion } from "../runner.js";
+import { escapeSvnTarget, runSvn, runSvnStreamingChunks, runSvnStreamingLines, runSvnVersion } from "../runner.js";
 import type { ChangedPath, DiffSummary, EolCheckResult, Envelope, SvnLockInfo, ToolEnvelope, WcInfo } from "../types.js";
 
 export interface ToolInputWithCwd {
@@ -877,21 +878,50 @@ export async function svnCat(input: {
     return failEnvelope("svn cat", context.cwd, "explicit path required");
   }
 
-  const run = await runSvn([
+  const offset = cursorValue(input.cursor);
+  const maxChars = boundedInteger(input.maxChars, 16000, 256, 64000);
+  const pageEnd = Math.min(Number.MAX_SAFE_INTEGER, offset + maxChars);
+  const decoder = new StringDecoder("utf8");
+  let decodedChars = 0;
+  let content = "";
+  let binary = false;
+  let hasMore = false;
+  const consumeText = (text: string): void => {
+    if (binary || text.length === 0) {
+      return;
+    }
+    const textEnd = decodedChars + text.length;
+    if (decodedChars < pageEnd && textEnd > offset) {
+      const start = Math.max(0, offset - decodedChars);
+      const end = Math.min(text.length, pageEnd - decodedChars);
+      content += text.slice(start, end);
+    }
+    if (textEnd > pageEnd) {
+      hasMore = true;
+    }
+    decodedChars = textEnd;
+  };
+  const run = await runSvnStreamingChunks([
     "cat",
     ...(input.revision ? ["-r", input.revision] : []),
     "--",
     escapeSvnTarget(target)
-  ], context.cwd);
+  ], context.cwd, (chunk) => {
+    if (chunk.includes(0)) {
+      binary = true;
+      content = "";
+      return;
+    }
+    consumeText(decoder.write(chunk));
+  });
   if (run.exitCode !== 0) {
     return envelopeFromRun({ run, ok: false, note: noteFromRun(run) });
   }
-
-  const binary = run.stdout.includes("\0");
-  const offset = cursorValue(input.cursor);
-  const maxChars = boundedInteger(input.maxChars, 16000, 256, 64000);
-  const content = binary ? "" : run.stdout.slice(offset, offset + maxChars);
-  const hasMore = !binary && offset + content.length < run.stdout.length;
+  consumeText(decoder.end());
+  if (binary) {
+    content = "";
+    hasMore = false;
+  }
   return {
     ...createEnvelope({
       ok: true,
@@ -939,28 +969,78 @@ export async function svnBlame(input: {
     return failEnvelope("svn blame", context.cwd, "explicit path required");
   }
 
-  const run = await runSvn([
+  const offset = cursorValue(input.cursor);
+  const maxLines = boundedInteger(input.maxLines, 100, 1, 500);
+  const pageEnd = Math.min(Number.MAX_SAFE_INTEGER, offset + maxLines);
+  const decoder = new StringDecoder("utf8");
+  const entryLimitBytes = 1024 * 1024;
+  let xmlBuffer = "";
+  let seenEntries = 0;
+  let hasMore = false;
+  let parseError = false;
+  const lines: ReturnType<typeof parseBlameXml> = [];
+  const consumeEntry = (entryXml: string): void => {
+    if (parseError) {
+      return;
+    }
+    let parsed: ReturnType<typeof parseBlameXml>;
+    try {
+      parsed = parseBlameXml(`<blame><target>${entryXml}</target></blame>`);
+    } catch {
+      parseError = true;
+      return;
+    }
+    const line = parsed[0];
+    if (!line) {
+      parseError = true;
+      return;
+    }
+    if (seenEntries >= offset && seenEntries < pageEnd) {
+      lines.push(line);
+    } else if (seenEntries >= pageEnd) {
+      hasMore = true;
+    }
+    seenEntries += 1;
+  };
+  const consumeXml = (text: string): void => {
+    if (parseError || text.length === 0) {
+      return;
+    }
+    xmlBuffer += text;
+    while (!parseError) {
+      const start = xmlBuffer.search(/<entry(?:\s|>)/);
+      if (start < 0) {
+        xmlBuffer = xmlBuffer.slice(-8);
+        return;
+      }
+      const endMarker = "</entry>";
+      const end = xmlBuffer.indexOf(endMarker, start);
+      if (end < 0) {
+        if (Buffer.byteLength(xmlBuffer, "utf8") > entryLimitBytes) {
+          parseError = true;
+        }
+        return;
+      }
+      const entryEnd = end + endMarker.length;
+      consumeEntry(xmlBuffer.slice(start, entryEnd));
+      xmlBuffer = xmlBuffer.slice(entryEnd);
+    }
+  };
+  const run = await runSvnStreamingChunks([
     "blame",
     "--xml",
     ...(input.revision ? ["-r", input.revision] : []),
     ...(!input.showEolChanges ? ["-x", "--ignore-eol-style"] : []),
     "--",
     escapeSvnTarget(target)
-  ], context.cwd);
+  ], context.cwd, (chunk) => consumeXml(decoder.write(chunk)));
   if (run.exitCode !== 0) {
     return envelopeFromRun({ run, ok: false, note: noteFromRun(run) });
   }
-
-  let allLines;
-  try {
-    allLines = parseBlameXml(run.stdout);
-  } catch {
+  consumeXml(decoder.end());
+  if (parseError) {
     return failEnvelope("svn blame --xml", context.cwd, "invalid SVN blame XML");
   }
-  const offset = cursorValue(input.cursor);
-  const maxLines = boundedInteger(input.maxLines, 100, 1, 500);
-  const lines = allLines.slice(offset, offset + maxLines);
-  const hasMore = offset + lines.length < allLines.length;
   return {
     ...createEnvelope({ ok: true, command: run.command, cwd: context.cwd, truncated: hasMore }),
     path: repoRelativePath(target, context.wcRoot),
