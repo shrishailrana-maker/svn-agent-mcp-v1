@@ -60,12 +60,15 @@ describe("server entrypoint launch detection", () => {
         "svn_inspect_working_copy", "svn_safe_update", "svn_safe_commit",
         "svn_repair_eol", "svn_lock_edit_unlock", "svn_diagnose_commit"
       ]));
+      const inspectPrompt = prompts.prompts.find((prompt) => prompt.name === "svn_inspect_working_copy");
+      expect(inspectPrompt?.arguments?.map((argument) => argument.name)).not.toContain("revision");
       const safeCommitPrompt = await client.getPrompt({
         name: "svn_safe_commit",
-        arguments: { cwd: "C:\\Projects\\sample", paths: "src\\Program.cs" }
+        arguments: { cwd: "C:\\Projects\\sample", paths: "src\\Program.cs", revision: "42" }
       });
       expect(safeCommitPrompt.messages[0]?.content).toMatchObject({ type: "text" });
       expect(JSON.stringify(safeCommitPrompt)).toContain("svn_commit operation:safe");
+      expect(JSON.stringify(safeCommitPrompt)).toContain('"revision":"42"');
       const status = tools.tools.find((tool) => tool.name === "svn_status");
       expect(status?.inputSchema.properties?.responseMode?.enum).toEqual([
         "compact", "standard", "full", "receipt", "structured-only"

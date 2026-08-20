@@ -764,6 +764,10 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
 
   const promptPaths = z.string().max(4096).regex(noNul, "must not contain NUL").optional()
     .describe("Optional comma-separated paths; prompt arguments are protocol strings.");
+  const inspectPromptArgs = {
+    cwd,
+    paths: promptPaths
+  };
   const workflowPromptArgs = {
     cwd,
     paths: promptPaths,
@@ -774,10 +778,10 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
     {
       title: "Inspect SVN working copy",
       description: "Use one bounded snapshot to inspect revision, remote HEAD, changes, conflicts, and optional locks.",
-      argsSchema: workflowPromptArgs
+      argsSchema: inspectPromptArgs
     },
-    ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
-      `Inspect the SVN working copy with svn_snapshot in compact mode. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} Include lock state only when needed by setting includeLockState:true. Use the returned next action and cursors; do not call separate status or info tools unless the snapshot reports incomplete data.`
+    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
+      `Inspect the SVN working copy with svn_snapshot in compact mode. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Include lock state only when needed by setting includeLockState:true. Use the returned next action and cursors; do not call separate status or info tools unless the snapshot reports incomplete data.`
     )
   );
   server.registerPrompt(
@@ -798,8 +802,8 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       description: "Use the guarded safe commit workflow with one compact receipt.",
       argsSchema: workflowPromptArgs
     },
-    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
-      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} First use a valid subject, blank second line, and - verification bullets in the message. Supply explicit paths, revision, expectedRemoteHead, and operationId. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
+    ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
+      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} First use a valid subject, blank second line, and - verification bullets in the message. Supply explicit paths, revision, expectedRemoteHead, and operationId. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
     )
   );
   server.registerPrompt(

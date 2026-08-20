@@ -72,13 +72,15 @@ export async function svnSnapshot(input: {
   }
   const requested = new Set(input.fields ?? []);
   const projected = requested.size > 0;
-  const statusFields = ["changedPaths", "counts", "items", "conflicts"];
+  const statusFields = ["changedPaths", "counts", "items", "conflicts", "changedCount", "conflictCount"];
   const infoFields = [
     "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
-    "remoteHeadRevision", "staleBase"
+    "remoteHeadRevision", "staleBase", "workingCopyRoot", "repositoryUrl", "repositoryRoot"
   ];
+  const lockFields = ["lockState", "lockCount", "lockStates", "lockStateTruncated", "lockStateUnavailableReason"];
   const needStatus = input.captureBaseline === true || !projected || statusFields.some((field) => requested.has(field));
   const needInfo = input.captureBaseline === true || !projected || infoFields.some((field) => requested.has(field));
+  const needLock = input.includeLockState === true || lockFields.some((field) => requested.has(field));
   const [status, info] = await Promise.all([
     needStatus ? svnStatus(input) : Promise.resolve(null),
     needInfo ? svnInfo({
@@ -89,7 +91,7 @@ export async function svnSnapshot(input: {
   const ok = (status?.ok ?? true) && (info?.ok ?? true);
   const cwd = status?.cwd ?? info?.cwd ?? resolveCwd(input.cwd);
   let lockSummary: Record<string, unknown> | null = null;
-  if (input.includeLockState === true && ok) {
+  if (needLock && ok) {
     const lockPaths = input.paths && input.paths.length > 0 ? input.paths : [cwd];
     const lock = await svnLockStatus({
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),

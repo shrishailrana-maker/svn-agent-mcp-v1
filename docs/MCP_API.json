@@ -2151,10 +2151,6 @@
           "name": "paths",
           "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
           "required": false
-        },
-        {
-          "name": "revision",
-          "required": false
         }
       ]
     },

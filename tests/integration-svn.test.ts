@@ -44,6 +44,26 @@ describe("SVN tool integration against a temp repository", () => {
 
       const statusOnly = await svnSnapshot({ cwd: fixture.wc, fields: ["counts"] });
       expect(statusOnly).toMatchObject({ ok: true, components: { status: true, info: false } });
+
+      const identityAndCounts = await svnSnapshot({
+        cwd: fixture.wc,
+        fields: ["workingCopyRoot", "repositoryUrl", "repositoryRoot", "changedCount", "conflictCount"]
+      });
+      expect(identityAndCounts).toMatchObject({
+        ok: true,
+        components: { status: true, info: true },
+        wc_root: fixture.wc,
+        repository_url: expect.stringContaining("file:"),
+        repository_root: expect.stringContaining("file:"),
+        changed_path_count: 0,
+        conflict_count: 0
+      });
+
+      const lockProjection = await svnSnapshot({ cwd: fixture.wc, fields: ["lockState"] });
+      expect(lockProjection).toMatchObject({
+        ok: true,
+        lock_summary: expect.objectContaining({ state: "unlocked", count: 1 })
+      });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
