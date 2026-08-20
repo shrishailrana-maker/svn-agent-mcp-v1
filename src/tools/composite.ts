@@ -52,6 +52,7 @@ import {
   parseSvnVersion,
   remoteHeadForTargets,
   scopedStatusMap,
+  svnLockStatus,
   svnDiff,
   svnInfo,
   svnStatus
@@ -64,6 +65,7 @@ export async function svnSnapshot(input: {
   hideNoise?: boolean;
   fields?: string[];
   captureBaseline?: boolean;
+  includeLockState?: boolean;
 }): Promise<ToolEnvelope> {
   if (input.captureBaseline && (!input.paths || input.paths.length === 0)) {
     return failEnvelope("svn snapshot", resolveCwd(input.cwd), "captureBaseline requires explicit paths");
@@ -86,6 +88,31 @@ export async function svnSnapshot(input: {
   ]);
   const ok = (status?.ok ?? true) && (info?.ok ?? true);
   const cwd = status?.cwd ?? info?.cwd ?? resolveCwd(input.cwd);
+  let lockSummary: Record<string, unknown> | null = null;
+  if (input.includeLockState === true && ok) {
+    const lockPaths = input.paths && input.paths.length > 0 ? input.paths : [cwd];
+    const lock = await svnLockStatus({
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      paths: lockPaths
+    });
+    if (lock.ok) {
+      const rows = Array.isArray(lock.locks) ? lock.locks as Array<Record<string, unknown>> : [];
+      const stateCounts = new Map<string, number>();
+      for (const row of rows) {
+        const state = typeof row.state === "string" ? row.state : "unlocked";
+        stateCounts.set(state, (stateCounts.get(state) ?? 0) + 1);
+      }
+      const states = [...stateCounts.keys()].sort();
+      lockSummary = {
+        state: states.length === 0 ? "unlocked" : states.length === 1 ? states[0] : "mixed",
+        count: typeof lock.lock_count === "number" ? lock.lock_count : rows.length,
+        states: Object.fromEntries(states.map((state) => [state, stateCounts.get(state)])),
+        ...(lock.truncated === true ? { truncated: true } : {})
+      };
+    } else {
+      lockSummary = { state: "unknown", count: 0, unavailable_reason: lock.note };
+    }
+  }
   const result: ToolEnvelope = {
     ...createEnvelope({
       ok,
@@ -98,6 +125,8 @@ export async function svnSnapshot(input: {
       truncated: Boolean(status?.truncated || info?.truncated)
     }),
     wc_root: info?.wc_root ?? status?.wc_root,
+    repository_url: info?.url ?? null,
+    repository_root: info?.repo_root ?? null,
     mixed_revision: info?.mixed_revision,
     revision_range: info?.revision_range,
     local_modifications: info?.local_modifications,
@@ -105,6 +134,9 @@ export async function svnSnapshot(input: {
     partial: info?.partial,
     remote_head_revision: info?.remote_head_revision,
     stale_base: info?.stale_base,
+    changed_path_count: status?.changed_paths.length ?? 0,
+    conflict_count: status?.conflicts.length ?? 0,
+    ...(lockSummary ? { lock_summary: lockSummary } : {}),
     components: { status: needStatus, info: needInfo }
   };
   if (!input.captureBaseline || !ok || !status || !info || !input.paths) return result;

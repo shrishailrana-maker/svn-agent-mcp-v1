@@ -59,7 +59,9 @@ export const fieldProjectionNames = {
   ],
   svn_snapshot: [
     "revision", "revisionRange", "mixedRevision", "localModifications", "switched", "partial",
-    "remoteHeadRevision", "staleBase", "changedPaths", "counts", "items", "conflicts"
+    "remoteHeadRevision", "staleBase", "workingCopyRoot", "repositoryUrl", "repositoryRoot",
+    "changedCount", "conflictCount", "lockState", "lockCount", "lockStates", "lockStateTruncated", "lockStateUnavailableReason",
+    "changedPaths", "counts", "items", "conflicts"
   ],
   svn_log: ["revision", "revisionRange", "entryCount", "entries", "targetMode", "scannedCount", "matchedCount"],
   svn_diff: [
@@ -301,6 +303,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
+        includeLockState: z.boolean().optional().describe("Include a bounded lock-state summary; default false avoids an extra repository probe."),
         maxItems,
         cursor,
         ...response
@@ -759,8 +762,98 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
     async (args, extra) => handleTool("svn_import", args, extra.signal, () => svnImport(compactArgs(args)))
   );
 
+  const promptPaths = z.string().max(4096).regex(noNul, "must not contain NUL").optional()
+    .describe("Optional comma-separated paths; prompt arguments are protocol strings.");
+  const workflowPromptArgs = {
+    cwd,
+    paths: promptPaths,
+    revision
+  };
+  server.registerPrompt(
+    "svn_inspect_working_copy",
+    {
+      title: "Inspect SVN working copy",
+      description: "Use one bounded snapshot to inspect revision, remote HEAD, changes, conflicts, and optional locks.",
+      argsSchema: workflowPromptArgs
+    },
+    ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
+      `Inspect the SVN working copy with svn_snapshot in compact mode. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} Include lock state only when needed by setting includeLockState:true. Use the returned next action and cursors; do not call separate status or info tools unless the snapshot reports incomplete data.`
+    )
+  );
+  server.registerPrompt(
+    "svn_safe_update",
+    {
+      title: "Safely update SVN paths",
+      description: "Prepare a bounded, conflict-postponed update with explicit scope and revision evidence.",
+      argsSchema: workflowPromptArgs
+    },
+    ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
+      `Update the requested SVN scope with svn_update. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} Use explicit paths or updateAll:true, preserve local edits, postpone conflicts, and inspect scopeComplete, omittedRepositoryAdditions, and recommendedAction before continuing.`
+    )
+  );
+  server.registerPrompt(
+    "svn_safe_commit",
+    {
+      title: "Safely commit SVN changes",
+      description: "Use the guarded safe commit workflow with one compact receipt.",
+      argsSchema: workflowPromptArgs
+    },
+    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
+      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} First use a valid subject, blank second line, and - verification bullets in the message. Supply explicit paths, revision, expectedRemoteHead, and operationId. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
+    )
+  );
+  server.registerPrompt(
+    "svn_repair_eol",
+    {
+      title: "Repair SVN EOL safely",
+      description: "Run the verified EOL workflow without changing file content.",
+      argsSchema: { cwd, paths: promptPaths }
+    },
+    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
+      `Repair EOL issues only for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Run eol_check, then eol_fix_verified for failing files, then svn_diff with ignoreEol:true. Confirm LF/BOM evidence, byte/content preservation, and no concurrent-edit refusal before commit.`
+    )
+  );
+  server.registerPrompt(
+    "svn_lock_edit_unlock",
+    {
+      title: "Lock, edit, and unlock SVN files",
+      description: "Use workstation-labelled repository locks for a multi-PC edit session.",
+      argsSchema: { cwd, paths: promptPaths }
+    },
+    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
+      `Use the SVN lock workflow for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Call svn_lock with a short comment, perform the edit, call svn_lock_status when needed, and call svn_unlock when finished. Let the server derive the workstation label unless an override is required. Never force-steal a lock without forceAck:true and a UUID operationId.`
+    )
+  );
+  server.registerPrompt(
+    "svn_diagnose_commit",
+    {
+      title: "Diagnose a failed SVN commit",
+      description: "Inspect the exact scope, revision, EOL, and out-of-date evidence before retrying.",
+      argsSchema: { cwd, paths: promptPaths }
+    },
+    ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
+      `Diagnose the failed SVN commit for the requested scope. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Use svn_snapshot, svn_diff, svn_precommit, and svn_diagnose as needed. Check outOfDatePaths, workingCopyMixed, conflicts, EOL verdicts, and post-status scope. Retry only after the returned remediation is satisfied.`
+    )
+  );
+
   installProfileCallHandler(server, profile, enabledNames, profileRegistrations);
   return server;
+}
+
+function promptResult(text: string) {
+  return {
+    messages: [{
+      role: "user" as const,
+      content: { type: "text" as const, text }
+    }]
+  };
+}
+
+function promptArguments(input: { cwd?: string | undefined; paths?: string | string[] | undefined; revision?: string | undefined }): string {
+  const values = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+  return Object.keys(values).length > 0
+    ? `Use these inputs: ${JSON.stringify(values)}.`
+    : "Use the current working copy and ask for an explicit path scope when the operation requires one.";
 }
 
 function withToolAnnotations(name: string, config: unknown): unknown {

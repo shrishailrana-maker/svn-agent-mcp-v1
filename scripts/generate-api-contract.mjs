@@ -17,6 +17,7 @@ try {
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   const listed = await client.listTools();
+  const prompts = await client.listPrompts();
   const content = `${JSON.stringify({
     schemaVersion: 1,
     server: { name: serverName, version: serverVersion },
@@ -53,7 +54,8 @@ try {
         }
       }
     },
-    tools: listed.tools
+    tools: listed.tools,
+    prompts: prompts.prompts
   }, null, 2)}\n`;
 
   if (process.argv.includes("--check")) {

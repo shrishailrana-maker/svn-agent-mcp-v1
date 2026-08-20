@@ -13,6 +13,7 @@ import { createServer, readOnlyToolNames } from "../src/index.js";
 import { parseInfoXml } from "../src/parse/infoXml.js";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { svnLock, svnNeedsLock, svnUnlock } from "../src/tools/mutating.js";
+import { svnSnapshot } from "../src/tools/composite.js";
 import { svnLockStatus } from "../src/tools/readonly.js";
 import { toToolResult } from "../src/response.js";
 
@@ -76,23 +77,42 @@ describe("repository lock support", () => {
 
       expect((await svnNeedsLock({ cwd: wc, paths: ["locked.txt"], action: "set" })).ok).toBe(true);
       const lockId = randomUUID();
-      const locked = await svnLock({
-        cwd: wc,
-        paths: ["locked.txt"],
-        comment: "edit fixture",
-        workstationLabel: "build-01",
-        operationId: lockId
+      const priorWorkstationLabel = process.env.SVN_MCP_WORKSTATION_LABEL;
+      delete process.env.SVN_MCP_WORKSTATION_LABEL;
+      let locked: Awaited<ReturnType<typeof svnLock>>;
+      try {
+        locked = await svnLock({
+          cwd: wc,
+          paths: ["locked.txt"],
+          comment: "edit fixture",
+          operationId: lockId
+        });
+      } finally {
+        if (priorWorkstationLabel === undefined) delete process.env.SVN_MCP_WORKSTATION_LABEL;
+        else process.env.SVN_MCP_WORKSTATION_LABEL = priorWorkstationLabel;
+      }
+      expect(locked).toMatchObject({
+        ok: true,
+        operation_id: lockId,
+        workstation_label: expect.stringMatching(/^[A-Za-z0-9._-]{1,64}$/)
       });
-      expect(locked).toMatchObject({ ok: true, operation_id: lockId });
 
       const status = await svnLockStatus({ cwd: wc, paths: ["locked.txt"] });
       expect(status).toMatchObject({ ok: true, note: "", locks: [expect.objectContaining({
         repository_locked: true,
         local_token_possession: true,
-        workstation_label: "build-01",
+        workstation_label: locked.workstation_label,
         state: "held-local"
       })] });
       expect(JSON.stringify(status)).not.toContain("opaque-token");
+
+      const snapshot = await svnSnapshot({ cwd: wc, paths: ["locked.txt"], includeLockState: true });
+      expect(snapshot).toMatchObject({
+        ok: true,
+        repository_url: expect.stringContaining("file:"),
+        repository_root: expect.stringContaining("file:"),
+        lock_summary: expect.objectContaining({ state: "held-local", count: 1 })
+      });
 
       const unlocked = await svnUnlock({ cwd: wc, paths: ["locked.txt"], operationId: randomUUID() });
       expect(unlocked.ok).toBe(true);

@@ -78,6 +78,7 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
+    const prompts = await client.listPrompts();
     if (tools.tools.length !== 29) {
       throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 29 canonical tools`);
     }
@@ -94,6 +95,11 @@ try {
     for (const name of ["svn_move", "svn_rename", "svn_copy", "svn_resolved"]) {
       if (tools.tools.some((tool) => tool.name === name)) {
         throw new Error(`installed MCP advertised legacy compatibility tool ${name}`);
+      }
+    }
+    for (const name of ["svn_inspect_working_copy", "svn_safe_update", "svn_safe_commit", "svn_repair_eol", "svn_lock_edit_unlock", "svn_diagnose_commit"]) {
+      if (!prompts.prompts.some((prompt) => prompt.name === name)) {
+        throw new Error(`installed MCP omitted workflow prompt ${name}`);
       }
     }
     const response = await client.callTool({

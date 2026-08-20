@@ -2146,10 +2146,16 @@ describe("public MCP response shaping", () => {
         revision: 42,
         changed_paths: [{ status: "M", path: "E:\\dev\\example\\src\\a.ts" }]
       }),
+      wc_root: "E:\\dev\\example",
+      repository_url: "file:///repo/trunk",
+      repository_root: "file:///repo",
       mixed_revision: false,
       local_modifications: true,
       remote_head_revision: 43,
-      stale_base: true
+      stale_base: true,
+      changed_path_count: 1,
+      conflict_count: 0,
+      lock_summary: { state: "unlocked", count: 1, states: { unlocked: 1 } }
     }, { responseMode: "compact", request: {} }).structuredContent;
     expect(snapshot).toEqual({
       ok: true,
@@ -2158,6 +2164,14 @@ describe("public MCP response shaping", () => {
       localModifications: true,
       remoteHeadRevision: 43,
       staleBase: true,
+      workingCopyRoot: ".",
+      repositoryUrl: "file:///repo/trunk",
+      repositoryRoot: "file:///repo",
+      changedCount: 1,
+      conflictCount: 0,
+      lockState: "unlocked",
+      lockCount: 1,
+      lockStates: { unlocked: 1 },
       counts: { modified: 1 },
       items: [{ path: "src/a.ts", status: "modified" }],
       snapshotToken: expect.any(String)

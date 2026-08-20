@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.6.0`; each source clone can prepare a local runtime under `releases/v1.6.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.7.0`; each source clone can prepare a local runtime under `releases/v1.7.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -269,7 +269,7 @@ not authoritative for an unknown scope.
 scope. Read `postStatusScope:"committed-paths"` and `postStatusPaths` to identify that scope. The
 separate `workingCopyClean` field reports the whole-working-copy check. Do not infer whole-working-copy
 cleanliness from `postStatusClean`; these explicit fields remove the ambiguity without deprecating it
-in 1.6.0.
+in 1.7.0.
 
 `svn_commit operation:"prepare"` performs a pinned update of explicit intended paths with conflicts
 postponed, checks an optional expected remote HEAD, refuses any path touched outside that scope, and
@@ -307,9 +307,10 @@ those records exhaust capacity.
 ## Repository locks
 
 Use `svn_lock` and `svn_unlock` for repository locks shared by working copies on different
-machines. `svn_lock` requires a non-empty comment and a workstation label from
-`workstationLabel` or `SVN_MCP_WORKSTATION_LABEL` (`[A-Za-z0-9._-]`, one to 64 characters). The
-server stores the bounded comment as `[svn-agent-mcp workstation=<label>] <comment>`.
+machines. `svn_lock` requires a non-empty comment. When no label is supplied, the server derives
+one from `SVN_MCP_WORKSTATION_LABEL` or the local machine hostname, normalized to
+`[A-Za-z0-9._-]` and limited to 64 characters. The server stores the bounded comment as
+`[svn-agent-mcp workstation=<label>] <comment>`.
 `svn_lock_status` compares local and repository `svn info --xml` state and returns only a boolean
 for local token possession. It never returns a lock token. Normal unlock refuses a mismatched
 working-copy token; stealing a lock requires `force:true`, `forceAck:true`, and a UUID
@@ -319,6 +320,15 @@ removal requires `riskAck:true`.
 Lock status reports `held-elsewhere`, `orphaned-token`, and `stale-candidate` diagnostics. A stale
 candidate is a lock older than seven days. All lock and property mutations keep the normal
 working-copy containment, never-commit, durable-receipt, and `--readonly` guards.
+
+`svn_snapshot` remains the no-friction daily entry point. Its compact response includes the
+working-copy root, repository URL/root, changed and conflict counts, and remote HEAD. Pass
+`includeLockState:true` when the agent needs a bounded lock summary; the extra repository probe
+is opt-in.
+
+The server also publishes MCP workflow prompts for inspection, safe update, safe commit, EOL
+repair, lock/edit/unlock, and failed-commit diagnosis. They reduce repeated agent instructions
+without adding another tool call.
 
 ### Host approval settings
 

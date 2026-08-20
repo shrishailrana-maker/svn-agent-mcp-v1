@@ -619,6 +619,30 @@ function compactSnapshot(payload: ToolEnvelope, request: Record<string, unknown>
     ok: true,
     ...infoFields,
     ...statusFields,
+    ...(typeof payload.wc_root === "string" ? { workingCopyRoot: receiptValue(payload.wc_root) } : {}),
+    ...(typeof payload.repository_url === "string" ? { repositoryUrl: receiptValue(payload.repository_url) } : {}),
+    ...(typeof payload.repository_root === "string" ? { repositoryRoot: receiptValue(payload.repository_root) } : {}),
+    changedCount: typeof payload.changed_path_count === "number"
+      ? payload.changed_path_count
+      : payload.changed_paths.length,
+    conflictCount: typeof payload.conflict_count === "number"
+      ? payload.conflict_count
+      : payload.conflicts.length,
+    ...(payload.lock_summary && typeof payload.lock_summary === "object"
+      ? {
+          lockState: receiptValue((payload.lock_summary as Record<string, unknown>).state),
+          lockCount: numberValue((payload.lock_summary as Record<string, unknown>).count),
+          ...(typeof (payload.lock_summary as Record<string, unknown>).states === "object"
+            ? { lockStates: (payload.lock_summary as Record<string, unknown>).states }
+            : {}),
+          ...((payload.lock_summary as Record<string, unknown>).truncated === true
+            ? { lockStateTruncated: true }
+            : {}),
+          ...((payload.lock_summary as Record<string, unknown>).unavailable_reason
+            ? { lockStateUnavailableReason: redactText(String((payload.lock_summary as Record<string, unknown>).unavailable_reason)).slice(0, 256) }
+            : {})
+        }
+      : {}),
     ...(payload.baseline_token ? { baselineToken: payload.baseline_token } : {}),
     ...(payload.baseline_expires_at ? { baselineExpiresAt: payload.baseline_expires_at } : {}),
     ...(payload.baseline_path_count !== undefined ? { baselinePathCount: payload.baseline_path_count } : {}),

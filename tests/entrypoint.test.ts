@@ -29,6 +29,10 @@ describe("server entrypoint launch detection", () => {
     expect(fieldProjectionNames.svn_info).toEqual(expect.arrayContaining([
       "remoteHeadRevision", "remoteHeadUnavailableReason"
     ]));
+    expect(fieldProjectionNames.svn_snapshot).toEqual(expect.arrayContaining([
+      "workingCopyRoot", "repositoryUrl", "repositoryRoot", "changedCount", "conflictCount",
+      "lockState", "lockCount", "lockStates", "lockStateTruncated", "lockStateUnavailableReason"
+    ]));
     expect(fieldProjectionNames.svn_update).toEqual(expect.arrayContaining([
       "scopeKind", "scopeComplete", "omittedRepositoryAdditions", "omittedRepositoryAdditionCount",
       "omittedRepositoryAdditionsTruncated", "scopeCheckUnavailableReason", "recommendedAction"
@@ -51,6 +55,17 @@ describe("server entrypoint launch detection", () => {
     try {
       await client.connect(transport);
       const tools = await client.listTools();
+      const prompts = await client.listPrompts();
+      expect(prompts.prompts.map((prompt) => prompt.name)).toEqual(expect.arrayContaining([
+        "svn_inspect_working_copy", "svn_safe_update", "svn_safe_commit",
+        "svn_repair_eol", "svn_lock_edit_unlock", "svn_diagnose_commit"
+      ]));
+      const safeCommitPrompt = await client.getPrompt({
+        name: "svn_safe_commit",
+        arguments: { cwd: "C:\\Projects\\sample", paths: "src\\Program.cs" }
+      });
+      expect(safeCommitPrompt.messages[0]?.content).toMatchObject({ type: "text" });
+      expect(JSON.stringify(safeCommitPrompt)).toContain("svn_commit operation:safe");
       const status = tools.tools.find((tool) => tool.name === "svn_status");
       expect(status?.inputSchema.properties?.responseMode?.enum).toEqual([
         "compact", "standard", "full", "receipt", "structured-only"

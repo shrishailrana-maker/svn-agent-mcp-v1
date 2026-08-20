@@ -32,6 +32,7 @@ try {
   try {
     await client.connect(transport);
     const tools = await client.listTools();
+    const prompts = await client.listPrompts();
     assert(tools.tools.length === 29, `expected 29 canonical tools, received ${tools.tools.length}`);
     for (const tool of tools.tools) {
       assert(tool.annotations?.destructiveHint === false, `tool ${tool.name} omitted destructiveHint:false`);
@@ -42,7 +43,10 @@ try {
     for (const name of ["svn_move", "svn_rename", "svn_copy", "svn_resolved"]) {
       assert(!tools.tools.some((tool) => tool.name === name), `legacy tool should not be advertised: ${name}`);
     }
-    passed.push("handshake");
+    for (const name of ["svn_inspect_working_copy", "svn_safe_update", "svn_safe_commit", "svn_repair_eol", "svn_lock_edit_unlock", "svn_diagnose_commit"]) {
+      assert(prompts.prompts.some((prompt) => prompt.name === name), `missing workflow prompt: ${name}`);
+    }
+    passed.push("handshake", "workflow-prompts");
 
     const statusTool = tools.tools.find((tool) => tool.name === "svn_status");
     assert(statusTool?.inputSchema?.properties?.paths?.maxItems === 500, "status paths are not publicly bounded");

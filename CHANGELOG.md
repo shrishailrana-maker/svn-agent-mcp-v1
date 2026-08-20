@@ -4,6 +4,17 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-20
+
+### Added
+
+- Added zero-configuration workstation labels for `svn_lock`; explicit labels and the optional
+  environment override remain supported.
+- Added richer compact `svn_snapshot` context: working-copy root, repository URL/root, change and
+  conflict counts, and an opt-in bounded lock-state summary.
+- Added six MCP workflow prompts for inspection, safe update, safe commit, EOL repair, lock/edit/
+  unlock, and failed-commit diagnosis.
+
 ### Fixed
 
 - Streamed `svn_cat` pages so large text files are bounded before the child-process buffer

@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.36 — public implementation contract. Single source of truth.**
+**Spec version 1.37 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -197,7 +197,7 @@ only as development/test escape hatches:
 | `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 29 canonical tools), `docs` (8), or `review` (11) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 | `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
-| `SVN_MCP_WORKSTATION_LABEL` | No | Default lock workstation label; one to 64 `[A-Za-z0-9._-]` characters |
+| `SVN_MCP_WORKSTATION_LABEL` | No | Optional lock workstation label; when absent, the normalized machine hostname is used |
 
 ### 6.3 Path & cwd rules
 
@@ -542,13 +542,21 @@ rows and expose `next_cursor` when more paths remain. This tool is available in 
 
 ### 8.3 Composite tools (the P1 killers)
 
-**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, maxItems?, cursor?, afterCursor?, captureBaseline?: boolean = false }`
+**`svn_snapshot`** — `{ cwd?, paths?: string[], includeIgnored?, hideNoise?, statuses?, includeUnversioned?, countOnly?, includeLockState?: boolean = false, maxItems?, cursor?, afterCursor?, captureBaseline?: boolean = false }`
 Combines working-copy revision metadata with bounded status counts, conflicts, and relative changed
 items in one response. It performs no mutation and is available under READONLY. Snapshot tokens use
 the same `afterCursor`/`NO_CHANGE` contract as status and additionally bind revision/head/range state.
+Compact responses also include the resolved working-copy root, repository URL/root, changed-path and
+conflict counts, and remote HEAD. `includeLockState:true` adds one bounded repository lock probe and
+returns only lock state/count summaries; it is false by default to keep the common path fast.
 `captureBaseline:true` requires one to 500 explicit files and returns `baseline_token`, expiry, and
 path count. The opaque token binds exact status, base revision, file kind, SHA256 content identity,
 repository policy, remote revision, working copy, and scope. Directories are refused.
+
+The server publishes these token-saving workflow prompts: `svn_inspect_working_copy`,
+`svn_safe_update`, `svn_safe_commit`, `svn_repair_eol`, `svn_lock_edit_unlock`, and
+`svn_diagnose_commit`. Prompts provide a short call recipe; they do not execute SVN and do not add
+another mutation surface.
 
 **`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID }` *(read-only; allowed under READONLY)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
@@ -691,9 +699,10 @@ are preserved and reported as rollback-skipped. Binary files and `eolExclude` gl
 `**/*.patch` and `**/*.diff`) are skipped and reported.
 
 **`svn_lock`** — `{ cwd?, paths: string[], comment: string, workstationLabel?: string, force?: boolean, forceAck?: boolean, operationId?: UUID }`
-Guarded repository lock. The comment must be non-empty and the workstation label must come from
-the input or `SVN_MCP_WORKSTATION_LABEL`, using one to 64 `[A-Za-z0-9._-]` characters. The
-repository comment is bounded and stored as `[svn-agent-mcp workstation=<label>] <comment>`.
+Guarded repository lock. The comment must be non-empty. The workstation label comes from the
+input, `SVN_MCP_WORKSTATION_LABEL`, or the normalized local machine hostname, using one to 64
+`[A-Za-z0-9._-]` characters. The repository comment is bounded and stored as
+`[svn-agent-mcp workstation=<label>] <comment>`.
 Normal calls run `svn lock -F <secure-temp-file> -- <paths…>`; the temporary file is always
 deleted. `force:true` adds `--force` only when `forceAck:true` and a valid UUID `operationId` are
 present. The operation receipt fingerprint binds normalized paths, comment, label, and force state.
@@ -733,7 +742,7 @@ warning in `note`, commit proceeds (D3).
 `postStatusClean` is the compatibility field for the committed path scope only. The receipt also
 publishes `postStatusScope:"committed-paths"`, bounded `postStatusPaths`, and separate
 `workingCopyClean` evidence from a whole-working-copy status check. These fields remove ambiguity;
-`postStatusClean` is not deprecated in 1.6.0.
+`postStatusClean` is not deprecated in 1.7.0.
 Whitespace-only messages are refused. Naming the working-copy root is refused unless
 `allowRoot:true`. Existing directory targets are refused unless `allowDirectoryTargets:true`
 explicitly acknowledges that `--depth empty` commits only the directory node and excludes changed
@@ -998,6 +1007,14 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Defines `workingCopyMixed:true`, nullable `baseRevision`, and `baseRevisionRange` as expected
   parallel-agent evidence, not a failure by itself (#56).
 - Preserves and documents the verified LF/BOM EOL recovery workflow and ignored-EOL proof (#57).
+
+### Spec 1.37 / v1.7.0 — 2026-08-20
+
+- Uses a normalized machine hostname as the zero-configuration default workstation label for
+  repository locks, while preserving explicit and environment overrides.
+- Adds working-copy and repository identity, change/conflict counts, and opt-in lock summaries to
+  compact `svn_snapshot` responses.
+- Publishes six MCP workflow prompts for common agent actions without adding mutation tools.
 
 ### Spec 1.35 / v1.5.0 — 2026-08-04
 

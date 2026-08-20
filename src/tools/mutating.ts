@@ -70,6 +70,15 @@ const UPDATE_SCOPE_PARENT_LIMIT = 10;
 const UPDATE_SCOPE_ENTRY_LIMIT = 5000;
 const UPDATE_OMITTED_ADDITION_LIMIT = 100;
 
+export function defaultWorkstationLabel(): string {
+  const configured = process.env.SVN_MCP_WORKSTATION_LABEL?.trim();
+  if (configured) {
+    return configured;
+  }
+  const hostname = os.hostname().trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+  return hostname || "WORKSTATION";
+}
+
 type SvnLockCoreInput = {
   cwd?: string;
   paths: string[];
@@ -198,12 +207,12 @@ export async function svnLock(input: {
   if (comment.length > LOCK_COMMENT_MAX_CHARS) {
     return failEnvelope("svn lock", cwd, `lock comment exceeds ${LOCK_COMMENT_MAX_CHARS} characters`);
   }
-  const workstationLabel = input.workstationLabel ?? process.env.SVN_MCP_WORKSTATION_LABEL ?? "";
+  const workstationLabel = input.workstationLabel ?? defaultWorkstationLabel();
   if (!LOCK_WORKSTATION_LABEL.test(workstationLabel)) {
     return failEnvelope(
       "svn lock",
       cwd,
-      "workstationLabel or SVN_MCP_WORKSTATION_LABEL must contain 1..64 characters from [A-Za-z0-9._-]"
+      "workstationLabel, SVN_MCP_WORKSTATION_LABEL, or the machine hostname must contain 1..64 characters from [A-Za-z0-9._-]"
     );
   }
   if (input.force && (!input.forceAck || !input.operationId || !UUID_OPERATION_ID.test(input.operationId))) {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.6.0"
+    "version": "1.7.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -47,6 +47,16 @@
         "partial",
         "remoteHeadRevision",
         "staleBase",
+        "workingCopyRoot",
+        "repositoryUrl",
+        "repositoryRoot",
+        "changedCount",
+        "conflictCount",
+        "lockState",
+        "lockCount",
+        "lockStates",
+        "lockStateTruncated",
+        "lockStateUnavailableReason",
         "changedPaths",
         "counts",
         "items",
@@ -593,6 +603,10 @@
             "type": "boolean"
           },
           "countOnly": {
+            "type": "boolean"
+          },
+          "includeLockState": {
+            "description": "Include a bounded lock-state summary; default false avoids an extra repository probe.",
             "type": "boolean"
           },
           "maxItems": {
@@ -2120,6 +2134,122 @@
       "execution": {
         "taskSupport": "forbidden"
       }
+    }
+  ],
+  "prompts": [
+    {
+      "name": "svn_inspect_working_copy",
+      "title": "Inspect SVN working copy",
+      "description": "Use one bounded snapshot to inspect revision, remote HEAD, changes, conflicts, and optional locks.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        },
+        {
+          "name": "revision",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "svn_safe_update",
+      "title": "Safely update SVN paths",
+      "description": "Prepare a bounded, conflict-postponed update with explicit scope and revision evidence.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        },
+        {
+          "name": "revision",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "svn_safe_commit",
+      "title": "Safely commit SVN changes",
+      "description": "Use the guarded safe commit workflow with one compact receipt.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        },
+        {
+          "name": "revision",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "svn_repair_eol",
+      "title": "Repair SVN EOL safely",
+      "description": "Run the verified EOL workflow without changing file content.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "svn_lock_edit_unlock",
+      "title": "Lock, edit, and unlock SVN files",
+      "description": "Use workstation-labelled repository locks for a multi-PC edit session.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "svn_diagnose_commit",
+      "title": "Diagnose a failed SVN commit",
+      "description": "Inspect the exact scope, revision, EOL, and out-of-date evidence before retrying.",
+      "arguments": [
+        {
+          "name": "cwd",
+          "description": "Absolute WC directory; required for relative paths.",
+          "required": false
+        },
+        {
+          "name": "paths",
+          "description": "Optional comma-separated paths; prompt arguments are protocol strings.",
+          "required": false
+        }
+      ]
     }
   ]
 }
