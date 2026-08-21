@@ -2,9 +2,9 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.7.0`; each source clone can prepare a local runtime under `releases/v1.7.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.7.1`; each source clone can prepare a local runtime under `releases/v1.7.1`, while npm installations run directly from package-root `dist/`.
 
-Requirements: Node.js 24.18.0 or newer within the Node 24 LTS line, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
+Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
 `dos2unix`, and `unix2dos` must be available on `PATH`.
 
@@ -381,7 +381,7 @@ without dumping an unbounded diff.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Run the TypeScript entry point during development |
-| `npm run check:runtime` | Verify the supported Node 24 LTS and minimum npm version |
+| `npm run check:runtime` | Verify the minimum Node.js and npm versions |
 | `npm run typecheck` | Check TypeScript without emitting build output |
 | `npm run build` | Compile `src/` into `dist/` |
 | `npm run generate:api-contract` | Generate `docs/MCP_API.json` from the registered MCP tools |

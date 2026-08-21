@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.7.0"
+    "version": "1.7.1"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",

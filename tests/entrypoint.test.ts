@@ -66,9 +66,11 @@ describe("server entrypoint launch detection", () => {
         name: "svn_safe_commit",
         arguments: { cwd: "C:\\Projects\\sample", paths: "src\\Program.cs", revision: "42" }
       });
-      expect(safeCommitPrompt.messages[0]?.content).toMatchObject({ type: "text" });
+      expect(safeCommitPrompt.messages[0]?.content).toMatchObject({
+        type: "text",
+        text: expect.stringContaining('"revision":"42"')
+      });
       expect(JSON.stringify(safeCommitPrompt)).toContain("svn_commit operation:safe");
-      expect(JSON.stringify(safeCommitPrompt)).toContain('"revision":"42"');
       const status = tools.tools.find((tool) => tool.name === "svn_status");
       expect(status?.inputSchema.properties?.responseMode?.enum).toEqual([
         "compact", "standard", "full", "receipt", "structured-only"

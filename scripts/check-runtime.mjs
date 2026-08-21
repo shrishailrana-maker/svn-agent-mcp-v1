@@ -5,8 +5,8 @@ import { execFileSync } from "node:child_process";
 const nodeVersion = process.versions.node;
 const npmVersion = npmVersionFromEnvironment();
 
-if (!inSupportedLine(nodeVersion, 24, 18)) {
-  throw new Error(`Node.js 24.18.0 or newer within the Node 24 LTS line is required; found ${nodeVersion}`);
+if (!atLeast(nodeVersion, 24, 18, 0)) {
+  throw new Error(`Node.js 24.18.0 or newer is required; found ${nodeVersion}`);
 }
 if (!atLeast(npmVersion, 11, 16, 0)) {
   throw new Error(`npm 11.16.0 or newer is required; found ${npmVersion}`);
@@ -21,11 +21,6 @@ function npmVersionFromEnvironment() {
   }
   const command = process.platform === "win32" ? "npm.cmd" : "npm";
   return execFileSync(command, ["--version"], { encoding: "utf8", windowsHide: true }).trim();
-}
-
-function inSupportedLine(value, expectedMajor, minimumMinor) {
-  const match = value.match(/^(\d+)\.(\d+)\.(\d+)/);
-  return Boolean(match && Number(match[1]) === expectedMajor && Number(match[2]) >= minimumMinor);
 }
 
 function atLeast(value, minimumMajor, minimumMinor, minimumPatch) {

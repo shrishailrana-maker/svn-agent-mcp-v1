@@ -4,6 +4,14 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-21
+
+### Fixed
+
+- Removed the Node.js engine upper bound so Node.js 26 and newer versions meeting the minimum do
+  not produce npm `EBADENGINE` warnings.
+- Updated the runtime check and operator documentation to enforce only Node.js 24.18.0 minimum.
+
 ## [1.7.0] - 2026-08-20
 
 ### Added

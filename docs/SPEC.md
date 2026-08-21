@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.37 — public implementation contract. Single source of truth.**
+**Spec version 1.38 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -82,7 +82,7 @@ workflow).
 - Project text policy is discovered from `.svn-mcp-policy.json`, SVN properties, and local bytes.
   A repository may set `normalizeEol` to `crlf`, `lf`, or `none` and exclude byte-exact fixtures.
 - MCP installation home is chosen by the deployer, for example `<MCP_HOME>\svn-agent`.
-- Node 24.18.0 or newer within the Node 24 LTS line and npm 11.16.0 or newer are required.
+- Node 24.18.0 or newer and npm 11.16.0 or newer are required. There is no maximum Node version.
 
 ## 4. Locked decisions (no open questions)
 
@@ -934,7 +934,7 @@ Gate: Defender win measured with before/after `Measure-Command`; EOL repair is v
 `eol_fix_verified`, not an external hook.
 
 **Phase 1 — scaffold + read-only tools**
-`package.json` (ESM, Node 24 LTS and npm 11 engines), `tsconfig` (strict, ES2022), deps per D12;
+`package.json` (ESM, Node 24.18.0 minimum and npm 11 minimum engines), `tsconfig` (strict, ES2022), deps per D12;
 `runner`, `envelope`, `guards`, XML parsers; tools `svn_status`, `svn_info`, `svn_diff`,
 `svn_log`, `eol_check`; startup probe.
 Gate: jest unit tests green (guard matrix, envelope shape, parser fixtures incl. locale-odd and
@@ -1181,7 +1181,7 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Supports native SVN and dos2unix commands from `PATH` on macOS and Linux while retaining the
   bundled Windows toolchain.
 - Verifies the packed npm artifact through an isolated install and self-check on every CI platform.
-- Pins release verification to Node.js 24.18.0 LTS with npm 11.16.0 and matching Node 24 types.
+- Requires Node.js 24.18.0 minimum with npm 11.16.0 minimum; newer Node versions are accepted.
 
 ### Spec 1.18 / v1.1.0 — 2026-07-20
 
