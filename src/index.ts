@@ -90,6 +90,7 @@ export const fieldProjectionNames = {
     "expectedRemoteHead", "observedRemoteHead", "updatedPaths", "unexpectedTouchedPaths",
     "finalCommitScope", "conflicts", "precommitToken", "operation", "finalScopeClean", "scopeUniform",
     "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor",
+    "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated",
     "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated", "postStatusScope", "postStatusPaths",
     "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean"
   ]
@@ -428,7 +429,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_precommit",
     {
-      description: "Run guarded status, diff, EOL, and revision checks.",
+      description: "Run guarded status, diff, EOL, and revision checks. Commit workflows automatically apply verified EOL repairs when needed.",
       inputSchema: {
         cwd,
         paths,
@@ -450,7 +451,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_prepare_commit",
     {
-      description: "Pinned scoped update followed by guarded precommit evidence.",
+      description: "Pinned scoped update followed by guarded precommit evidence; EOL mismatches are automatically repaired and verified.",
       inputSchema: {
         cwd,
         paths,
@@ -544,7 +545,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: `Guarded commit with explicit paths and message. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
+      description: `Guarded commit with explicit paths and message. EOL mismatches are automatically repaired and verified before commit. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
       inputSchema: {
         cwd,
         paths,

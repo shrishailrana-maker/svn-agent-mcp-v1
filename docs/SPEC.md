@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.38 — public implementation contract. Single source of truth.**
+**Spec version 1.39 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -117,9 +117,10 @@ These are restated here so the implementer does not need deployment-specific rul
    delete-heavy, security-sensitive, scope-unclear) stop for operator approval before commit.
 5. Read-only instances never commit, stage, revert, update, or change SVN state. They
    may report the intended fix or commit plan for a write-capable client.
-6. EOL: preserve tracked files unless explicitly repaired. A repository may configure automatic
-   normalization for files explicitly passed to `svn_add`; binary and excluded byte-exact files
-   are never converted. EOL-only churn is not a code change.
+6. EOL: preserve tracked files unless a commit workflow performs verified automatic repair or an
+   explicit `eol_fix_verified` call is requested. A repository may configure automatic normalization
+   for files explicitly passed to `svn_add`; binary and excluded byte-exact files are never converted.
+   EOL-only churn is not a code change.
 7. For managed project working copies, never commit: `bin/`, `obj/`, `.vs/`, generated output,
    `*.db`, `scratch/**`, secrets, keys, certificates, tool caches, or unrelated drive-by changes.
    These guards are segment-aware so nested build output such as `src/App/bin/Debug/**` is also
@@ -586,11 +587,14 @@ non-blocking for compatibility.
 Intended flow: **precommit → (review summary; fetch full per-file diff only if a count looks
 wrong) → commit.** Two round trips.
 
-For EOL failures, use the verified recovery sequence **`eol_check` → `eol_fix_verified` →
-`svn_diff(ignoreEol:true)`** before repeating precommit. `eol_check` records LF, mixed-EOL, and BOM
-evidence. `eol_fix_verified` applies the repository target, verifies canonical LF/no-BOM content,
-preserves a concurrent edit instead of overwriting it, and runs an ignored-EOL diff. A final
-`svn_diff(ignoreEol:true)` must show no unintended content or property change before commit.
+For EOL failures, `svn_precommit` remains read-only and reports `EOL_FIX_NEEDED`. Commit workflows
+(`svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"`) automatically run the
+verified recovery sequence **`eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`** before
+continuing. `eol_check` records LF, mixed-EOL, and BOM evidence. `eol_fix_verified` applies the
+repository target, verifies canonical LF/no-BOM content, preserves a concurrent edit instead of
+overwriting it, and runs an ignored-EOL diff. Receipts expose `autoEolFixed` and bounded
+`autoEolFixedPaths`. A final `svn_diff(ignoreEol:true)` must show no unintended content or property
+change before commit.
 
 Compact mode returns one authoritative receipt: path count, status counts, diff totals, EOL and
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
@@ -660,8 +664,8 @@ using absolute paths; `cwd` is optional and mainly for relative paths.
 Extra: `{ before: {kind, has_bom}, after: {kind, has_bom}, target, eol_style, converter,
 verification_command, diff_ignored_eol:true, pure_eol_churn: boolean }` —
 `pure_eol_churn:true` is the proof the fix changed nothing but line endings. `dryRun:true`
-reports `before` + inferred converter/target, touches nothing. Safe-commit mode may invoke the same
-batch operation only after precommit names explicit EOL failures; ordinary tools never repair
+reports `before` + inferred converter/target, touches nothing. Commit workflows may invoke the same
+verified operation only after precommit names explicit EOL failures; read-only tools never repair
 tracked files implicitly. Missing paths, non-files, binary files,
 and `sniff:"skipped-too-large"` files return structured refusals; oversized files require
 explicit `allowLarge:true`, then use streaming sniff/hash verification plus a disk-backed backup.
@@ -669,7 +673,8 @@ Never-commit guards run before any conversion. A failed verification restores th
 the converted file still has the expected identity; a concurrent edit is preserved and reported.
 No PowerShell scripts, byte rewrites, pipes, redirects, or shell
 quoting are involved. `svn_add` may apply the same verified conversion transactionally when the
-repository policy enables `normalizeEol`; existing tracked-file repair remains an explicit call.
+repository policy enables `normalizeEol`; commit workflows automatically repair tracked files,
+while callers may still use batch-capable `eol_fix_verified` for an explicit receipt.
 `paths` accepts up to 500 explicit files and returns one aggregate receipt. Passing files are
 counted; failures retain bounded per-file evidence. Directories and implicit working-copy scans are
 refused. SHA256 over canonical LF/no-BOM content proves EOL conversion preserved content.
@@ -943,9 +948,9 @@ truncated outputs); manual smoke of all five tools against a sample working copy
 **Phase 2 — composite tools**
 `svn_precommit`, `eol_fix_verified`.
 Gate: integration tests on a **throwaway temp repo** (`svnadmin create` + `file:///` checkout in
-a temporary directory — never a production working copy): LF-damaged file → precommit `EOL_FIX_NEEDED` → fix →
-`pure_eol_churn:true` → precommit `READY`. Unit tests for verdict precedence and per-file
-counting.
+a temporary directory — never a production working copy): LF-damaged file → precommit `EOL_FIX_NEEDED` →
+automatic commit repair → `pure_eol_churn:true` → commit. Unit tests for verdict precedence and
+per-file counting.
 
 **Phase 3 — mutating tools**
 All §8.4 tools. Gate: temp-repo integration matrix — commit happy path (`-F` file used and
@@ -1015,6 +1020,16 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Adds working-copy and repository identity, change/conflict counts, and opt-in lock summaries to
   compact `svn_snapshot` responses.
 - Publishes six MCP workflow prompts for common agent actions without adding mutation tools.
+
+### Spec 1.38 / v1.7.1 — 2026-08-21
+
+- Removes the Node.js engine upper bound and accepts Node.js 24.18.0 or newer.
+
+### Spec 1.39 / v1.8.0 — 2026-08-24
+
+- Automatically repairs and verifies EOL mismatch, BOM damage, and pure EOL churn inside normal
+  commit and prepare-commit workflows; read-only `svn_precommit` remains diagnostic.
+- Returns bounded `autoEolFixed` and `autoEolFixedPaths` evidence in mutation receipts.
 
 ### Spec 1.35 / v1.5.0 — 2026-08-04
 

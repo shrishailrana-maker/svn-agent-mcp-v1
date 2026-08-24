@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.7.1"
+    "version": "1.8.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -171,6 +171,9 @@
         "detailExpiresAt",
         "detail",
         "nextCursor",
+        "autoEolFixed",
+        "autoEolFixedPaths",
+        "autoEolFixedPathsTruncated",
         "outOfDatePaths",
         "outOfDatePathCount",
         "outOfDatePathsTruncated",
@@ -1091,7 +1094,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Run guarded status, diff, EOL, and revision checks.",
+      "description": "Run guarded status, diff, EOL, and revision checks. Commit workflows automatically apply verified EOL repairs when needed.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1471,7 +1474,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit with explicit paths and message. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
+      "description": "Guarded commit with explicit paths and message. EOL mismatches are automatically repaired and verified before commit. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
       "inputSchema": {
         "type": "object",
         "properties": {

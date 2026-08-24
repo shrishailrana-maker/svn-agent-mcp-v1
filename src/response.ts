@@ -1295,6 +1295,7 @@ function compactPrepareCommit(payload: ToolEnvelope, request: Record<string, unk
     ...(allUnexpected.length > unexpected.length
       ? { unexpectedTouchedPathsTruncated: true, unexpectedTouchedPathCount: allUnexpected.length }
       : {}),
+    ...compactAutoEol(payload),
     conflicts,
     ...(precommit ? { precommit } : {}),
     ...(!payload.ok && payload.note ? { note: payload.note } : {})
@@ -1322,6 +1323,7 @@ function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
     ...(allUnexpected.length > unexpected.length
       ? { unexpectedTouchedPathsTruncated: true, unexpectedTouchedPathCount: allUnexpected.length }
       : {}),
+    ...compactAutoEol(payload),
     ...(!payload.ok && payload.note ? { note: payload.note } : {})
   };
 }
@@ -1360,6 +1362,7 @@ function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
     ...(payload.detail_operation_id ? { detailOperationId: payload.detail_operation_id } : {}),
     ...(payload.detail_expires_at ? { detailExpiresAt: payload.detail_expires_at } : {}),
     ...(payload.detail_cursor ? { detailCursor: payload.detail_cursor } : {}),
+    ...compactAutoEol(payload),
     ...(!payload.ok && payload.note ? { note: payload.note } : {})
   };
 }
@@ -1488,6 +1491,7 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
         receipt.expandedPathsTruncated = true;
       }
     }
+    Object.assign(receipt, compactAutoEol(payload));
     if (payload.post_status_clean === false && postStatus.length > 0) {
       receipt.residue = postStatus.slice(0, 100).map((item) => compactStatusItem(item, payload.cwd, receiptRoot));
     }
@@ -1569,6 +1573,18 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     }
   }
   return receipt;
+}
+
+function compactAutoEol(payload: ToolEnvelope): Record<string, unknown> {
+  if (payload.auto_eol_fixed !== true) {
+    return {};
+  }
+  const paths = stringArray(payload.auto_eol_fixed_paths).slice(0, 100);
+  return {
+    autoEolFixed: true,
+    autoEolFixedPaths: paths,
+    ...(stringArray(payload.auto_eol_fixed_paths).length > paths.length ? { autoEolFixedPathsTruncated: true } : {})
+  };
 }
 
 function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>): Record<string, unknown> {

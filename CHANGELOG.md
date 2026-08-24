@@ -4,6 +4,13 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-24
+
+### Added
+
+- Commit workflows now automatically perform verified EOL repair when precommit detects mixed
+  line endings, BOM damage, or pure EOL churn. Read-only `svn_precommit` remains diagnostic.
+
 ## [1.7.1] - 2026-08-21
 
 ### Fixed

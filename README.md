@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.7.1`; each source clone can prepare a local runtime under `releases/v1.7.1`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.0`; each source clone can prepare a local runtime under `releases/v1.8.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -363,10 +363,11 @@ diagnostics.
 
 ### Verified EOL recovery
 
-Use this sequence for a tracked file with LF, mixed line endings, or BOM damage:
+For a standalone repair or diagnostic, use this sequence for a tracked file with LF, mixed line
+endings, or BOM damage:
 
 1. Call `eol_check` on the explicit path and record `kind`, `has_bom`, and `mismatch`.
-2. Call `eol_fix_verified` on each failing path. It applies the repository target, removes the BOM
+2. Call `eol_fix_verified` on each failing path when you need an explicit repair receipt. It applies the repository target, removes the BOM
    by default, hashes canonical LF/no-BOM content, and preserves concurrent edits or guarded paths.
 3. Call `svn_diff` with `ignoreEol:true`. An empty content diff or `eolOnly:true` proves that the
    repair changed line endings only. Remaining additions, removals, or property changes need review.
@@ -375,6 +376,11 @@ For example, an LF file with a BOM reports `kind:"lf"`, `has_bom:true` in `eol_c
 `eol_fix_verified`, `after.has_bom:false` and `pure_eol_churn:true` provide repair evidence. The
 final `svn_diff({"paths":["src/example.cs"],"ignoreEol":true})` call proves byte/content intent
 without dumping an unbounded diff.
+
+`svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"` automatically run the same
+verified repair when precommit detects EOL mismatch or pure EOL churn. They return
+`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. `svn_precommit` remains read-only
+and reports the issue without changing files.
 
 ## Commands
 

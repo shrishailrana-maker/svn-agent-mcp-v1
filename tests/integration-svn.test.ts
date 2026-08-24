@@ -52,7 +52,7 @@ describe("SVN tool integration against a temp repository", () => {
       expect(identityAndCounts).toMatchObject({
         ok: true,
         components: { status: true, info: true },
-        wc_root: fixture.wc,
+        wc_root: fixture.wc.replace(/\\/g, "/"),
         repository_url: expect.stringContaining("file:"),
         repository_root: expect.stringContaining("file:"),
         changed_path_count: 0,
@@ -194,6 +194,40 @@ describe("SVN tool integration against a temp repository", () => {
       expect(committed.ok).toBe(true);
       expect(typeof committed.revision).toBe("number");
       expect(committed.post_status_clean).toBe(true);
+      expect((await svnStatus({ cwd: fixture.wc })).changed_paths).toEqual([]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("automatically repairs verified EOL churn before a normal commit", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const file = path.join(fixture.wc, "automatic-eol.txt");
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["automatic-eol.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["automatic-eol.txt"],
+        message: commitMessage("Add automatic EOL fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set automatic EOL property", file], { cwd: fixture.wc });
+
+      fs.writeFileSync(file, "one\nTWO\n", "utf8");
+      const committed = await svnCommitWorkflow({
+        operation: "commit",
+        cwd: fixture.wc,
+        paths: ["automatic-eol.txt"],
+        message: commitMessage("Automatically repair EOL before commit")
+      });
+
+      expect(committed).toMatchObject({
+        ok: true,
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: ["automatic-eol.txt"]
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\nTWO\r\n");
       expect((await svnStatus({ cwd: fixture.wc })).changed_paths).toEqual([]);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
