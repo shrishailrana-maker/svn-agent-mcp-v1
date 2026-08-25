@@ -9,7 +9,10 @@ All notable changes to the SVN MCP are recorded here.
 ### Changed
 
 - `svn_precommit` now defaults to `autoFixEol:"safe"`: it repairs and revalidates only scoped,
-  EOL-only text-file failures without BOM/encoding risk. Set `autoFixEol:false` for diagnostics.
+  EOL-only text-file failures without BOM/encoding risk, including SVN's inconsistent-EOL diagnostic
+  when the direct file matches normalized `BASE` content. Conversion is staged off-file, so a
+  converter failure leaves the original untouched and emits a stable failure code. Set
+  `autoFixEol:"off"` for diagnostics.
 
 ## [1.8.0] - 2026-08-24
 

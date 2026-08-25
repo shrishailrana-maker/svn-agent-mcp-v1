@@ -558,6 +558,8 @@ export async function svnCommit(input: {
   if (input.operationId) {
     const { operationId, ...coreInput } = input;
     const cwd = resolveCwd(input.cwd);
+    // A workflow mints fresh precommit evidence for each execution. It protects
+    // the commit immediately before mutation, but is not part of durable intent.
     const fingerprint = stableOperationFingerprint({
       kind: "svn_commit",
       cwd: pathIdentityKey(cwd),
@@ -566,8 +568,7 @@ export async function svnCommit(input: {
       riskAck: input.riskAck ?? false,
       allowRoot: input.allowRoot ?? false,
       allowDirectoryTargets: input.allowDirectoryTargets ?? false,
-      expandDescendants: input.expandDescendants ?? false,
-      precommitToken: input.precommitToken ?? null
+      expandDescendants: input.expandDescendants ?? false
     });
     return withDurableOperation({
       operationId,

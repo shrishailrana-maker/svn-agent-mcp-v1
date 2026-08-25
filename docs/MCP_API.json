@@ -111,7 +111,17 @@
         "remoteHeadChangedSinceBaseline",
         "autoEolFixed",
         "autoEolFixedPaths",
-        "autoEolFixedPathsTruncated"
+        "autoEolFixedPathsTruncated",
+        "code",
+        "rollbackRestoredPaths",
+        "rollbackRestoredPathCount",
+        "rollbackRestoredPathsTruncated",
+        "rollbackConcurrentPaths",
+        "rollbackConcurrentPathCount",
+        "rollbackConcurrentPathsTruncated",
+        "rollbackFailedPaths",
+        "rollbackFailedPathCount",
+        "rollbackFailedPathsTruncated"
       ],
       "svn_update": [
         "requestedRevision",
@@ -234,7 +244,6 @@
           "expandDescendants",
           "allowRoot",
           "allowDirectoryTargets",
-          "autoFixEol",
           "operationId",
           "precommitToken",
           "baselineToken",
@@ -260,6 +269,7 @@
         "operationId": "UUID",
         "baselineToken": "opaque UUID; process-local and exact-scope bound",
         "precommitToken": "opaque UUID; process-local and exact-state bound",
+        "autoFixEol": "\"safe\" | \"off\"; svn_precommit only; default \"safe\"",
         "detailOperationId": "opaque UUID; process-local safe-operation evidence",
         "file": "path; max 4096 chars",
         "messageContains": "1..256 chars",
@@ -1099,7 +1109,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Run guarded status, diff, EOL, and revision checks. Safe scoped EOL repair runs automatically by default; set autoFixEol:false for diagnostic-only mode.",
+      "description": "Guarded precommit; autoFixEol:\"safe\" is the default.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1146,19 +1156,6 @@
           "expandDescendants": {
             "description": "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope.",
             "type": "boolean"
-          },
-          "autoFixEol": {
-            "description": "Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode.",
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "safe"
-              },
-              {
-                "type": "boolean",
-                "const": false
-              }
-            ]
           },
           "requireUniformRevision": {
             "description": "Refuse READY while the working copy spans more than one revision; intended for release handoffs.",
@@ -1492,7 +1489,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit with explicit paths and message. Safe scoped EOL mismatches are automatically repaired and verified before commit by default; set autoFixEol:false for diagnostic-only mode. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
+      "description": "Guarded commit with automatic safe EOL repair. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1563,19 +1560,6 @@
           "expandDescendants": {
             "description": "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope.",
             "type": "boolean"
-          },
-          "autoFixEol": {
-            "description": "Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode.",
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "safe"
-              },
-              {
-                "type": "boolean",
-                "const": false
-              }
-            ]
           },
           "requireUniformRevision": {
             "type": "boolean"

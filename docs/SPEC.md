@@ -559,7 +559,7 @@ The server publishes these token-saving workflow prompts: `svn_inspect_working_c
 `svn_diagnose_commit`. Prompts provide a short call recipe; they do not execute SVN and do not add
 another mutation surface.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID, autoFixEol?: "safe"|false = "safe" }` *(mutating only for safe repair; diagnostic-only under READONLY or with `autoFixEol:false`)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID, autoFixEol?: "safe"|"off" = "safe" }` *(mutating only for safe repair; diagnostic-only under READONLY or with `autoFixEol:"off"`)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
@@ -590,11 +590,17 @@ wrong) → commit.** Two round trips.
 For EOL failures, `svn_precommit` defaults to `autoFixEol:"safe"`: it automatically runs the
 verified recovery sequence **`eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`** only
 for an explicit tracked text file with `pure_eol_churn:true`, no property/content diff, and no
-BOM or encoding risk. It rechecks the original scope once, then stops red if it remains non-ready.
-All other EOL cases return the exact file and refusal reason. Set `autoFixEol:false` for a
-diagnostic-only `EOL_FIX_NEEDED` result. Commit workflows pass through the same default. `eol_check` records LF, mixed-EOL, and BOM evidence.
-`eol_fix_verified` applies the repository target, verifies canonical LF/no-BOM content, preserves a
-concurrent edit instead of overwriting it, and runs an ignored-EOL diff. Receipts expose
+BOM or encoding risk. The EOL scan must be complete. Normal repair additionally requires complete
+ignored-EOL totals; SVN's own inconsistent-EOL diagnostic can instead use a direct normalized
+comparison with the file's valid UTF-8, BOM-free `BASE` revision plus a verbose local property-status check. Any other failed or incomplete
+evidence is refused without writing. It rechecks the original scope once, then stops red if it
+remains non-ready.
+All other EOL cases return the exact file and refusal reason. Set `autoFixEol:"off"` for a
+diagnostic-only `EOL_FIX_NEEDED` result. Commit workflows always use the same safe default.
+`eol_check` records LF, mixed-EOL, and BOM evidence.
+`eol_fix_verified` converts a staged sibling copy, verifies canonical LF/no-BOM content, then
+applies it only after the original matches its captured hash. A converter failure therefore
+leaves the original untouched; a concurrent change is reported rather than rolled back. Receipts expose
 `autoEolFixed` and bounded `autoEolFixedPaths`. A final `svn_diff(ignoreEol:true)` must show no
 unintended content or property change before commit.
 
@@ -1036,7 +1042,7 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 ### Spec 1.40 / v1.8.1 — 2026-08-25
 
 - Adds `svn_precommit autoFixEol:"safe"` by default, so only scoped EOL-only failures repair and
-  revalidate in one call. `autoFixEol:false` retains diagnostic-only behavior.
+  revalidate in one call. `autoFixEol:"off"` retains diagnostic-only behavior.
 
 ### Spec 1.35 / v1.5.0 — 2026-08-04
 

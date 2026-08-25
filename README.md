@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.0`; each source clone can prepare a local runtime under `releases/v1.8.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.1`; each source clone can prepare a local runtime under `releases/v1.8.1`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -379,9 +379,10 @@ without dumping an unbounded diff.
 
 `svn_precommit`, `svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"`
 default to `autoFixEol:"safe"`. They repair only explicit tracked text files when the ignored-EOL
-diff proves there is no content or property change and no BOM/encoding risk exists. They return
-`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. Set `autoFixEol:false` only
-when a diagnostic-only precommit is needed.
+diff, or a normalized BASE comparison for SVN's inconsistent-EOL diagnostic, proves there is no
+content or property change and no BOM/encoding risk exists in either the working file or BASE. They return
+`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. Set `autoFixEol:"off"` on
+`svn_precommit` only when a diagnostic-only check is needed.
 
 ## Commands
 

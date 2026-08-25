@@ -284,6 +284,7 @@ function receiptPayload(
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
     ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
     ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
+    ...(payload.code ? { code: payload.code } : {}),
     ...(nextCursor ? { nextCursor } : {})
   };
   if (tool === "svn_update") {
@@ -485,6 +486,7 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
     .map((candidate) => workingCopyRootRelativePath(candidate, payload.cwd, root));
   return {
     ok: false,
+    ...(payload.verdict ? { verdict: payload.verdict } : {}),
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
     ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
     ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
@@ -1180,6 +1182,12 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     .filter((file) => file.pure_eol_churn === true || file.eol_mismatch === true)
     .map((file) => stringValue(file.path)));
   const eolFailures = allEolFailures.slice(0, 100);
+  const allRollbackRestoredPaths = stringArray(payload.rollback_restored_paths);
+  const allRollbackConcurrentPaths = stringArray(payload.rollback_concurrent_paths);
+  const allRollbackFailedPaths = stringArray(payload.rollback_failed_paths);
+  const rollbackRestoredPaths = allRollbackRestoredPaths.slice(0, 100);
+  const rollbackConcurrentPaths = allRollbackConcurrentPaths.slice(0, 100);
+  const rollbackFailedPaths = allRollbackFailedPaths.slice(0, 100);
   const filesWithDiff = files.filter((file) =>
     numberValue(file.added) > 0 ||
     numberValue(file.removed) > 0 ||
@@ -1206,6 +1214,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     ok: payload.ok,
     ready: verdict === "READY",
     verdict,
+    ...(payload.code ? { code: payload.code } : {}),
     pathCount: stringArray(request.paths).length,
     statusCounts,
     diff,
@@ -1227,6 +1236,18 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
       ? { baselinePathChanges: stringArray(payload.baseline_path_changes).slice(0, 100) }
       : {}),
     ...(payload.remote_head_changed_since_baseline === true ? { remoteHeadChangedSinceBaseline: true } : {}),
+    ...(rollbackRestoredPaths.length > 0
+      ? { rollbackRestoredPaths, rollbackRestoredPathCount: allRollbackRestoredPaths.length,
+        ...(allRollbackRestoredPaths.length > rollbackRestoredPaths.length ? { rollbackRestoredPathsTruncated: true } : {}) }
+      : {}),
+    ...(rollbackConcurrentPaths.length > 0
+      ? { rollbackConcurrentPaths, rollbackConcurrentPathCount: allRollbackConcurrentPaths.length,
+        ...(allRollbackConcurrentPaths.length > rollbackConcurrentPaths.length ? { rollbackConcurrentPathsTruncated: true } : {}) }
+      : {}),
+    ...(rollbackFailedPaths.length > 0
+      ? { rollbackFailedPaths, rollbackFailedPathCount: allRollbackFailedPaths.length,
+        ...(allRollbackFailedPaths.length > rollbackFailedPaths.length ? { rollbackFailedPathsTruncated: true } : {}) }
+      : {}),
     mixedRevision,
     ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
@@ -1287,6 +1308,7 @@ function compactPrepareCommit(payload: ToolEnvelope, request: Record<string, unk
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
     ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
     ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
+    ...(payload.code ? { code: payload.code } : {}),
     ...(allFinalScope.length > finalScope.length
       ? { finalCommitScopeTruncated: true, finalCommitScopeCount: allFinalScope.length }
       : {}),
@@ -1318,6 +1340,7 @@ function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
     ...(payload.operation_id ? { operationId: payload.operation_id } : {}),
     ...(payload.idempotent_replay === true ? { idempotentReplay: true } : {}),
     ...(payload.operation_recovered === true ? { operationRecovered: true } : {}),
+    ...(payload.code ? { code: payload.code } : {}),
     finalCommitScope: scope,
     ...(allScope.length > scope.length ? { finalCommitScopeTruncated: true, pathCount: allScope.length } : {}),
     ...(unexpected.length > 0 ? { unexpectedTouchedPaths: unexpected } : {}),
@@ -1363,6 +1386,7 @@ function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
     ...(payload.detail_operation_id ? { detailOperationId: payload.detail_operation_id } : {}),
     ...(payload.detail_expires_at ? { detailExpiresAt: payload.detail_expires_at } : {}),
     ...(payload.detail_cursor ? { detailCursor: payload.detail_cursor } : {}),
+    ...(payload.code ? { code: payload.code } : {}),
     ...compactAutoEol(payload),
     ...(!payload.ok && payload.note ? { note: payload.note } : {})
   };

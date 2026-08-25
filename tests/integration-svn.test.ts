@@ -5,6 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createServer } from "../src/index.js";
 import { toToolResult } from "../src/response.js";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
@@ -166,7 +169,7 @@ describe("SVN tool integration against a temp repository", () => {
       execFileSync(svnExecutable(), ["commit", "-m", "set prop", file], { cwd: fixture.wc });
 
       fs.writeFileSync(file, "one\nTWO\n", "utf8");
-      const damaged = await svnPrecommit({ cwd: fixture.wc, paths: ["app.txt"], autoFixEol: false });
+      const damaged = await svnPrecommit({ cwd: fixture.wc, paths: ["app.txt"], autoFixEol: "off" });
       expect(damaged.verdict).toBe("EOL_FIX_NEEDED");
 
       const diff = await svnDiff({ cwd: fixture.wc, paths: ["app.txt"] });
@@ -200,7 +203,7 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
-  it("repairs only safe EOL churn during precommit and refuses content changes", async () => {
+  it("refuses automatic EOL repair when mixed line endings also contain content changes", async () => {
     const fixture = createTempWorkingCopy();
     try {
       const file = path.join(fixture.wc, "automatic-eol.txt");
@@ -211,14 +214,59 @@ describe("SVN tool integration against a temp repository", () => {
         paths: ["automatic-eol.txt"],
         message: commitMessage("Add automatic EOL fixture")
       })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "native", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set automatic native EOL property", file], { cwd: fixture.wc });
+
+      fs.writeFileSync(file, "one\r\ntwo\nthree\r\n", "utf8");
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["automatic-eol.txt"] });
+      expect(precommit).toMatchObject({
+        ok: false,
+        verdict: "EOL_FIX_REFUSED",
+        code: "EOL_AUTO_FIX_REFUSED",
+        auto_eol_fix_attempted: true
+      });
+      expect(precommit.note).toContain("normalized BASE content shows a real content change");
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\nthree\r\n");
+
+      fs.writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\r\ntwo\nthree\r\n")]))
+      const bomPrecommit = await svnPrecommit({ cwd: fixture.wc, paths: ["automatic-eol.txt"] });
+      expect(bomPrecommit).toMatchObject({
+        ok: false,
+        verdict: "EOL_FIX_REFUSED",
+        code: "EOL_AUTO_FIX_REFUSED"
+      });
+      expect(bomPrecommit.note).toContain("BOM or encoding risk");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("automatically repairs a direct EOL-only file before commit", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "automatic-eol.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add automatic EOL fixture")
+      })).ok).toBe(true);
       execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
-      execFileSync(svnExecutable(), ["commit", "-m", "set automatic EOL property", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set automatic CRLF property", file], { cwd: fixture.wc });
 
       fs.writeFileSync(file, "one\r\ntwo\n", "utf8");
+      const diagnostic = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath], autoFixEol: "off" });
+      expect(diagnostic).toMatchObject({
+        ok: true,
+        verdict: "EOL_FIX_NEEDED"
+      });
+      expect(diagnostic.per_file).toMatchObject([{ path: relativePath, eol_mismatch: true }]);
       const repaired = await svnCommitWorkflow({
         operation: "commit",
         cwd: fixture.wc,
-        paths: ["automatic-eol.txt"],
+        paths: [relativePath],
         message: commitMessage("Automatically repair EOL before commit")
       });
 
@@ -227,30 +275,273 @@ describe("SVN tool integration against a temp repository", () => {
         verdict: "NOTHING_TO_COMMIT",
         operation: "commit",
         auto_eol_fixed: true,
-        auto_eol_fixed_paths: ["automatic-eol.txt"]
+        auto_eol_fixed_paths: [relativePath]
       });
       expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\r\n");
       expect((await svnStatus({ cwd: fixture.wc })).changed_paths).toEqual([]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
 
-      fs.writeFileSync(file, "one\nTHREE\n", "utf8");
-      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["automatic-eol.txt"] });
+  it("refuses automatic repair when the repository BASE has a BOM", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "base-bom-eol.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\r\ntwo\r\n")]))
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add BASE BOM EOL fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set BASE BOM CRLF property", file], { cwd: fixture.wc });
+
+      fs.writeFileSync(file, "one\r\ntwo\n", "utf8");
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+
       expect(precommit).toMatchObject({
         ok: false,
         verdict: "EOL_FIX_REFUSED",
         code: "EOL_AUTO_FIX_REFUSED",
         auto_eol_fix_attempted: true
       });
-      expect(precommit.note).toContain("content or property changes");
-      expect(fs.readFileSync(file, "utf8")).toBe("one\nTHREE\n");
+      expect(precommit.note).toContain("repository BASE has BOM or encoding risk");
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
 
-      fs.writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\ntwo\n")]))
-      const bomPrecommit = await svnPrecommit({ cwd: fixture.wc, paths: ["automatic-eol.txt"] });
-      expect(bomPrecommit).toMatchObject({
+  it("refuses automatic repair when an unrelated property change is present", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "property-change-eol.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add EOL property fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set EOL property", file], { cwd: fixture.wc });
+
+      fs.writeFileSync(file, "one\r\ntwo\n", "utf8");
+      execFileSync(svnExecutable(), ["propset", "svn:mime-type", "text/plain", file], { cwd: fixture.wc });
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+
+      expect(precommit).toMatchObject({
+        ok: false,
+        verdict: "EOL_FIX_REFUSED",
+        code: "EOL_AUTO_FIX_REFUSED",
+        auto_eol_fix_attempted: true
+      });
+      expect(precommit.note).toContain("property changes require explicit repair");
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses automatic repair for malformed UTF-8 in the working file or BASE", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const workingPath = "working-invalid-utf8.txt";
+      const workingFile = path.join(fixture.wc, workingPath);
+      fs.writeFileSync(workingFile, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [workingPath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [workingPath],
+        message: commitMessage("Add working encoding fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", workingFile], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set working encoding property", workingFile], { cwd: fixture.wc });
+      const malformedWorking = Buffer.concat([Buffer.from([0xff]), Buffer.from("one\r\ntwo\n")]);
+      fs.writeFileSync(workingFile, malformedWorking);
+
+      const workingPrecommit = await svnPrecommit({ cwd: fixture.wc, paths: [workingPath] });
+      expect(workingPrecommit.note).toContain("BOM or encoding risk");
+      expect(fs.readFileSync(workingFile)).toEqual(malformedWorking);
+
+      const basePath = "base-invalid-utf8.txt";
+      const baseFile = path.join(fixture.wc, basePath);
+      fs.writeFileSync(baseFile, Buffer.concat([Buffer.from([0xff]), Buffer.from("one\r\ntwo\r\n")]));
+      expect((await svnAdd({ cwd: fixture.wc, paths: [basePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [basePath],
+        message: commitMessage("Add BASE encoding fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", baseFile], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set BASE encoding property", baseFile], { cwd: fixture.wc });
+      fs.writeFileSync(baseFile, "one\r\ntwo\n", "utf8");
+
+      const basePrecommit = await svnPrecommit({ cwd: fixture.wc, paths: [basePath] });
+      expect(basePrecommit.note).toContain("repository BASE has BOM or encoding risk");
+      expect(fs.readFileSync(baseFile, "utf8")).toBe("one\r\ntwo\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("replays a normal commit operation after refreshed precommit evidence", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const paths = Array.from({ length: 9 }, (_, index) => `retry-evidence-${index}.txt`);
+      for (const relativePath of paths) fs.writeFileSync(path.join(fixture.wc, relativePath), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths,
+        riskAck: true,
+        message: commitMessage("Add commit retry fixtures")
+      })).ok).toBe(true);
+      for (const relativePath of paths) fs.writeFileSync(path.join(fixture.wc, relativePath), "two\r\n", "utf8");
+
+      const operationId = randomUUID();
+      const first = await svnCommitWorkflow({
+        operation: "commit",
+        cwd: fixture.wc,
+        paths,
+        message: commitMessage("Exercise refreshed commit evidence"),
+        operationId
+      });
+      expect(first.note).toContain("riskAck required");
+
+      const replay = await svnCommitWorkflow({
+        operation: "commit",
+        cwd: fixture.wc,
+        paths,
+        message: commitMessage("Exercise refreshed commit evidence"),
+        operationId
+      });
+      expect(replay).toMatchObject({ ok: false, idempotent_replay: true, operation_id: operationId });
+      expect(replay.note).toContain("riskAck required");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps unsafe EOL refusal consistent on public commit workflow routes", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "workflow-eol.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add workflow EOL fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "native", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set workflow native EOL property", file], { cwd: fixture.wc });
+      const remoteHead = Number((await svnInfo({ cwd: fixture.wc, paths: [relativePath] })).remote_head_revision);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const server = createServer("full");
+      const client = new Client({ name: "workflow-eol-test", version: "1.0.0" });
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        fs.writeFileSync(file, "one\r\ntwo\nthree\r\n", "utf8");
+        const normal = await client.callTool({
+          name: "svn_commit",
+          arguments: {
+            cwd: fixture.wc,
+            paths: [relativePath],
+            message: commitMessage("Automatically repair normal workflow EOL"),
+            responseMode: "structured-only"
+          }
+        });
+        expect(normal.structuredContent).toMatchObject({
+          ok: false,
+          verdict: "EOL_FIX_REFUSED",
+          code: "EOL_AUTO_FIX_REFUSED"
+        });
+
+        fs.writeFileSync(file, "one\r\ntwo\nthree\r\n", "utf8");
+        const prepared = await client.callTool({
+          name: "svn_commit",
+          arguments: {
+            cwd: fixture.wc,
+            paths: [relativePath],
+            operation: "prepare",
+            revision: String(remoteHead),
+            expectedRemoteHead: remoteHead,
+            responseMode: "structured-only"
+          }
+        });
+        expect(prepared.structuredContent).toMatchObject({
+          ok: false,
+          verdict: "EOL_FIX_REFUSED",
+          code: "EOL_AUTO_FIX_REFUSED"
+        });
+
+        fs.writeFileSync(file, "one\r\ntwo\nthree\r\n", "utf8");
+        const safe = await client.callTool({
+          name: "svn_commit",
+          arguments: {
+            cwd: fixture.wc,
+            paths: [relativePath],
+            operation: "safe",
+            message: commitMessage("Safely repair workflow EOL"),
+            revision: String(remoteHead),
+            expectedRemoteHead: remoteHead,
+            operationId: randomUUID(),
+            responseMode: "structured-only"
+          }
+        });
+        expect(safe.structuredContent).toMatchObject({
+          ok: false,
+          verdict: "EOL_FIX_REFUSED",
+          code: "EOL_AUTO_FIX_REFUSED"
+        });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses automatic repair for a file derived from a directory scope", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativeDirectory = "eol-directory";
+      const relativePath = `${relativeDirectory}/nested.txt`;
+      const directory = path.join(fixture.wc, relativeDirectory);
+      const file = path.join(fixture.wc, relativePath);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(file, "one\r\ntwo\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativeDirectory], allowRecursive: true })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        message: commitMessage("Add directory EOL fixture")
+      })).ok).toBe(true);
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "native", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set directory native EOL property", file], { cwd: fixture.wc });
+
+      fs.writeFileSync(file, "one\r\ntwo\nthree\r\n", "utf8");
+      const precommit = await svnPrecommit({
+        cwd: fixture.wc,
+        paths: [relativeDirectory],
+        allowDirectoryTargets: true,
+        expandDescendants: true
+      });
+      expect(precommit).toMatchObject({
         ok: false,
         verdict: "EOL_FIX_REFUSED",
         code: "EOL_AUTO_FIX_REFUSED"
       });
-      expect(bomPrecommit.note).toContain("BOM or encoding risk");
+      expect(precommit.note).toContain("exact explicit file target");
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\nthree\r\n");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1444,7 +1735,7 @@ describe("SVN tool integration against a temp repository", () => {
       expect(diff.eol_files[0]?.kind).toBe("mixed");
       expect(diff.eol_files[0]?.mismatch).toBe(true);
 
-      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["mixed-eol.txt"], autoFixEol: false });
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["mixed-eol.txt"], autoFixEol: "off" });
       expect(precommit.verdict).toBe("EOL_FIX_NEEDED");
       expect(precommit.note).toContain("svn diff failed");
     } finally {

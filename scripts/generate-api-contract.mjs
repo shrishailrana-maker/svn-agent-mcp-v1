@@ -41,6 +41,7 @@ try {
           operationId: "UUID",
           baselineToken: "opaque UUID; process-local and exact-scope bound",
           precommitToken: "opaque UUID; process-local and exact-state bound",
+          autoFixEol: '"safe" | "off"; svn_precommit only; default "safe"',
           detailOperationId: "opaque UUID; process-local safe-operation evidence",
           file: "path; max 4096 chars",
           messageContains: "1..256 chars",
