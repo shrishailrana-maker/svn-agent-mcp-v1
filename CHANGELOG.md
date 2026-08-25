@@ -4,6 +4,13 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-25
+
+### Changed
+
+- `svn_precommit` now defaults to `autoFixEol:"safe"`: it repairs and revalidates only scoped,
+  EOL-only text-file failures without BOM/encoding risk. Set `autoFixEol:false` for diagnostics.
+
 ## [1.8.0] - 2026-08-24
 
 ### Added

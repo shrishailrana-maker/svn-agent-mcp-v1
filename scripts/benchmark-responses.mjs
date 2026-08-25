@@ -18,7 +18,7 @@ const svnversion = svnVersionExecutable();
 const server = path.join(root, "dist", "index.js");
 const enforceBudgets = process.argv.includes("--check");
 const schemaBudgets = {
-  // v1.8.0 publishes guard, recovery, snapshot, workflow, runtime, and EOL contracts.
+  // v1.8.1 publishes guard, recovery, snapshot, workflow, runtime, and automatic EOL contracts.
   // Keep roughly five percent headroom above the measured canonical 29-tool
   // contract so later growth still fails closed.
   allInputSchemas: 23500,

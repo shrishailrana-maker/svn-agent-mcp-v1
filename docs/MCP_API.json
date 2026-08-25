@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.8.0"
+    "version": "1.8.1"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -108,7 +108,10 @@
         "remoteHeadRevision",
         "baselineToken",
         "baselinePathChanges",
-        "remoteHeadChangedSinceBaseline"
+        "remoteHeadChangedSinceBaseline",
+        "autoEolFixed",
+        "autoEolFixedPaths",
+        "autoEolFixedPathsTruncated"
       ],
       "svn_update": [
         "requestedRevision",
@@ -203,7 +206,8 @@
           "operationId"
         ],
         "svn_precommit": [
-          "baselineToken"
+          "baselineToken",
+          "autoFixEol"
         ],
         "svn_log": [
           "changedPathsSummary",
@@ -230,6 +234,7 @@
           "expandDescendants",
           "allowRoot",
           "allowDirectoryTargets",
+          "autoFixEol",
           "operationId",
           "precommitToken",
           "baselineToken",
@@ -1094,7 +1099,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Run guarded status, diff, EOL, and revision checks. Commit workflows automatically apply verified EOL repairs when needed.",
+      "description": "Run guarded status, diff, EOL, and revision checks. Safe scoped EOL repair runs automatically by default; set autoFixEol:false for diagnostic-only mode.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1142,6 +1147,19 @@
             "description": "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope.",
             "type": "boolean"
           },
+          "autoFixEol": {
+            "description": "Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode.",
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "safe"
+              },
+              {
+                "type": "boolean",
+                "const": false
+              }
+            ]
+          },
           "requireUniformRevision": {
             "description": "Refuse READY while the working copy spans more than one revision; intended for release handoffs.",
             "type": "boolean"
@@ -1163,7 +1181,7 @@
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
       "annotations": {
-        "readOnlyHint": true,
+        "readOnlyHint": false,
         "destructiveHint": false
       },
       "execution": {
@@ -1474,7 +1492,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit with explicit paths and message. EOL mismatches are automatically repaired and verified before commit. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
+      "description": "Guarded commit with explicit paths and message. Safe scoped EOL mismatches are automatically repaired and verified before commit by default; set autoFixEol:false for diagnostic-only mode. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1545,6 +1563,19 @@
           "expandDescendants": {
             "description": "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope.",
             "type": "boolean"
+          },
+          "autoFixEol": {
+            "description": "Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode.",
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "safe"
+              },
+              {
+                "type": "boolean",
+                "const": false
+              }
+            ]
           },
           "requireUniformRevision": {
             "type": "boolean"

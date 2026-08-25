@@ -1218,6 +1218,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     },
     ...(payload.eol_check_complete === true ? { eolCheckComplete: true } : {}),
     ...(payload.eol_policy_identity ? { eolPolicyIdentity: payload.eol_policy_identity } : {}),
+    ...compactAutoEol(payload),
     ...(payload.precommit_token ? { precommitToken: payload.precommit_token } : {}),
     ...(payload.precommit_expires_at ? { precommitExpiresAt: payload.precommit_expires_at } : {}),
     ...(payload.remote_head_revision !== undefined ? { remoteHeadRevision: payload.remote_head_revision } : {}),

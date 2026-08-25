@@ -197,6 +197,7 @@ export async function svnPrecommit(input: {
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
   baselineToken?: string;
+  autoFixEol?: "safe" | false;
 }): Promise<ToolEnvelope> {
   const explicitError = requireExplicitPaths(input.paths);
   const cwd = resolveCwd(input.cwd);
@@ -400,9 +401,66 @@ export async function svnPrecommit(input: {
     eol_policy_identity: eolPolicyIdentity,
     ...(remediation ? { remediation } : {}),
     diff_excerpt: diff.diff_excerpt,
+    eol_only: diff.eol_only === true,
     truncated: diff.truncated,
     ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
   };
+  if (verdict === "EOL_FIX_NEEDED" && input.autoFixEol !== false) {
+    if (readonlyMode()) {
+      return {
+        ...result,
+        auto_eol_fix_unavailable: "READONLY instance"
+      };
+    }
+    const repaired = await automaticallyRepairEol(context.cwd, result);
+    if (!repaired.ok) {
+      return {
+        ...result,
+        ok: false,
+        verdict: repaired.envelope.code === "EOL_AUTO_FIX_REFUSED" ? "EOL_FIX_REFUSED" : "EOL_FIX_FAILED",
+        code: repaired.envelope.code,
+        note: repaired.envelope.note,
+        auto_eol_fix_attempted: true
+      };
+    }
+    const afterRepair = await svnPrecommit({
+      cwd: context.cwd,
+      paths: input.paths,
+      ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
+      ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
+      ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
+      ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
+      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+      ...(input.baselineToken === undefined ? {} : { baselineToken: input.baselineToken }),
+      autoFixEol: false
+    });
+    if (afterRepair.verdict === "READY") {
+      return {
+        ...afterRepair,
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: repaired.paths
+      };
+    }
+    const afterStatus = await svnStatus({ cwd: context.cwd, paths: scopedPaths, depth: "empty" });
+    if (afterStatus.ok && afterStatus.changed_paths.length === 0 && afterStatus.conflicts.length === 0) {
+      return {
+        ...afterRepair,
+        ok: true,
+        verdict: "NOTHING_TO_COMMIT",
+        note: "automatic EOL repair restored a clean working-copy scope",
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: repaired.paths
+      };
+    }
+    return {
+      ...afterRepair,
+      ok: false,
+      verdict: "EOL_FIX_FAILED",
+      note: `automatic EOL repair completed but precommit remained ${String(afterRepair.verdict)}`,
+      auto_eol_fixed: true,
+      auto_eol_fixed_paths: repaired.paths
+    };
+  }
   if (verdict !== "READY") return result;
 
   const captured = await captureCurrentWorkflowPathStates(context.cwd, context.wcRoot, scopedPaths);
@@ -493,6 +551,7 @@ export async function svnPrepareCommit(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
+  autoFixEol?: "safe" | false;
   operationId?: string;
   baselineToken?: string;
 }): Promise<ToolEnvelope> {
@@ -513,6 +572,7 @@ export async function svnPrepareCommit(input: {
         allowDirectoryTargets: input.allowDirectoryTargets ?? false,
         expandDescendants: input.expandDescendants ?? false,
         requireUniformRevision: input.requireUniformRevision ?? false,
+        autoFixEol: input.autoFixEol !== false,
         baselineToken: input.baselineToken ?? null
       }),
       command: "svn commit --prepare",
@@ -655,28 +715,10 @@ export async function svnPrepareCommit(input: {
     ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
     ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
     ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
-    ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
+    ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+    ...(input.autoFixEol === undefined ? {} : { autoFixEol: input.autoFixEol })
   });
-  let autoEolFixedPaths: string[] = [];
-  if (precommit.verdict === "EOL_FIX_NEEDED") {
-    const repaired = await automaticallyRepairEol(context.cwd, precommit);
-    if (!repaired.ok) {
-      return {
-        ...prepareCommitFailure(repaired.envelope, "EOL_FIX_FAILED"),
-        auto_eol_fix_attempted: true
-      };
-    }
-    autoEolFixedPaths = repaired.paths;
-    precommit = await svnPrecommit({
-      cwd: context.cwd,
-      paths: input.paths,
-      ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
-      ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
-      ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
-      ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
-      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
-    });
-  }
+  const autoEolFixedPaths = stringList(precommit.auto_eol_fixed_paths);
   const finalScope = precommit.scope_expanded === true && Array.isArray(precommit.expanded_paths)
     ? precommit.expanded_paths
     : resolved.paths.map((candidate) => repoRelativePath(candidate, context.wcRoot));
@@ -707,7 +749,7 @@ export async function svnPrepareCommit(input: {
     scope_expanded: precommit.scope_expanded === true,
     operation: "prepare_commit",
     precommit,
-    ...(autoEolFixedPaths.length > 0
+    ...(precommit.auto_eol_fixed === true
       ? { auto_eol_fixed: true, auto_eol_fixed_paths: autoEolFixedPaths }
       : {})
   };
@@ -726,6 +768,7 @@ export async function svnCommitWorkflow(input: {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
+  autoFixEol?: "safe" | false;
   operationId?: string;
   baselineToken?: string;
   precommitToken?: string;
@@ -756,6 +799,7 @@ export async function svnCommitWorkflow(input: {
       ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
       ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
       ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+      ...(input.autoFixEol === undefined ? {} : { autoFixEol: input.autoFixEol }),
       ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
       ...(input.baselineToken === undefined ? {} : { baselineToken: input.baselineToken })
     });
@@ -763,38 +807,36 @@ export async function svnCommitWorkflow(input: {
   if (input.message === undefined) {
     return failEnvelope("svn commit", resolveCwd(input.cwd), "operation:commit requires message");
   }
-  let autoEolFixedPaths: string[] = [];
-  let precommitToken: string | undefined;
   const precommit = await svnPrecommit({
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     paths: input.paths,
     ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
     ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
     ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
-    ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
+    ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+    ...(input.autoFixEol === undefined ? {} : { autoFixEol: input.autoFixEol })
   });
-  if (precommit.verdict === "EOL_FIX_NEEDED") {
-    const repaired = await automaticallyRepairEol(precommit.cwd, precommit);
-    if (!repaired.ok) {
-      return {
-        ...repaired.envelope,
-        operation: "commit",
-        auto_eol_fix_attempted: true
-      };
-    }
-    autoEolFixedPaths = repaired.paths;
-    const afterRepair = await svnPrecommit({
-      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-      paths: input.paths,
-      ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
-      ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
-      ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
-      ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision })
-    });
-    if (afterRepair.verdict === "READY" && typeof afterRepair.precommit_token === "string") {
-      precommitToken = afterRepair.precommit_token;
-    }
+  const autoEolFixedPaths = stringList(precommit.auto_eol_fixed_paths);
+  if (precommit.auto_eol_fixed === true && precommit.verdict === "NOTHING_TO_COMMIT") {
+    return {
+      ...precommit,
+      operation: "commit",
+      auto_eol_fixed: true,
+      auto_eol_fixed_paths: autoEolFixedPaths
+    };
   }
+  if (["EOL_FIX_NEEDED", "EOL_FIX_REFUSED", "EOL_FIX_FAILED"].includes(String(precommit.verdict))) {
+    return {
+      ...precommit,
+      ok: false,
+      operation: "commit"
+    };
+  }
+  const precommitToken = input.precommitToken === undefined
+    && precommit.verdict === "READY"
+    && typeof precommit.precommit_token === "string"
+      ? precommit.precommit_token
+      : undefined;
   const committed = await svnCommit({
     paths: input.paths,
     message: input.message,
@@ -809,7 +851,7 @@ export async function svnCommitWorkflow(input: {
   });
   return {
     ...committed,
-    ...(autoEolFixedPaths.length > 0
+    ...(precommit.auto_eol_fixed === true
       ? { auto_eol_fixed: true, auto_eol_fixed_paths: autoEolFixedPaths, eol_verdict: "auto_fixed" }
       : {})
   };
@@ -827,6 +869,7 @@ type SafeCommitInput = {
   allowDirectoryTargets?: boolean;
   expandDescendants?: boolean;
   requireUniformRevision?: boolean;
+  autoFixEol?: "safe" | false;
   operationId?: string;
   baselineToken?: string;
 };
@@ -876,7 +919,8 @@ async function svnSafeCommit(input: SafeCommitInput): Promise<ToolEnvelope> {
       allowRoot: input.allowRoot ?? false,
       allowDirectoryTargets: input.allowDirectoryTargets ?? false,
       expandDescendants: input.expandDescendants ?? false,
-      requireUniformRevision: input.requireUniformRevision ?? false
+      requireUniformRevision: input.requireUniformRevision ?? false,
+      autoFixEol: input.autoFixEol !== false
     }),
     command: "svn safe_commit",
     cwd,
@@ -918,18 +962,20 @@ async function executeCanonicalSafeCommit(
     ...(input.allowDirectoryTargets === undefined ? {} : { allowDirectoryTargets: input.allowDirectoryTargets }),
     ...(input.expandDescendants === undefined ? {} : { expandDescendants: input.expandDescendants }),
     ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+    ...(input.autoFixEol === undefined ? {} : { autoFixEol: input.autoFixEol }),
     baselineToken
   });
   stages.push({ stage: "prepare", result: prepared });
   let precommit = prepared.precommit && typeof prepared.precommit === "object"
     ? prepared.precommit as ToolEnvelope
     : null;
+  autoEolFixedPaths = stringList(prepared.auto_eol_fixed_paths);
   const finalScope = (stringList(prepared.final_commit_scope).length > 0
     ? stringList(prepared.final_commit_scope)
     : input.paths)
     .map((candidate) => path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(resolveCwd(input.cwd), candidate));
 
-  if (prepared.verdict === "EOL_FIX_NEEDED" && precommit) {
+  if (prepared.verdict === "EOL_FIX_NEEDED" && precommit && input.autoFixEol !== false) {
     const eolPaths = ((precommit.per_file as Array<Record<string, unknown>> | undefined) ?? [])
       .filter((file) => file.eol_mismatch === true || file.pure_eol_churn === true)
       .map((file) => file.path)
@@ -951,6 +997,7 @@ async function executeCanonicalSafeCommit(
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.lineLimit === undefined ? {} : { lineLimit: input.lineLimit }),
       ...(input.requireUniformRevision === undefined ? {} : { requireUniformRevision: input.requireUniformRevision }),
+      autoFixEol: false,
       ...(input.allowRoot === undefined ? {} : { allowRoot: input.allowRoot }),
       // finalScope was produced and guarded by prepare; internal revalidation
       // must accept directory nodes introduced by descendant expansion.
@@ -1261,14 +1308,37 @@ async function automaticallyRepairEol(
   cwd: string,
   precommit: ToolEnvelope
 ): Promise<{ ok: true; paths: string[] } | { ok: false; envelope: ToolEnvelope }> {
-  const eolPaths = ((precommit.per_file as Array<Record<string, unknown>> | undefined) ?? [])
-    .filter((file) => file.eol_mismatch === true || file.pure_eol_churn === true)
+  const candidates = ((precommit.per_file as Array<Record<string, unknown>> | undefined) ?? [])
+    .filter((file) => file.eol_mismatch === true || file.pure_eol_churn === true);
+  const scopeIsEolOnly = precommit.eol_only === true;
+  const unsafe = candidates.flatMap((file) => {
+    const filePath = typeof file.path === "string" ? file.path : "unknown path";
+    if (file.bom === true) return [`${filePath}: BOM or encoding risk requires explicit repair`];
+    if (file.binary === true || file.eol === "binary") return [`${filePath}: binary file refused`];
+    if (file.eol === "skipped-too-large") return [`${filePath}: file is too large for automatic repair`];
+    if (file.pure_eol_churn !== true && !scopeIsEolOnly) {
+      return [`${filePath}: ignored-EOL diff contains content or property changes`];
+    }
+    if (!isCommittableStatus(String(file.status ?? ""))) return [`${filePath}: file is not a tracked committable target`];
+    return [];
+  });
+  if (unsafe.length > 0) {
+    return {
+      ok: false,
+      envelope: failEnvelope("svn_precommit", cwd, `safe automatic EOL repair refused: ${unsafe.join("; ")}`, {
+        code: "EOL_AUTO_FIX_REFUSED"
+      })
+    };
+  }
+  const eolPaths = candidates
     .map((file) => file.path)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
   if (eolPaths.length === 0) {
     return {
       ok: false,
-      envelope: failEnvelope("eol_fix_verified", cwd, "precommit requested EOL repair without explicit failing paths")
+      envelope: failEnvelope("svn_precommit", cwd, "safe automatic EOL repair refused: precommit did not identify an exact failing path", {
+        code: "EOL_AUTO_FIX_REFUSED"
+      })
     };
   }
   const fixed = await eolFixVerified({ cwd, paths: eolPaths });

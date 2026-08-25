@@ -377,10 +377,11 @@ For example, an LF file with a BOM reports `kind:"lf"`, `has_bom:true` in `eol_c
 final `svn_diff({"paths":["src/example.cs"],"ignoreEol":true})` call proves byte/content intent
 without dumping an unbounded diff.
 
-`svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"` automatically run the same
-verified repair when precommit detects EOL mismatch or pure EOL churn. They return
-`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. `svn_precommit` remains read-only
-and reports the issue without changing files.
+`svn_precommit`, `svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"`
+default to `autoFixEol:"safe"`. They repair only explicit tracked text files when the ignored-EOL
+diff proves there is no content or property change and no BOM/encoding risk exists. They return
+`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. Set `autoFixEol:false` only
+when a diagnostic-only precommit is needed.
 
 ## Commands
 

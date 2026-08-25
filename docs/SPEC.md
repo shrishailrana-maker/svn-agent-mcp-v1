@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.39 — public implementation contract. Single source of truth.**
+**Spec version 1.40 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -559,7 +559,7 @@ The server publishes these token-saving workflow prompts: `svn_inspect_working_c
 `svn_diagnose_commit`. Prompts provide a short call recipe; they do not execute SVN and do not add
 another mutation surface.
 
-**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID }` *(read-only; allowed under READONLY)*
+**`svn_precommit`** — `{ cwd?, paths: string[], lineLimit?: number = 200, includeDiff?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, requireUniformRevision?: boolean = false, baselineToken?: UUID, autoFixEol?: "safe"|false = "safe" }` *(mutating only for safe repair; diagnostic-only under READONLY or with `autoFixEol:false`)*
 One call = scoped status + scoped ignore-EOL diff + `eol_check` + G4/G5/G6 dry evaluation +
 mixed-revision check. Extra fields:
 
@@ -587,14 +587,16 @@ non-blocking for compatibility.
 Intended flow: **precommit → (review summary; fetch full per-file diff only if a count looks
 wrong) → commit.** Two round trips.
 
-For EOL failures, `svn_precommit` remains read-only and reports `EOL_FIX_NEEDED`. Commit workflows
-(`svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"`) automatically run the
-verified recovery sequence **`eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`** before
-continuing. `eol_check` records LF, mixed-EOL, and BOM evidence. `eol_fix_verified` applies the
-repository target, verifies canonical LF/no-BOM content, preserves a concurrent edit instead of
-overwriting it, and runs an ignored-EOL diff. Receipts expose `autoEolFixed` and bounded
-`autoEolFixedPaths`. A final `svn_diff(ignoreEol:true)` must show no unintended content or property
-change before commit.
+For EOL failures, `svn_precommit` defaults to `autoFixEol:"safe"`: it automatically runs the
+verified recovery sequence **`eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`** only
+for an explicit tracked text file with `pure_eol_churn:true`, no property/content diff, and no
+BOM or encoding risk. It rechecks the original scope once, then stops red if it remains non-ready.
+All other EOL cases return the exact file and refusal reason. Set `autoFixEol:false` for a
+diagnostic-only `EOL_FIX_NEEDED` result. Commit workflows pass through the same default. `eol_check` records LF, mixed-EOL, and BOM evidence.
+`eol_fix_verified` applies the repository target, verifies canonical LF/no-BOM content, preserves a
+concurrent edit instead of overwriting it, and runs an ignored-EOL diff. Receipts expose
+`autoEolFixed` and bounded `autoEolFixedPaths`. A final `svn_diff(ignoreEol:true)` must show no
+unintended content or property change before commit.
 
 Compact mode returns one authoritative receipt: path count, status counts, diff totals, EOL and
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
@@ -924,7 +926,7 @@ default_tools_approval_mode = "approve"
 All registered SVN tools, including hidden compatibility routes, advertise
 `annotations.destructiveHint=false`. A central canonical read-only set advertises accurate
 `readOnlyHint` values for diagnostics, status/info/snapshot, diff/log/cat/blame, EOL checks,
-property reads, precommit, and lock status. These annotations do not replace the MCP's READONLY,
+property reads, and lock status. These annotations do not replace the MCP's READONLY,
 containment, never-commit, risk acknowledgement, or durable receipt guards.
 
 ## 11. Historical development phases
@@ -1030,6 +1032,11 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Automatically repairs and verifies EOL mismatch, BOM damage, and pure EOL churn inside normal
   commit and prepare-commit workflows; read-only `svn_precommit` remains diagnostic.
 - Returns bounded `autoEolFixed` and `autoEolFixedPaths` evidence in mutation receipts.
+
+### Spec 1.40 / v1.8.1 — 2026-08-25
+
+- Adds `svn_precommit autoFixEol:"safe"` by default, so only scoped EOL-only failures repair and
+  revalidate in one call. `autoFixEol:false` retains diagnostic-only behavior.
 
 ### Spec 1.35 / v1.5.0 — 2026-08-04
 

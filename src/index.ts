@@ -48,7 +48,7 @@ export type ToolProfile = "full" | "docs" | "review";
 export const readOnlyToolNames = new Set([
   "svn_self_check", "svn_diagnose", "svn_status", "svn_info", "svn_snapshot",
   "svn_diff", "svn_log", "svn_cat", "svn_blame", "eol_check", "svn_propget",
-  "svn_precommit", "svn_lock_status"
+  "svn_lock_status"
 ]);
 
 export const fieldProjectionNames = {
@@ -73,7 +73,8 @@ export const fieldProjectionNames = {
     "ready", "verdict", "pathCount", "statusCounts", "diff", "eol", "mixedRevision",
     "revisionRange", "guardFailures", "riskSignals", "remediation", "eolCheckComplete",
     "eolPolicyIdentity", "precommitToken", "precommitExpiresAt", "remoteHeadRevision",
-    "baselineToken", "baselinePathChanges", "remoteHeadChangedSinceBaseline"
+    "baselineToken", "baselinePathChanges", "remoteHeadChangedSinceBaseline",
+    "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated"
   ],
   svn_update: [
     "requestedRevision", "resultingRevision", "revisionRange", "mixedRevision", "remoteHeadRevision",
@@ -101,12 +102,12 @@ export const advancedInputNames = {
   svn_snapshot: ["afterCursor", "conflictCursor", "captureBaseline"],
   svn_diff: ["file", "operationId"],
   eol_fix_verified: ["operationId"],
-  svn_precommit: ["baselineToken"],
+  svn_precommit: ["baselineToken", "autoFixEol"],
   svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
   svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly", "operationId", "baselineToken"],
   svn_commit: [
     "operation", "revision", "expectedRemoteHead", "lineLimit", "requireUniformRevision",
-    "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId", "precommitToken",
+    "expandDescendants", "allowRoot", "allowDirectoryTargets", "autoFixEol", "operationId", "precommitToken",
     "baselineToken", "detailOperationId", "cursor", "maxChars"
   ],
   svn_resolve: ["operationId"],
@@ -429,7 +430,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_precommit",
     {
-      description: "Run guarded status, diff, EOL, and revision checks. Commit workflows automatically apply verified EOL repairs when needed.",
+      description: "Run guarded status, diff, EOL, and revision checks. Safe scoped EOL repair runs automatically by default; set autoFixEol:false for diagnostic-only mode.",
       inputSchema: {
         cwd,
         paths,
@@ -439,6 +440,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
         expandDescendants,
+        autoFixEol: z.union([z.literal("safe"), z.literal(false)]).optional().describe("Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode."),
         requireUniformRevision: z.boolean().optional().describe(
           "Refuse READY while the working copy spans more than one revision; intended for release handoffs."
         ),
@@ -451,7 +453,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_prepare_commit",
     {
-      description: "Pinned scoped update followed by guarded precommit evidence; EOL mismatches are automatically repaired and verified.",
+      description: "Pinned scoped update followed by guarded precommit evidence; EOL mismatches are automatically repaired and verified by default.",
       inputSchema: {
         cwd,
         paths,
@@ -461,6 +463,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
         expandDescendants,
+        autoFixEol: z.union([z.literal("safe"), z.literal(false)]).optional().describe("Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode."),
         requireUniformRevision: z.boolean().optional(),
         ...response
       }
@@ -545,7 +548,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: `Guarded commit with explicit paths and message. EOL mismatches are automatically repaired and verified before commit. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
+      description: `Guarded commit with explicit paths and message. Safe scoped EOL mismatches are automatically repaired and verified before commit by default; set autoFixEol:false for diagnostic-only mode. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
       inputSchema: {
         cwd,
         paths,
@@ -566,6 +569,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
         expandDescendants,
+        autoFixEol: z.union([z.literal("safe"), z.literal(false)]).optional().describe("Safe scoped verified EOL repair; default safe. Set false for diagnostic-only mode."),
         requireUniformRevision: z.boolean().optional(),
         ...response
       }
