@@ -7,10 +7,11 @@
 - `decisions/` contains architecture decision records, including plug-and-play global registration,
   compact MCP responses, authoritative structured receipts, bounded tool profiles, the bundled
   Windows runtime, bounded process-local continuation evidence, explicit expandable commit scopes,
-  bound safe-commit workflow evidence, and the external SVN MCP comparison decision.
+  bound safe-commit workflow evidence, safe added-text EOL normalization, and the external SVN MCP
+  comparison decision.
 - `../CHANGELOG.md` records release history.
 
-The current source release is `1.8.1`; query `npm view svn-agent-mcp version` for the registry
+The current source release is `1.8.2`; query `npm view svn-agent-mcp version` for the registry
 release. Release history is recorded in `../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the
 local ignored `current` release pointer, then use `svn_self_check` to verify it and the bundled

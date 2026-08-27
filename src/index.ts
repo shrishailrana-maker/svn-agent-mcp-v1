@@ -433,7 +433,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_precommit",
     {
-      description: "Guarded precommit; autoFixEol:\"safe\" is the default.",
+      description: "Guarded precommit; safe EOL repair may normalize explicit text files. Use autoFixEol:\"off\" for checks only.",
       inputSchema: {
         cwd,
         paths,
@@ -493,7 +493,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_add",
     {
-      description: "Guarded add for explicit paths.",
+      description: "Add explicit files; directory targets require allowRecursive:true.",
       inputSchema: { cwd, paths, allowRecursive: z.boolean().optional(), ...response }
     },
     async (args, extra) => handleTool("svn_add", args, extra.signal, () => svnAdd(compactArgs(args)))
@@ -549,7 +549,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: `Guarded commit with automatic safe EOL repair. ${COMMIT_MESSAGE_REQUIREMENT} A commit scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
+      description: `Guarded commit; directory children require expandDescendants:true. ${COMMIT_MESSAGE_REQUIREMENT} A scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
       inputSchema: {
         cwd,
         paths,

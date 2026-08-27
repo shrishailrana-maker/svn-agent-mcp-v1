@@ -112,7 +112,12 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
     targetStats.set(target, stat.stat);
     if (stat.stat.isDirectory()) {
       if (!input.allowRecursive) {
-        return failEnvelope("svn add", guard.cwd, `directory add requires allowRecursive:true: ${target}`);
+        return {
+          ...failEnvelope("svn add", guard.cwd, `directory add requires allowRecursive:true: ${target}`, {
+            code: "DIRECTORY_SCOPE"
+          }),
+          next_action: { tool: "svn_add", paths: input.paths, allowRecursive: true }
+        };
       }
       const descendantHit = await firstNeverCommitDescendant(target, guard.wcRoot);
       if (descendantHit?.error) {
@@ -611,6 +616,7 @@ export async function svnCommit(input: {
   if (!scope.ok) {
     return {
       ...(scope.envelope ?? failEnvelope("svn commit", guard.cwd, scope.note)),
+      ...(scope.nextAction ? { next_action: { tool: "svn_commit", paths: input.paths, ...scope.nextAction } } : {}),
       ...(scope.expanded ? { scope_expanded: true, expanded_paths: scope.expandedPaths } : {})
     };
   }
@@ -623,6 +629,7 @@ export async function svnCommit(input: {
   }
 
   const scopedPaths = scope.paths;
+  let precommitEolVerdict: "passed-via-precommit" | null = null;
   for (const target of scopedPaths) {
     const hit = neverCommitHit(target, guard.wcRoot);
     if (hit) {
@@ -639,6 +646,7 @@ export async function svnCommit(input: {
       scopedPaths
     );
     if (!binding.ok) return binding.envelope;
+    precommitEolVerdict = binding.eolVerdict;
   }
 
   const status = await scopedStatusMap(guard.cwd, guard.wcRoot, statusPathsForCommit(scopedPaths, guard.wcRoot));
@@ -704,6 +712,7 @@ export async function svnCommit(input: {
       scopedPaths
     );
     if (!binding.ok) return binding.envelope;
+    precommitEolVerdict = binding.eolVerdict;
   }
 
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
@@ -769,7 +778,7 @@ export async function svnCommit(input: {
       base_revision_range: baseVersion?.range ?? null,
       observed_remote_head_before: observedRemoteHeadBefore,
       remote_head_revision: revision ?? observedRemoteHeadBefore,
-      eol_verdict: "not_checked",
+      eol_verdict: precommitEolVerdict ?? "not_checked",
       content_hashes: contentHashes.hashes,
       content_hashes_truncated: false,
       post_status: postStatus?.changed_paths ?? [],
@@ -921,7 +930,10 @@ async function validatePrecommitBinding(
   wcRoot: string,
   repositoryRoot: string | null,
   scopedPaths: string[]
-): Promise<{ ok: true } | { ok: false; envelope: ToolEnvelope }> {
+): Promise<
+  { ok: true; eolVerdict: "passed-via-precommit" }
+  | { ok: false; envelope: ToolEnvelope }
+> {
   const evidence = processWorkflowEvidence.get(token, "precommit", workflowScope(wcRoot, scopedPaths));
   if (!evidence.ok) {
     return {
@@ -954,6 +966,12 @@ async function validatePrecommitBinding(
     return {
       ok: false,
       envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_EOL_POLICY_CHANGED", "EOL policy changed after precommit")
+    };
+  }
+  if (record.eolVerdict !== "passed-via-precommit") {
+    return {
+      ok: false,
+      envelope: workflowFailure("svn commit", cwd, "PRECOMMIT_EOL_EVIDENCE_INVALID", "precommit EOL evidence is invalid")
     };
   }
   if (typeof record.diffIdentity !== "string" || !/^sha256:[0-9a-f]{64}$/i.test(record.diffIdentity)) {
@@ -1014,7 +1032,7 @@ async function validatePrecommitBinding(
       }
     };
   }
-  return { ok: true };
+  return { ok: true, eolVerdict: "passed-via-precommit" };
 }
 
 function baselineCollisionReceipt(

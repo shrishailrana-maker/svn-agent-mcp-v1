@@ -334,7 +334,7 @@ const PROJECTION_SAFETY_FIELDS = [
   "ok", "ready", "verdict", "code", "note", "warning", "warningCode", "warningDetail",
   "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts",
   "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
-  "hasMore", "recoveryTool", "remediation",
+  "hasMore", "recoveryTool", "remediation", "nextAction",
   "snapshotToken", "unchangedSinceCursor", "changedSinceCursor",
   "operationId", "idempotentReplay", "operationRecovered",
   "remoteHeadUnavailableReason",
@@ -484,6 +484,7 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
   const outOfDatePaths = stringArray(payload.out_of_date_paths)
     .slice(0, 100)
     .map((candidate) => workingCopyRootRelativePath(candidate, payload.cwd, root));
+  const nextAction = compactNextAction(payload.next_action);
   return {
     ok: false,
     ...(payload.verdict ? { verdict: payload.verdict } : {}),
@@ -513,7 +514,27 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
     ...(payload.mixed_revision !== undefined ? { mixedRevision: payload.mixed_revision } : {}),
     ...(payload.working_copy_mixed !== undefined ? { workingCopyMixed: payload.working_copy_mixed } : {}),
     ...(payload.revision_range !== undefined ? { revisionRange: payload.revision_range } : {}),
-    ...(riskSignals.length > 0 ? { riskSignals } : {})
+    ...(riskSignals.length > 0 ? { riskSignals } : {}),
+    ...(nextAction ? { nextAction } : {})
+  };
+}
+
+function compactNextAction(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const action = value as Record<string, unknown>;
+  const tool = stringValue(action.tool);
+  if (!tool) return null;
+  const paths = stringArray(action.paths).slice(0, 25);
+  return {
+    tool,
+    ...(paths.length > 0 ? { paths } : {}),
+    ...(action.target === "crlf" || action.target === "lf" ? { target: action.target } : {}),
+    ...(action.style === "native" || action.style === "LF" || action.style === "CRLF" ? { style: action.style } : {}),
+    ...(action.operation === "prepare" || action.operation === "safe" || action.operation === "commit"
+      ? { operation: action.operation }
+      : {}),
+    ...(action.allowRecursive === true ? { allowRecursive: true } : {}),
+    ...(action.expandDescendants === true ? { expandDescendants: true } : {})
   };
 }
 
@@ -1209,6 +1230,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
   const rawDiffExcerpt = stringValue(payload.diff_excerpt);
   const diffCharLimit = boundedInteger(request.maxChars, 12000, 256, 64000);
   const diffExcerpt = rawDiffExcerpt.slice(0, diffCharLimit);
+  const nextAction = compactNextAction(payload.next_action);
 
   return {
     ok: payload.ok,
@@ -1251,6 +1273,7 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     mixedRevision,
     ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
+    ...(nextAction ? { nextAction } : {}),
     ...(guardFailures.length > 0 ? { guardFailures } : {}),
     ...(guardFailures.length > 0 ? { guardCode: classifyGuardCode(guardFailures[0] ?? "") ?? "GUARD_BLOCKED" } : {}),
     ...(allGuardFailures.length > guardFailures.length

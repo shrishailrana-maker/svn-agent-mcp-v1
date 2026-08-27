@@ -24,6 +24,7 @@ export type CommitScopeResult =
       ok: false;
       note: string;
       envelope?: ToolEnvelope;
+      nextAction?: { expandDescendants: true };
       expanded: boolean;
       expandedPaths: string[];
     };
@@ -47,6 +48,7 @@ export async function resolveCommitScope(input: {
       return {
         ok: false,
         note: `directory commit target requires allowDirectoryTargets:true because --depth empty excludes descendants: ${repoRelativePath(directoryTarget.target, input.wcRoot)}`,
+        nextAction: { expandDescendants: true },
         expanded: false,
         expandedPaths: []
       };

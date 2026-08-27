@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.40 — public implementation contract. Single source of truth.**
+**Spec version 1.41 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -597,6 +597,13 @@ evidence is refused without writing. It rechecks the original scope once, then s
 remains non-ready.
 All other EOL cases return the exact file and refusal reason. Set `autoFixEol:"off"` for a
 diagnostic-only `EOL_FIX_NEEDED` result. Commit workflows always use the same safe default.
+For an explicit status-`A` text file, no `BASE` exists. Safe mode instead requires a target declared
+by `svn:eol-style` or `.svn-mcp-policy.json normalizeEol`, valid UTF-8 without BOM, and normalized
+content identity before/after conversion. It never infers policy from neighboring files. The same
+precommit call then revalidates the scope and issues the bound token. An explicit `svn:eol-style`
+property is authoritative; repository policy is only the fallback when that property is absent.
+The target is re-read after conversion; a concurrent declaration change triggers guarded rollback
+and no token is issued.
 `eol_check` records LF, mixed-EOL, and BOM evidence.
 `eol_fix_verified` converts a staged sibling copy, verifies canonical LF/no-BOM content, then
 applies it only after the original matches its captured hash. A converter failure therefore
@@ -705,6 +712,7 @@ argv: `svn add --parents --depth empty -- <paths…>` (files); intermediate pare
 scheduled as needed without recursively adding siblings. A directory path requires
 `allowRecursive:true` (then `--parents --depth infinity`). G4 enforced — can't add what may never be committed
 (`scratch/**` is reserved for local scratch files; never add).
+Directory refusal returns a bounded copy-ready `nextAction` with `allowRecursive:true`.
 When repository policy sets `normalizeEol:"crlf"` or `"lf"`, new text files in the explicit add
 scope are backed up, converted, and content-hash verified before SVN scheduling. Any failure restores
 converted files that have not changed concurrently and prevents the add; concurrently changed files
@@ -761,6 +769,7 @@ Whitespace-only messages are refused. Naming the working-copy root is refused un
 explicitly acknowledges that `--depth empty` commits only the directory node and excludes changed
 descendants. Explicit child paths remain the normal scoped workflow. A changed descendant outside
 the committed scope makes `workingCopyClean:false`; call `svn_status` when its path detail is needed.
+Directory-scope refusals return a bounded `nextAction` recommending `expandDescendants:true`.
 With `expandDescendants:true`, existing directory inputs expand to the bounded, sorted set of all
 currently changed descendants. The exact expanded list is returned and every descendant receives
 the same containment, never-commit, status, conflict, and risk checks as an explicitly named path.
@@ -1038,6 +1047,12 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Automatically repairs and verifies EOL mismatch, BOM damage, and pure EOL churn inside normal
   commit and prepare-commit workflows; read-only `svn_precommit` remains diagnostic.
 - Returns bounded `autoEolFixed` and `autoEolFixedPaths` evidence in mutation receipts.
+
+### Spec 1.41 / v1.8.2 — 2026-08-27
+
+- Extends `autoFixEol:"safe"` to explicit status-`A` text files with declared policy and
+  normalized-content verification, carries EOL evidence through precommit tokens, and adds bounded
+  copy-ready next actions for predictable directory guard refusals.
 
 ### Spec 1.40 / v1.8.1 — 2026-08-25
 

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.8.1"
+    "version": "1.8.2"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -1109,7 +1109,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Guarded precommit; autoFixEol:\"safe\" is the default.",
+      "description": "Guarded precommit; safe EOL repair may normalize explicit text files. Use autoFixEol:\"off\" for checks only.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1256,7 +1256,7 @@
     },
     {
       "name": "svn_add",
-      "description": "Guarded add for explicit paths.",
+      "description": "Add explicit files; directory targets require allowRecursive:true.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1489,7 +1489,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit with automatic safe EOL repair. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A commit scope with more than 8 paths requires riskAck:true.",
+      "description": "Guarded commit; directory children require expandDescendants:true. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A scope with more than 8 paths requires riskAck:true.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.1`; each source clone can prepare a local runtime under `releases/v1.8.1`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.2`; each source clone can prepare a local runtime under `releases/v1.8.2`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -383,6 +383,12 @@ diff, or a normalized BASE comparison for SVN's inconsistent-EOL diagnostic, pro
 content or property change and no BOM/encoding risk exists in either the working file or BASE. They return
 `autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. Set `autoFixEol:"off"` on
 `svn_precommit` only when a diagnostic-only check is needed.
+
+Newly added text files have no `BASE`. For status `A`, the same safe mode uses an explicit
+`svn:eol-style` or `.svn-mcp-policy.json normalizeEol` target, verifies valid UTF-8/no BOM and
+normalized-content identity, applies only that explicit file, and continues to issue the precommit
+token in the same call. An explicit file property takes precedence over repository fallback policy;
+the implementation never infers EOL policy from neighboring files.
 
 ## Commands
 

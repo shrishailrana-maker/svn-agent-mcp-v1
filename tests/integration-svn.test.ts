@@ -284,6 +284,164 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("automatically normalizes an added text file with declared EOL policy and carries token evidence", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "added-eol.md";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(file, "heading\nbody\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: [relativePath], style: "CRLF" })).ok).toBe(true);
+
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+
+      expect(precommit).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: [relativePath],
+        precommit_token: expect.stringMatching(/^[0-9a-f-]{36}$/i)
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("heading\r\nbody\r\n");
+      const compact = toToolResult("svn_precommit", precommit, {
+        responseMode: "compact",
+        request: { paths: [relativePath] }
+      }).structuredContent;
+      expect(compact).toMatchObject({
+        ok: true,
+        ready: true,
+        autoEolFixed: true,
+        autoEolFixedPaths: [relativePath]
+      });
+      expect(compact).not.toHaveProperty("diffExcerpt");
+      expect(JSON.stringify(compact).length).toBeLessThan(1500);
+
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: [relativePath],
+        precommitToken: String(precommit.precommit_token),
+        message: commitMessage("Add normalized documentation")
+      });
+      expect(committed).toMatchObject({
+        ok: true,
+        eol_verdict: "passed-via-precommit",
+        precommit_token: precommit.precommit_token,
+        post_status_clean: true
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes an externally added text file from repository policy without BASE", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "policy-added.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(path.join(fixture.wc, ".svn-mcp-policy.json"), JSON.stringify({ normalizeEol: "crlf" }), "utf8");
+      fs.writeFileSync(file, "one\ntwo\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--", file], { cwd: fixture.wc });
+
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+
+      expect(precommit).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: [relativePath]
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("gives explicit svn:eol-style precedence over repository fallback policy", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "explicit-policy.txt";
+      const file = path.join(fixture.wc, relativePath);
+      fs.writeFileSync(path.join(fixture.wc, ".svn-mcp-policy.json"), JSON.stringify({ normalizeEol: "lf" }), "utf8");
+      fs.writeFileSync(file, "one\ntwo\n", "utf8");
+      execFileSync(svnExecutable(), ["add", "--", file], { cwd: fixture.wc });
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: [relativePath], style: "CRLF" })).ok).toBe(true);
+
+      const precommit = await svnPrecommit({ cwd: fixture.wc, paths: [relativePath] });
+
+      expect(precommit).toMatchObject({
+        ok: true,
+        verdict: "READY",
+        auto_eol_fixed: true,
+        auto_eol_fixed_paths: [relativePath]
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\r\n");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back added-file normalization when declared EOL policy changes during repair", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "policy-race.txt";
+      const file = path.join(fixture.wc, relativePath);
+      const original = "one\ntwo\n";
+      fs.writeFileSync(file, original, "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: [relativePath], style: "CRLF" })).ok).toBe(true);
+
+      const precommit = await svnPrecommit(
+        { cwd: fixture.wc, paths: [relativePath] },
+        {
+          afterAutomaticEolRepair: async () => {
+            expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: [relativePath], style: "LF" })).ok).toBe(true);
+          }
+        }
+      );
+
+      expect(precommit).toMatchObject({
+        ok: false,
+        verdict: "EOL_FIX_REFUSED",
+        code: "EOL_POLICY_CHANGED_DURING_REPAIR",
+        rollback_restored_paths: [relativePath]
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe(original);
+      const style = await svnPropget({ cwd: fixture.wc, paths: [relativePath], name: "svn:eol-style" });
+      expect(style.properties).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: relativePath, value: "LF" })
+      ]));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back added-file normalization when the post-repair check throws", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const relativePath = "post-check-failure.txt";
+      const file = path.join(fixture.wc, relativePath);
+      const original = "one\ntwo\n";
+      fs.writeFileSync(file, original, "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: [relativePath] })).ok).toBe(true);
+      expect((await svnPropsetEolStyle({ cwd: fixture.wc, paths: [relativePath], style: "CRLF" })).ok).toBe(true);
+
+      const precommit = await svnPrecommit(
+        { cwd: fixture.wc, paths: [relativePath] },
+        { afterAutomaticEolRepair: () => { throw new Error("test post-check failure"); } }
+      );
+
+      expect(precommit).toMatchObject({
+        ok: false,
+        verdict: "EOL_FIX_FAILED",
+        code: "EOL_POST_REPAIR_CHECK_FAILED",
+        rollback_restored_paths: [relativePath]
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe(original);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses automatic repair when the repository BASE has a BOM", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -704,6 +862,31 @@ describe("SVN tool integration against a temp repository", () => {
       expect(second.committed_paths).toEqual(expect.arrayContaining([original, moved]));
       const pinned = await svnUpdate({ cwd: fixture.wc, paths: [moved], revision: String(second.revision) });
       expect(pinned).toMatchObject({ ok: true, requested_revision: String(second.revision) });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a copy-ready recursive add action for directory targets", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.mkdirSync(path.join(fixture.wc, "new-directory"));
+      fs.writeFileSync(path.join(fixture.wc, "new-directory", "file.txt"), "one\r\n", "utf8");
+
+      const refused = await svnAdd({ cwd: fixture.wc, paths: ["new-directory"] });
+
+      expect(refused).toMatchObject({
+        ok: false,
+        code: "DIRECTORY_SCOPE",
+        next_action: { tool: "svn_add", paths: ["new-directory"], allowRecursive: true }
+      });
+      expect(toToolResult("svn_add", refused, {
+        responseMode: "compact",
+        request: { paths: ["new-directory"] }
+      }).structuredContent).toMatchObject({
+        ok: false,
+        nextAction: { tool: "svn_add", paths: ["new-directory"], allowRecursive: true }
+      });
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -2202,6 +2385,18 @@ describe("SVN tool integration against a temp repository", () => {
       const precommitRefused = await svnPrecommit({ cwd: fixture.wc, paths: ["commit-dir"] });
       expect(precommitRefused).toMatchObject({ ok: false, verdict: "GUARD_BLOCKED" });
       expect(precommitRefused.note).toContain("allowDirectoryTargets:true");
+      expect(precommitRefused.next_action).toEqual({
+        tool: "svn_precommit",
+        paths: ["commit-dir"],
+        expandDescendants: true
+      });
+      expect(toToolResult("svn_precommit", precommitRefused, {
+        responseMode: "compact",
+        request: { paths: ["commit-dir"] }
+      }).structuredContent).toMatchObject({
+        ok: false,
+        nextAction: { tool: "svn_precommit", paths: ["commit-dir"], expandDescendants: true }
+      });
       const precommitAcknowledged = await svnPrecommit({
         cwd: fixture.wc,
         paths: ["commit-dir"],
@@ -2216,6 +2411,11 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(refused).toMatchObject({ ok: false });
       expect(refused.note).toContain("allowDirectoryTargets:true");
+      expect(refused.next_action).toEqual({
+        tool: "svn_commit",
+        paths: ["commit-dir"],
+        expandDescendants: true
+      });
       const remaining = await svnStatus({ cwd: fixture.wc, paths: ["commit-dir/child.txt"] });
       expect(statusByPath(remaining.changed_paths, fixture.wc).get("commit-dir/child.txt")).toBe("M");
 

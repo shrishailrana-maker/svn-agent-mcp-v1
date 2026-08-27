@@ -4,6 +4,18 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-27
+
+### Changed
+
+- `svn_precommit autoFixEol:"safe"` now normalizes an explicit newly added text file without
+  requiring repository `BASE`, when `svn:eol-style` or repository policy declares the target and
+  normalized-content verification proves that only EOL bytes changed.
+- Precommit tokens now carry EOL evidence into commit receipts as `passed-via-precommit`; automatic
+  repairs continue to report `auto_fixed`.
+- Directory guard refusals return bounded copy-ready `nextAction` receipts; undeclared EOL targets
+  return a short typed refusal. Compact precommit continues to omit diff excerpts unless requested.
+
 ## [1.8.1] - 2026-08-25
 
 ### Changed
