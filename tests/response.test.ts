@@ -1465,7 +1465,7 @@ describe("public MCP response shaping", () => {
     expect(precommit.eolCheckComplete).toBe(true);
     expect(precommit.eolPolicyIdentity).toBe("sha256:abc123");
     expect(precommit).not.toHaveProperty("properties");
-    expect(precommit.mixedRevision).toBe(false);
+    expect(precommit).not.toHaveProperty("mixedRevision");
     expect(precommit).not.toHaveProperty("guardFailures");
     expect(precommit.riskSignals).toEqual(["build-system file touched"]);
     expect(precommit).not.toHaveProperty("diff_excerpt");
@@ -1676,6 +1676,42 @@ describe("public MCP response shaping", () => {
       postStatusClean: false,
       residue: [{ path: "src/leftover.ts", status: "modified" }]
     });
+  });
+
+  it("keeps 52-path compact commit receipts short and exposes hashes only on request", () => {
+    const paths = Array.from({ length: 52 }, (_, index) => `docs/file-${index}.md`);
+    const hashes = paths.map((path) => ({ path, sha256: "a".repeat(64) }));
+    const payload = {
+      ...createEnvelope({ ok: true, command: "svn commit", cwd: "E:\\dev\\example", revision: 44 }),
+      committed_paths: paths, content_hashes: hashes, working_copy_mixed: true,
+      diff_stat: { source: "validated-precommit", complete: true, added: 104, removed: 0,
+        files: paths.map((path) => ({ path, added: 2, removed: 0 })) }
+    };
+    const compact = toToolResult("svn_commit", payload, { responseMode: "compact" }).structuredContent;
+    expect(compact).not.toHaveProperty("contentHashes");
+    expect(compact).not.toHaveProperty("workingCopyMixed");
+    expect(compact).toMatchObject({ diffStat: { added: 104, removed: 0, fileCount: 52, filesTruncated: true } });
+    expect((compact.diffStat as { files: unknown[] }).files).toHaveLength(25);
+    const previous = { ...compact, diffStat: undefined, contentHashes: hashes, workingCopyMixed: true };
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(previous).length * 0.6);
+    expect(toToolResult("svn_commit", payload, { responseMode: "compact", request: { fields: ["contentHashes"] } }).structuredContent.contentHashes).toEqual(hashes);
+    expect(toToolResult("svn_commit", payload, { responseMode: "full" }).structuredContent.content_hashes).toEqual(hashes);
+    expect(toToolResult("svn_commit", payload, { responseMode: "full" }).structuredContent.working_copy_mixed).toBe(true);
+  });
+
+  it("bounds long diff-stat paths and labels partial statistics and requested hashes", () => {
+    const payload = {
+      ...createEnvelope({ ok: true, command: "svn commit", cwd: "E:\\dev\\example", revision: 44 }),
+      content_hashes: Array.from({ length: 101 }, (_, i) => ({ path: `file-${i}`, sha256: "b".repeat(64) })),
+      diff_stat: { source: "validated-precommit", complete: false, added: 4, removed: 0,
+        files: ["a", "b"].map((name) => ({ path: `${name.repeat(3000)}.md`, added: 2, removed: 0 })) }
+    };
+    const compact = toToolResult("svn_commit", payload, { responseMode: "compact" }).structuredContent;
+    expect(compact).toMatchObject({ diffStat: { complete: false, fileCount: 2, filesTruncated: true } });
+    expect((compact.diffStat as { files: unknown[] }).files).toHaveLength(1);
+    const hashes = toToolResult("svn_commit", payload, { responseMode: "compact", request: { fields: ["contentHashes"] } }).structuredContent;
+    expect(hashes.contentHashes).toHaveLength(100);
+    expect(hashes).toMatchObject({ contentHashCount: 101, contentHashesTruncated: true });
   });
 
   it("reports out-of-date commit evidence without collapsing mixed-revision state", () => {

@@ -4,6 +4,25 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-09-07
+
+### Fixed
+
+- Refreshed compatible transitive dependencies in the development lockfile to resolve
+  the current fast-uri, qs, and browserslist audit findings.
+- Automatic added-file EOL normalization now works alongside ordinary changes in the same
+  explicit scope. EOL-only proof applies to repaired files, and the entire precommit is rerun.
+- EOL repair resolves exact file targets correctly when the caller uses a subdirectory cwd.
+- Routine mixed-revision state no longer adds a commit/precommit warning; diagnostic state
+  remains in full output and failures retain stale-path evidence.
+
+### Changed
+
+- Compact commit receipts omit SHA-256 lists; use `fields:["contentHashes"]` or full output.
+- Commit receipts carry line statistics from the revalidated precommit diff, without another
+  SVN call. Compact statistics include totals and at most 25 paths / 4 KiB of file entries;
+  `filesTruncated:true` signals omitted entries, available in full output.
+
 ## [1.8.2] - 2026-08-27
 
 ### Changed

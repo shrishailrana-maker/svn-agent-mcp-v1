@@ -333,6 +333,53 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("normalizes added files beside ordinary changes from a nested cwd and returns bound diff stats", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const cwd = path.join(fixture.wc, "docs");
+      fs.mkdirSync(cwd);
+      fs.writeFileSync(path.join(cwd, "existing.md"), "old\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["docs/existing.md"] })).ok).toBe(true);
+      expect((await svnCommit({ cwd: fixture.wc, paths: ["docs/existing.md"], message: commitMessage("Seed docs") })).ok).toBe(true);
+      fs.writeFileSync(path.join(fixture.wc, ".svn-mcp-policy.json"), JSON.stringify({ normalizeEol: "crlf" }));
+      const existing = "updated\r\n";
+      fs.writeFileSync(path.join(cwd, "existing.md"), existing);
+      fs.writeFileSync(path.join(cwd, "new.md"), "heading\nbody\n");
+      execFileSync(svnExecutable(), ["add", "--", "new.md"], { cwd });
+      const paths = ["existing.md", "new.md"];
+      const precommit = await svnPrecommit({ cwd, paths });
+      expect(precommit).toMatchObject({ ok: true, verdict: "READY", auto_eol_fixed: true });
+      expect(fs.readFileSync(path.join(cwd, "new.md"), "utf8")).toBe("heading\r\nbody\r\n");
+      expect(fs.readFileSync(path.join(cwd, "existing.md"), "utf8")).toBe(existing);
+
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const server = createServer("full");
+      const client = new Client({ name: "compact-commit-stats", version: "1.0.0" });
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const committed = await client.callTool({ name: "svn_commit", arguments: {
+          cwd, paths, message: commitMessage("Commit mixed docs scope"),
+          precommitToken: precommit.precommit_token, responseMode: "compact"
+        } });
+        expect(committed.structuredContent).toMatchObject({ ok: true, diffStat: {
+          source: "validated-precommit", complete: true, added: 3, removed: 1,
+          files: expect.arrayContaining([
+            { path: "docs/existing.md", added: 1, removed: 1 },
+            { path: "docs/new.md", added: 2, removed: 0 }
+          ])
+        } });
+        expect(committed.structuredContent).not.toHaveProperty("contentHashes");
+        expect(committed.structuredContent).not.toHaveProperty("workingCopyMixed");
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes an externally added text file from repository policy without BASE", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -1300,7 +1347,8 @@ describe("SVN tool integration against a temp repository", () => {
 
       fs.writeFileSync(file, "two\r\n", "utf8");
       const precommit = await svnPrecommit({ cwd: directory, paths: ["nested.txt"] });
-      expect(precommit.note).toContain("mixed revision working copy");
+      expect(precommit.mixed_revision).toBe(true);
+      expect(precommit.note).not.toContain("mixed revision working copy");
 
       const committed = await svnCommit({
         cwd: directory,
@@ -1309,7 +1357,8 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(committed.ok).toBe(true);
       expect(committed.wc_root).toBe(fixture.wc);
-      expect(committed.note).toContain("mixed revision working copy");
+      expect(committed.working_copy_mixed).toBe(true);
+      expect(committed.note).not.toContain("mixed revision working copy");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

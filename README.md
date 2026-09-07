@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.2`; each source clone can prepare a local runtime under `releases/v1.8.2`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.3`; each source clone can prepare a local runtime under `releases/v1.8.3`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -243,11 +243,10 @@ Release workflows can pin `svn_update` with an exact `revision`; it still requir
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
 to refuse if repository HEAD moved since the caller's probe. Use
 `svn_precommit requireUniformRevision:true` when a release handoff must not proceed from a
-mixed-revision working copy. The default remains backward compatible and reports mixed revisions
-without blocking ordinary precommit work.
+mixed-revision working copy. Ordinary precommit work does not warn about mixed revisions.
 
 Parallel agents can create a valid mixed-revision working copy. A commit receipt may report
-`workingCopyMixed:true` while the commit remains valid. `baseRevision:null` means no single base
+`working_copy_mixed:true` in full mode while the commit remains valid. `baseRevision:null` means no single base
 revision describes every committed path; use `baseRevisionRange` for the useful range. Treat mixed
 state as evidence, not failure by itself. Check the separate out-of-date and conflict diagnostics
 before deciding whether to stop.
@@ -388,7 +387,14 @@ Newly added text files have no `BASE`. For status `A`, the same safe mode uses a
 `svn:eol-style` or `.svn-mcp-policy.json normalizeEol` target, verifies valid UTF-8/no BOM and
 normalized-content identity, applies only that explicit file, and continues to issue the precommit
 token in the same call. An explicit file property takes precedence over repository fallback policy;
-the implementation never infers EOL policy from neighboring files.
+the implementation never infers EOL policy from neighboring files. Added files can be normalized
+alongside ordinary modifications in the same explicit scope, including calls from a subdirectory.
+
+Compact commit receipts omit per-file hashes; request `fields:["contentHashes"]` or
+`responseMode:"full"` when needed. Token-bound commits include `diffStat` from the validated
+precommit diff: total added/removed lines and up to 25 paths / 4 KiB of file entries. Larger
+scopes report `filesTruncated:true`; full output includes all available entries. Statistics
+describe the checked content diff, ignoring EOL, and `complete:false` means counts are partial.
 
 ## Commands
 

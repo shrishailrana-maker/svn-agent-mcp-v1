@@ -446,7 +446,7 @@ export async function svnPrecommit(input: {
     verdict,
     ...guardNotes,
     ...diffNotes,
-    mixedRevision ? "mixed revision working copy" : "",
+    mixedRevision && input.requireUniformRevision ? "mixed revision working copy" : "",
     remediation
   ].filter(Boolean);
 
@@ -1307,6 +1307,7 @@ async function finalizeSafeCommit(
     remote_head_revision: committed.remote_head_revision,
     eol_verdict: "verified",
     content_hashes: committed.content_hashes,
+    diff_stat: committed.diff_stat,
     post_status_clean: committed.post_status_clean,
     final_scope_clean: finalScopeClean,
     scope_uniform: scopeUniform,
@@ -1609,7 +1610,7 @@ async function automaticallyRepairEol(
         )
       };
     }
-    const fixed = await eolFixVerified({ cwd, path: filePath, expectedContentHash, target: eolTarget });
+    const fixed = await eolFixVerified({ cwd, path: absolutePath, expectedContentHash, target: eolTarget });
     if (!fixed.ok) {
       const outcomes = await rollback();
       return { ok: false, envelope: withRollbackOutcomes(fixed, outcomes) };
@@ -1617,7 +1618,7 @@ async function automaticallyRepairEol(
     const convertedHash = await sha256File(absolutePath);
     repairs.push({ path: filePath, absolutePath, backup, convertedHash });
     const addedTextFile = file.status === "A" && file.added_text_file === true;
-    const verified = addedTextFile ? null : await svnDiff({ cwd, paths: [filePath], ignoreEol: true });
+    const verified = addedTextFile ? null : await svnDiff({ cwd, paths: [absolutePath], ignoreEol: true });
     const contentPreserved = addedTextFile
       ? typeof fixed.normalized_content_hash === "string"
         && fixed.normalized_content_hash === expectedNormalizedHashes.get(filePath)
@@ -1658,13 +1659,8 @@ async function proveExactEolOnlyAgainstBase(
     .filter((file): file is Record<string, unknown> & { path: string } => typeof file.path === "string")
     .map((file) => [file.path, file]));
   const candidatePaths = new Set(candidateByPath.keys());
-  const changedPaths = ((precommit.per_file as Array<Record<string, unknown>> | undefined) ?? [])
-    .filter((file) => isCommittableStatus(String(file.status ?? "")))
-    .map((file) => file.path)
-    .filter((value): value is string => typeof value === "string");
-  if (changedPaths.some((filePath) => !candidatePaths.has(filePath))) {
-    return "the scoped change set includes a path without an exact EOL-only candidate";
-  }
+  // Only repaired files need EOL-only proof. Ordinary changes elsewhere in the
+  // explicit scope remain untouched and are checked again before minting a token.
   for (const filePath of candidatePaths) {
     if (candidateByPath.get(filePath)?.status === "A") continue;
     const absolutePath = explicitFilePaths?.get(filePath);

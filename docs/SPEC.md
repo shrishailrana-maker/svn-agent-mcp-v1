@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.41 — public implementation contract. Single source of truth.**
+**Spec version 1.42 — public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -411,14 +411,15 @@ in `note`. The MCP also returns `svnversion`, `revision_range:{min,max}`, `local
 mixed-revision working copy from dirty local edits. Compact callers may project the corresponding
 camel-case fields instead of receiving every metadata field.
 
-Mixed revision is valid evidence during parallel-agent work. A `workingCopyMixed:true` commit
-receipt is not a failure by itself. `baseRevision` is `null` when the committed paths do not share
-one base revision; `baseRevisionRange` carries the useful minimum and maximum. Out-of-date paths,
+Mixed revision is valid evidence during parallel-agent work. Successful compact commit receipts
+omit that routine state and warning; full output retains `working_copy_mixed`.
+`baseRevision` is `null` when the working-copy version range has no single revision;
+`baseRevisionRange` carries the useful minimum and maximum. Out-of-date paths,
 unresolved conflicts, and stale-base conditions remain separate diagnostics and must be handled
 before retrying a guarded commit.
 
 Example: agent A edits `src/a.cs` at revision 40 while agent B commits `docs/b.md` at revision 41.
-Agent A's receipt can report `workingCopyMixed:true`, `baseRevision:null`, and
+Agent A's full receipt can report `working_copy_mixed:true`; compact output can report `baseRevision:null` and
 `baseRevisionRange:{"min":40,"max":41}`. If the receipt has no out-of-date paths or conflicts,
 the mixed state alone does not block the scoped commit.
 
@@ -752,6 +753,12 @@ file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped
 parse `Committed revision N.` → run scoped `svn status --xml -- <paths…>`.
 `riskAck:true` is required when the explicit commit scope has more than 8 paths or another G6
 mechanical signal. Exactly 8 paths does not require acknowledgement for the path-count signal.
+Successful compact receipts omit hashes unless `fields:["contentHashes"]` is requested (100-entry
+bound, with `contentHashCount` and `contentHashesTruncated:true` when exceeded); full output retains
+all hashes. Token-bound receipts include `diff_stat` / compact `diffStat` from the last revalidated
+precommit diff: totals plus per-path added/removed counts. Compact entries are bounded to 25 paths
+and 4096 UTF-8 bytes, with `fileCount` and `filesTruncated`. `complete:false` marks incomplete diff
+totals or a truncated source file list. Full output contains all available file statistics.
 Compact `OUT_OF_DATE` refusals identify bounded `outOfDatePaths`, `outOfDatePathCount`, and
 `outOfDatePathsTruncated` fields, while retaining `workingCopyMixed` and `revisionRange` when both
 conditions are present.
@@ -1047,6 +1054,20 @@ The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 - Automatically repairs and verifies EOL mismatch, BOM damage, and pure EOL churn inside normal
   commit and prepare-commit workflows; read-only `svn_precommit` remains diagnostic.
 - Returns bounded `autoEolFixed` and `autoEolFixedPaths` evidence in mutation receipts.
+
+### Spec 1.42 / v1.8.3 — 2026-09-07
+
+- EOL-only proof applies only to exact files being repaired, allowing added text normalization
+  beside ordinary changes. Repairs use absolute targets even with subdirectory cwd.
+- Successful compact commit/precommit responses omit routine mixed-revision state. Full output
+  retains it; stale-path failures and explicit uniform-revision requirements remain actionable.
+- Compact commits omit `contentHashes` unless selected with `fields`; full output retains
+  `content_hashes`. Hash computation and verification remain unchanged.
+- `diff_stat` in token-bound commits comes from the last validated precommit diff and contains
+  `source`, `complete`, totals `added`/`removed`, and `files` with per-path counts (plus binary or
+  property flags). Compact/receipt `diffStat` bounds file entries to 25 and 4096 UTF-8 bytes,
+  retaining totals, `fileCount`, and `filesTruncated` when needed. Full output retains all
+  available entries. Unbound low-level commits omit statistics rather than invent counts.
 
 ### Spec 1.41 / v1.8.2 — 2026-08-27
 

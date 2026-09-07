@@ -141,7 +141,7 @@ function shapePayload(
 
   if (compactMode && tool === "svn_commit"
       && (payload.operation === "safe_commit" || payload.operation === "safe_commit_detail")) {
-    return compactSafeCommit(payload);
+    return compactSafeCommit(payload, request);
   }
 
   if (compactMode && (tool === "svn_prepare_commit" || (tool === "svn_commit" && payload.operation === "prepare_commit"))) {
@@ -298,6 +298,7 @@ function receiptPayload(
     assignDefined(result, "scopeCheckUnavailableReason", payload.scope_check_unavailable_reason);
   }
   if (tool === "svn_commit") {
+    Object.assign(result, compactCommitDiffStat(payload));
     assignDefined(result, "postStatusClean", payload.post_status_clean);
     assignDefined(result, "postStatusScope", payload.post_status_scope);
     const postStatusPaths = stringArray(payload.post_status_paths).slice(0, 100);
@@ -398,6 +399,7 @@ function applyFieldProjection(
     revision: payload.revision,
     revisionRange: payload.revision_range,
     mixedRevision: payload.mixed_revision,
+    contentHashes: recordArray(payload.content_hashes).slice(0, 100),
     remoteHeadRevision: payload.remote_head_revision !== undefined
       ? payload.remote_head_revision
       : payload.observed_remote_head,
@@ -425,6 +427,10 @@ function applyFieldProjection(
   if (source.conflictsTruncated === true && source.conflictCount !== undefined
       && projected.conflictCount === undefined) {
     projected.conflictCount = source.conflictCount;
+  }
+  if (fields.includes("contentHashes") && recordArray(payload.content_hashes).length > 100) {
+    projected.contentHashCount = recordArray(payload.content_hashes).length;
+    projected.contentHashesTruncated = true;
   }
   return { ok: true, ...projected };
 }
@@ -1270,8 +1276,9 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
       ? { rollbackFailedPaths, rollbackFailedPathCount: allRollbackFailedPaths.length,
         ...(allRollbackFailedPaths.length > rollbackFailedPaths.length ? { rollbackFailedPathsTruncated: true } : {}) }
       : {}),
-    mixedRevision,
-    ...(mixedRevision && payload.revision_range ? { revisionRange: payload.revision_range } : {}),
+    ...(!payload.ok || verdict === "REVISION_NORMALIZATION_NEEDED"
+      ? { mixedRevision, ...(payload.revision_range ? { revisionRange: payload.revision_range } : {}) }
+      : {}),
     ...(payload.remediation ? { remediation: payload.remediation } : {}),
     ...(nextAction ? { nextAction } : {}),
     ...(guardFailures.length > 0 ? { guardFailures } : {}),
@@ -1375,7 +1382,30 @@ function compactPrepareReceipt(payload: ToolEnvelope): Record<string, unknown> {
   };
 }
 
-function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
+function compactCommitDiffStat(payload: ToolEnvelope): Record<string, unknown> {
+  if (!payload.diff_stat || typeof payload.diff_stat !== "object") return {};
+  const stat = payload.diff_stat as Record<string, unknown>;
+  const allFiles = recordArray(stat.files);
+  const files: Record<string, unknown>[] = [];
+  let bytes = 0;
+  for (const file of allFiles.slice(0, 25)) {
+    const size = Buffer.byteLength(JSON.stringify(file), "utf8");
+    if (bytes + size > 4096) break;
+    files.push(file);
+    bytes += size;
+  }
+  return { diffStat: {
+    source: stat.source,
+    complete: stat.complete,
+    added: stat.added,
+    removed: stat.removed,
+    files,
+    fileCount: allFiles.length,
+    ...(files.length < allFiles.length ? { filesTruncated: true } : {})
+  } };
+}
+
+function compactSafeCommit(payload: ToolEnvelope, request: Record<string, unknown> = {}): Record<string, unknown> {
   if (payload.operation === "safe_commit_detail") {
     return {
       ok: payload.ok,
@@ -1410,6 +1440,9 @@ function compactSafeCommit(payload: ToolEnvelope): Record<string, unknown> {
     ...(payload.detail_expires_at ? { detailExpiresAt: payload.detail_expires_at } : {}),
     ...(payload.detail_cursor ? { detailCursor: payload.detail_cursor } : {}),
     ...(payload.code ? { code: payload.code } : {}),
+    ...compactCommitDiffStat(payload),
+    ...(stringArray(request.fields).includes("contentHashes") && payload.content_hashes !== undefined
+      ? { contentHashes: recordArray(payload.content_hashes).slice(0, 100) } : {}),
     ...compactAutoEol(payload),
     ...(!payload.ok && payload.note ? { note: payload.note } : {})
   };
@@ -1517,7 +1550,6 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     assignDefined(receipt, "baseRevisionRange", payload.base_revision_range);
     assignDefined(receipt, "remoteHeadRevision", payload.remote_head_revision);
     assignDefined(receipt, "eolVerdict", payload.eol_verdict);
-    assignDefined(receipt, "workingCopyMixed", payload.working_copy_mixed);
     assignDefined(receipt, "postStatusScope", payload.post_status_scope);
     const postStatusPaths = stringArray(payload.post_status_paths).slice(0, 100);
     if (payload.post_status_paths !== undefined) receipt.postStatusPaths = postStatusPaths;
@@ -1525,7 +1557,8 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     if (payload.post_status_paths_truncated === true) receipt.postStatusPathsTruncated = true;
     assignDefined(receipt, "workingCopyClean", payload.working_copy_clean);
     assignDefined(receipt, "precommitToken", payload.precommit_token);
-    if (payload.content_hashes !== undefined) {
+    Object.assign(receipt, compactCommitDiffStat(payload));
+    if (payload.content_hashes !== undefined && stringArray(request.fields).includes("contentHashes")) {
       receipt.contentHashes = recordArray(payload.content_hashes).slice(0, 100);
     }
     if (committedPaths.length > 100) {

@@ -630,6 +630,7 @@ export async function svnCommit(input: {
 
   const scopedPaths = scope.paths;
   let precommitEolVerdict: "passed-via-precommit" | null = null;
+  let diffStat: Record<string, unknown> | undefined;
   for (const target of scopedPaths) {
     const hit = neverCommitHit(target, guard.wcRoot);
     if (hit) {
@@ -647,6 +648,7 @@ export async function svnCommit(input: {
     );
     if (!binding.ok) return binding.envelope;
     precommitEolVerdict = binding.eolVerdict;
+    diffStat = binding.diffStat;
   }
 
   const status = await scopedStatusMap(guard.cwd, guard.wcRoot, statusPathsForCommit(scopedPaths, guard.wcRoot));
@@ -685,12 +687,8 @@ export async function svnCommit(input: {
     }
   }
 
-  const warnings: string[] = [];
   const version = await runSvnVersion(guard.wcRoot, guard.cwd);
   const baseVersion = version.exitCode === 0 ? parseSvnVersion(version.stdout) : null;
-  if (baseVersion?.mixed) {
-    warnings.push("mixed revision working copy");
-  }
   const observedRemoteHeadBefore = await remoteHeadForTargets(guard.cwd, scopedPaths);
   const committedPaths = commitPaths.map((target) => repoRelativePath(target, guard.wcRoot));
   const explicitPaths = guard.paths.map((target) => repoRelativePath(target, guard.wcRoot));
@@ -713,6 +711,7 @@ export async function svnCommit(input: {
     );
     if (!binding.ok) return binding.envelope;
     precommitEolVerdict = binding.eolVerdict;
+    diffStat = binding.diffStat;
   }
 
   const messageTemp = writeMessageTemp("svn-agent-commit-", input.message);
@@ -751,7 +750,6 @@ export async function svnCommit(input: {
           : "";
     const noteParts = [
       failureNote,
-      ...(outOfDate ? [] : warnings),
       commitSucceeded && !postStatusClean ? "committed-path post-status has residue" : "",
       commitSucceeded && workingCopyClean === false ? "working copy has uncommitted changes" : "",
       commitSucceeded && workingCopyClean === null ? "whole-working-copy post-status unavailable" : ""
@@ -781,6 +779,7 @@ export async function svnCommit(input: {
       eol_verdict: precommitEolVerdict ?? "not_checked",
       content_hashes: contentHashes.hashes,
       content_hashes_truncated: false,
+      ...(commitSucceeded && diffStat ? { diff_stat: diffStat } : {}),
       post_status: postStatus?.changed_paths ?? [],
       post_status_clean: postStatusClean,
       ...(commitSucceeded
@@ -931,7 +930,7 @@ async function validatePrecommitBinding(
   repositoryRoot: string | null,
   scopedPaths: string[]
 ): Promise<
-  { ok: true; eolVerdict: "passed-via-precommit" }
+  { ok: true; eolVerdict: "passed-via-precommit"; diffStat: Record<string, unknown> }
   | { ok: false; envelope: ToolEnvelope }
 > {
   const evidence = processWorkflowEvidence.get(token, "precommit", workflowScope(wcRoot, scopedPaths));
@@ -1032,7 +1031,23 @@ async function validatePrecommitBinding(
       }
     };
   }
-  return { ok: true, eolVerdict: "passed-via-precommit" };
+  return {
+    ok: true,
+    eolVerdict: "passed-via-precommit",
+    diffStat: {
+      source: "validated-precommit",
+      complete: diff.totals_complete === true && diff.per_file_truncated !== true,
+      added: diff.total_added,
+      removed: diff.total_removed,
+      files: diff.per_file.map((file) => ({
+        path: repoRelativePath(path.resolve(cwd, file.path), wcRoot),
+        added: file.added,
+        removed: file.removed,
+        ...(file.binary ? { binary: true } : {}),
+        ...(file.property_changed ? { propertyChanged: true } : {})
+      }))
+    }
+  };
 }
 
 function baselineCollisionReceipt(
