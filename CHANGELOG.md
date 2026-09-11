@@ -4,6 +4,38 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-11
+
+### Added
+
+- EOL checks identify the first control byte with its hexadecimal value, byte offset, line, and
+  1-based byte column. NUL remains a binary refusal; other controls are advisory.
+- Precommit receipts expose the stored diff operation ID, expiry, and continuation cursor so a
+  truncated diff can be paged through `svn_diff` without rerunning native SVN.
+- Commit receipts now separate `trackedClean` from `untrackedCount`; untracked scratch files no
+  longer produce a misleading tracked-changes warning.
+- Added `svn_help(tool)`, available in every profile, to load one tool's extended rules on demand. EOL help
+  leads with automatic added-file repair and includes defaults, refusal fixes, and examples. Core
+  descriptions point agents to help, and truncated precommit results include a copy-ready diff action.
+- The full profile now advertises every runtime-supported advanced input, including paging,
+  filtering, evidence-token, and operation-ID controls. Focused profiles remain trimmed and
+  `svn_help` generates their advanced-input lists from the same capability registry.
+
+### Changed
+
+- Unix SVN subprocesses now use a stable UTF-8 English locale, preserving Unicode paths on Linux
+  and macOS while keeping parseable output. Cross-platform tests no longer use Windows-only paths.
+- Refreshed the bundled 64-bit dos2unix/unix2dos tools from 7.5.6 to 7.5.7 and updated their
+  license and SHA256 records. VisualSVN's current command-line package remains SVN 1.14.5, so the
+  SVN runtime was verified but not replaced.
+- Non-NUL C0/DEL control bytes are advisory text diagnostics rather than binary classification;
+  NUL remains the binary refusal trigger used before this release.
+- Commit summaries distinguish tracked residue from untracked scratch paths. Consumers should read
+  `trackedClean` and `untrackedCount`; the legacy strict `workingCopyClean` field remains available.
+- The full/docs/review tool counts are now 30/9/12 because `svn_help` is available in every profile.
+- EOL converter failures now direct agents to `svn_self_check` and document the
+  `SVN_AGENT_DOS2UNIX_DIR` -> bundled runtime -> `PATH` resolution order.
+
 ## [1.8.3] - 2026-09-07
 
 ### Fixed

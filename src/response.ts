@@ -131,6 +131,12 @@ function shapePayload(
 
   const compactMode = mode === "compact" || mode === "structured-only" || mode === "receipt";
 
+  if (compactMode && tool === "svn_help") {
+    return payload.ok
+      ? compactHelp(payload)
+      : { ...compactError(payload, request), availableTopics: payload.available_topics };
+  }
+
   if (compactMode && tool === "svn_diagnose") {
     return compactDiagnose(payload, request);
   }
@@ -205,6 +211,16 @@ function shapePayload(
   }
 
   return standardPayload(payload);
+}
+
+function compactHelp(payload: ToolEnvelope): Record<string, unknown> {
+  return {
+    ok: true,
+    tool: payload.tool,
+    pathRules: payload.path_rules,
+    responseModes: payload.response_modes,
+    contract: payload.contract
+  };
 }
 
 function receiptPayload(
@@ -306,6 +322,8 @@ function receiptPayload(
     assignDefined(result, "postStatusPathCount", payload.post_status_path_count);
     if (payload.post_status_paths_truncated === true) result.postStatusPathsTruncated = true;
     assignDefined(result, "workingCopyClean", payload.working_copy_clean);
+    assignDefined(result, "trackedClean", payload.tracked_clean);
+    assignDefined(result, "untrackedCount", payload.untracked_count);
   }
   if (tool === "svn_status" || tool === "svn_snapshot") {
     const snapshotRoot = stringValue(payload.wc_root) || payload.cwd;
@@ -336,13 +354,14 @@ const PROJECTION_SAFETY_FIELDS = [
   "failedRule", "suggestedMessage", "guardCode", "guardFailures", "conflicts",
   "conflictsTruncated", "nextConflictCursor", "truncated", "nextCursor", "nextFileCursor",
   "hasMore", "recoveryTool", "remediation", "nextAction",
+  "diffEvidenceCapped",
   "snapshotToken", "unchangedSinceCursor", "changedSinceCursor",
   "operationId", "idempotentReplay", "operationRecovered",
   "remoteHeadUnavailableReason",
   "scopeKind", "scopeComplete", "omittedRepositoryAdditions", "omittedRepositoryAdditionCount",
   "omittedRepositoryAdditionsTruncated", "scopeCheckUnavailableReason", "recommendedAction",
   "postStatusClean", "postStatusScope", "postStatusPaths", "postStatusPathCount",
-  "postStatusPathsTruncated", "workingCopyClean",
+  "postStatusPathsTruncated", "workingCopyClean", "trackedClean", "untrackedCount",
   "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated",
   "baseRevision", "baseRevisionRange", "remoteHeadRevision", "revisionRange"
 ] as const;
@@ -350,7 +369,8 @@ const PROJECTION_SAFETY_FIELDS = [
 const FALSE_PROJECTION_SAFETY_FIELDS = new Set([
   "scopeComplete",
   "postStatusClean",
-  "workingCopyClean"
+  "workingCopyClean",
+  "trackedClean"
 ]);
 
 const OUT_OF_DATE_PROJECTION_SAFETY_FIELDS = new Set([
@@ -509,6 +529,7 @@ function compactError(payload: ToolEnvelope, request: Record<string, unknown> = 
       : {}),
     ...(payload.truncated ? { truncated: true } : {}),
     ...(payload.recovery_tool ? { recoveryTool: payload.recovery_tool } : {}),
+    ...(payload.remediation ? { remediation: payload.remediation } : {}),
     ...(payload.expected_remote_head !== undefined ? { expectedRemoteHead: payload.expected_remote_head } : {}),
     ...(payload.observed_remote_head !== undefined ? { observedRemoteHead: payload.observed_remote_head } : {}),
     ...(outOfDatePaths.length > 0 ? { outOfDatePaths } : {}),
@@ -540,7 +561,11 @@ function compactNextAction(value: unknown): Record<string, unknown> | null {
       ? { operation: action.operation }
       : {}),
     ...(action.allowRecursive === true ? { allowRecursive: true } : {}),
-    ...(action.expandDescendants === true ? { expandDescendants: true } : {})
+    ...(action.expandDescendants === true ? { expandDescendants: true } : {}),
+    ...(typeof action.operationId === "string" ? { operationId: action.operationId } : {}),
+    ...(typeof action.cursor === "string" ? { cursor: action.cursor } : {}),
+    ...(action.ignoreEol === true ? { ignoreEol: true } : {}),
+    ...(typeof action.cwd === "string" ? { cwd: action.cwd } : {})
   };
 }
 
@@ -1147,11 +1172,13 @@ function compactEolCheck(payload: ToolEnvelope, request: Record<string, unknown>
   const sourceFiles = recordArray(payload.files);
   const failed = sourceFiles.filter((file) => file.mismatch === true);
   const skipped = sourceFiles.filter((file) => file.sniff !== "ok");
-  const problems = sourceFiles.filter((file) => file.mismatch === true || file.sniff !== "ok");
+  const advisory = sourceFiles.filter((file) => file.non_text_byte && file.kind !== "binary");
+  const problems = sourceFiles.filter((file) => file.mismatch === true || file.sniff !== "ok" || file.non_text_byte);
   const counts = {
-    passed: sourceFiles.filter((file) => file.mismatch !== true && file.sniff === "ok").length,
+    passed: sourceFiles.filter((file) => file.mismatch !== true && file.sniff === "ok" && !file.non_text_byte).length,
     failed: failed.length,
-    ...(skipped.length > 0 ? { skipped: skipped.length } : {})
+    ...(skipped.length > 0 ? { skipped: skipped.length } : {}),
+    ...(advisory.length > 0 ? { advisory: advisory.length } : {})
   };
   const selected = request.includePassing === true ? sourceFiles : problems;
   const offset = cursorOffset(request.cursor);
@@ -1166,11 +1193,16 @@ function compactEolCheck(payload: ToolEnvelope, request: Record<string, unknown>
     ),
     expected: file.eol_style ?? null,
     detected: file.kind ?? null,
-    ...(request.includePassing === true ? { ok: file.mismatch !== true && file.sniff === "ok" } : {}),
-    ...(file.mismatch === true
+    ...(file.non_text_byte && typeof file.non_text_byte === "object"
+      ? { nonTextByte: file.non_text_byte }
+      : {}),
+    ...(request.includePassing === true ? { ok: file.mismatch !== true && file.sniff === "ok" && !file.non_text_byte } : {}),
+    ...(file.non_text_byte && file.kind !== "binary"
+      ? { advisory: true, remediation: "inspect the reported control byte; EOL conversion is not blocked" }
+      : file.mismatch === true
       ? { remediation: "run eol_fix_verified" }
       : file.sniff !== "ok"
-        ? { remediation: "inspect file manually" }
+        ? { remediation: file.non_text_byte ? "remove or escape the reported control byte" : "inspect file manually" }
         : {})
   }));
   const nextOffset = offset + files.length;
@@ -1259,6 +1291,10 @@ function compactPrecommit(payload: ToolEnvelope, request: Record<string, unknown
     ...(payload.precommit_token ? { precommitToken: payload.precommit_token } : {}),
     ...(payload.precommit_expires_at ? { precommitExpiresAt: payload.precommit_expires_at } : {}),
     ...(payload.remote_head_revision !== undefined ? { remoteHeadRevision: payload.remote_head_revision } : {}),
+    ...(payload.diff_operation_id ? { diffOperationId: payload.diff_operation_id } : {}),
+    ...(payload.diff_evidence_expires_at ? { diffEvidenceExpiresAt: payload.diff_evidence_expires_at } : {}),
+    ...(payload.diff_next_cursor ? { diffNextCursor: payload.diff_next_cursor } : {}),
+    ...(payload.diff_evidence_capped === true ? { diffEvidenceCapped: true } : {}),
     ...(payload.baseline_token ? { baselineToken: payload.baseline_token } : {}),
     ...(payload.baseline_path_changes
       ? { baselinePathChanges: stringArray(payload.baseline_path_changes).slice(0, 100) }
@@ -1556,6 +1592,8 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
     assignDefined(receipt, "postStatusPathCount", payload.post_status_path_count);
     if (payload.post_status_paths_truncated === true) receipt.postStatusPathsTruncated = true;
     assignDefined(receipt, "workingCopyClean", payload.working_copy_clean);
+    assignDefined(receipt, "trackedClean", payload.tracked_clean);
+    assignDefined(receipt, "untrackedCount", payload.untracked_count);
     assignDefined(receipt, "precommitToken", payload.precommit_token);
     Object.assign(receipt, compactCommitDiffStat(payload));
     if (payload.content_hashes !== undefined && stringArray(request.fields).includes("contentHashes")) {
@@ -1678,7 +1716,10 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
         : file.path,
       before: file.before,
       after: file.after,
-      failure: file.failure
+      failure: file.failure,
+      ...(file.code ? { code: file.code } : {}),
+      ...(file.remediation ? { remediation: file.remediation } : {}),
+      ...(file.next_action ? { nextAction: compactNextAction(file.next_action) } : {})
     }));
     return {
       ok: payload.ok,
@@ -1700,6 +1741,7 @@ function compactEolFix(payload: ToolEnvelope, request: Record<string, unknown>):
       ...(request.path
         ? { path: receiptPathValue(request.path, payload.cwd, stringValue(payload.wc_root) || payload.cwd) }
         : {}),
+      ...(payload.target === "crlf" || payload.target === "lf" ? { target: payload.target } : {}),
       ...(before ? { before } : {})
     };
   }
@@ -1913,13 +1955,17 @@ function summarizeToolResult(
     if (postStatusScope) {
       const postStatusClean = payload.postStatusClean ?? payload.post_status_clean;
       const workingCopyClean = payload.workingCopyClean ?? payload.working_copy_clean;
+      const trackedClean = payload.trackedClean ?? payload.tracked_clean;
+      const untrackedCount = numberValue(payload.untrackedCount ?? payload.untracked_count);
       const committedScopeState = postStatusClean === true ? "clean" : postStatusClean === false ? "dirty" : "unknown";
-      const workingCopyState = workingCopyClean === true ? "clean" : workingCopyClean === false ? "dirty" : "unknown";
+      const workingCopyState = trackedClean === true
+        ? untrackedCount > 0 ? `tracked clean; ${untrackedCount} untracked` : "clean"
+        : trackedClean === false ? "tracked changes" : workingCopyClean === true ? "clean" : workingCopyClean === false ? "dirty" : "unknown";
       const nextAction = postStatusClean === false
         ? "inspect committed-path residue"
-        : workingCopyClean === false
+        : trackedClean === false || (trackedClean === undefined && workingCopyClean === false)
           ? "review remaining working-copy changes"
-          : postStatusClean === true && workingCopyClean === true
+          : postStatusClean === true && (trackedClean === true || workingCopyClean === true)
             ? "no action"
             : "inspect post-commit status";
       return `COMMIT OK: ${postStatusScope} ${committedScopeState}; working copy ${workingCopyState}; next: ${nextAction}`;
@@ -1950,18 +1996,21 @@ function summarizeEolCheck(payload: Record<string, unknown>, request: Record<str
   const files = recordArray(payload.files);
   const passed = providedCounts
     ? numberValue(providedCounts.passed)
-    : files.filter((file) => file.mismatch !== true && file.sniff === "ok").length;
+    : files.filter((file) => file.mismatch !== true && file.sniff === "ok" && !file.non_text_byte).length;
   const failed = providedCounts
     ? numberValue(providedCounts.failed)
     : files.filter((file) => file.mismatch === true).length;
   const skipped = providedCounts
     ? numberValue(providedCounts.skipped)
     : files.filter((file) => file.sniff !== undefined && file.sniff !== "ok").length;
-  const countedTotal = passed + failed + skipped;
+  const advisory = providedCounts
+    ? numberValue(providedCounts.advisory)
+    : files.filter((file) => (file.nonTextByte ?? file.non_text_byte) && file.kind !== "binary").length;
+  const countedTotal = passed + failed + skipped + advisory;
   const requestedTotal = stringArray(request.paths).length || (request.path ? 1 : 0);
   const total = numberValue(providedCounts?.total) || countedTotal || requestedTotal;
   const refused = payload.ok !== true && isGuardRefusal(payload);
-  const outcome = refused ? "REFUSED" : payload.ok !== true ? "ERROR" : failed > 0 ? "FAIL" : skipped > 0 ? "REVIEW" : "PASS";
+  const outcome = refused ? "REFUSED" : payload.ok !== true ? "ERROR" : failed > 0 ? "FAIL" : skipped > 0 || advisory > 0 ? "REVIEW" : "PASS";
   const nextAction = refused
     ? "resolve the refusal and retry eol_check"
     : payload.ok !== true
@@ -1972,8 +2021,10 @@ function summarizeEolCheck(payload: Record<string, unknown>, request: Record<str
         ? "run eol_fix_verified for failed files"
         : skipped > 0
           ? "inspect skipped files"
+          : advisory > 0
+            ? "inspect reported control-byte advisories"
           : "no action";
-  return `EOL CHECK ${outcome}: ${total} ${fileWord(total)}; ${passed} passed, ${failed} failed, ${skipped} skipped; next: ${nextAction}`;
+  return `EOL CHECK ${outcome}: ${total} ${fileWord(total)}; ${passed} passed, ${failed} failed, ${skipped} skipped${advisory > 0 ? `, ${advisory} advisory` : ""}; next: ${nextAction}`;
 }
 
 function summarizeEolFix(payload: Record<string, unknown>, request: Record<string, unknown>): string {
@@ -2212,12 +2263,15 @@ function summarizeTopFolders(paths: string[]): Array<{ path: string; count: numb
     .map(([path, count]) => ({ path, count }));
 }
 
-function sanitizeNonFullStructuredValue(value: unknown, cwd: string, wcRoot: string): unknown {
+function sanitizeNonFullStructuredValue(value: unknown, cwd: string, wcRoot: string, parentKey = ""): unknown {
   if (typeof value === "string") {
+    // A nextAction cwd echoes caller-supplied routing data and must remain
+    // executable. Other structured strings continue through path scrubbing.
+    if (parentKey === "cwd") return value;
     return sanitizeNonFullText(value, cwd, wcRoot);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeNonFullStructuredValue(item, cwd, wcRoot));
+    return value.map((item) => sanitizeNonFullStructuredValue(item, cwd, wcRoot, parentKey));
   }
   if (!value || typeof value !== "object") {
     return value;
@@ -2228,7 +2282,7 @@ function sanitizeNonFullStructuredValue(value: unknown, cwd: string, wcRoot: str
   }
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
     key,
-    sanitizeNonFullStructuredValue(item, cwd, wcRoot)
+    sanitizeNonFullStructuredValue(item, cwd, wcRoot, key)
   ]));
 }
 

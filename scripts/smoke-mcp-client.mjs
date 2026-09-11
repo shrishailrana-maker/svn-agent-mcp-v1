@@ -33,7 +33,7 @@ try {
     await client.connect(transport);
     const tools = await client.listTools();
     const prompts = await client.listPrompts();
-    assert(tools.tools.length === 29, `expected 29 canonical tools, received ${tools.tools.length}`);
+    assert(tools.tools.length === 30, `expected 30 canonical tools, received ${tools.tools.length}`);
     for (const tool of tools.tools) {
       assert(tool.annotations?.destructiveHint === false, `tool ${tool.name} omitted destructiveHint:false`);
     }

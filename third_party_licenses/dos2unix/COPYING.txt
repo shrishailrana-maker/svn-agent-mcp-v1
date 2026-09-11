@@ -1,7 +1,11 @@
-Copyright (C) 2009-2025 Erwin Waterlander
-Copyright (C) 1998      Christian Wurll (Version 3.1)
-Copyright (C) 1998      Bernd Johannes Wuebben (Version 3.0)
-Copyright (C) 1994-1995 Benjamin Lin
+﻿The dos2unix package is distributed under FreeBSD style license.
+See also https://www.freebsd.org/copyright/freebsd-license.html
+--------
+
+Copyright (C) 2009-2026  Erwin Waterlander
+Copyright (C) 1998 Christian Wurll
+Copyright (C) 1998 Bernd Johannes Wuebben
+Copyright (C) 1994-1995 Benjamin Lin.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -16,7 +20,7 @@ are met:
 THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY
 EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE
+PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE
 FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
 CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
 OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR

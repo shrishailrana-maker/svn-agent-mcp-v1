@@ -18,13 +18,13 @@ const svnversion = svnVersionExecutable();
 const server = path.join(root, "dist", "index.js");
 const enforceBudgets = process.argv.includes("--check");
 const schemaBudgets = {
-  // v1.8.3 publishes guard, recovery, snapshot, workflow, runtime, and automatic EOL contracts.
-  // Keep roughly five percent headroom above the measured canonical 29-tool
-  // contract so later growth still fails closed.
-  allInputSchemas: 23500,
-  selectedInputSchemas: 5500,
-  allToolDefinitions: 30800,
-  selectedToolDefinitions: 7000
+  // The full profile advertises every runtime-supported advanced input.
+  // Focused profile budgets below stay tight; these full-profile caps retain
+  // measured headroom without hiding paging and continuation controls.
+  allInputSchemas: 26500,
+  selectedInputSchemas: 6600,
+  allToolDefinitions: 33800,
+  selectedToolDefinitions: 7900
 };
 const compactBudgets = {
   "clean status": 250,
@@ -46,8 +46,8 @@ const receiptBudgets = {
 };
 const receiptTools = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 const profileSchemaBudgets = {
-  docs: { toolCount: 8, inputSchemas: 7000, toolDefinitions: 9700 },
-  review: { toolCount: 11, inputSchemas: 9700, toolDefinitions: 13300 }
+  docs: { toolCount: 9, inputSchemas: 7300, toolDefinitions: 9900 },
+  review: { toolCount: 12, inputSchemas: 10000, toolDefinitions: 13500 }
 };
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });

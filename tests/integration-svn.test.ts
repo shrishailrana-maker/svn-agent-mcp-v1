@@ -12,7 +12,7 @@ import { toToolResult } from "../src/response.js";
 import { svnAdminExecutable, svnExecutable } from "../src/runner.js";
 import { eolFixVerified, svnCommitWorkflow, svnPrecommit, svnPrepareCommit, svnSnapshot } from "../src/tools/composite.js";
 import { svnDiagnose } from "../src/tools/diagnose.js";
-import { classifyOutOfDateCommitEvidence, classifyUpdateScopeFromInfo, svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate } from "../src/tools/mutating.js";
+import { classifyOutOfDateCommitEvidence, classifyUpdateScopeFromInfo, svnAdd, svnCommit, svnCopy, svnDelete, svnExport, svnImport, svnMove, svnPathChange, svnPropset, svnPropsetEolStyle, svnRename, svnResolve, svnRevert, svnUpdate, trackedWorkingCopyClean } from "../src/tools/mutating.js";
 import { eolCheck, svnBlame, svnCat, svnDiff, svnInfo, svnLog, svnPropget, svnStatus } from "../src/tools/readonly.js";
 
 jest.setTimeout(30000);
@@ -171,6 +171,15 @@ describe("SVN tool integration against a temp repository", () => {
       fs.writeFileSync(file, "one\nTWO\n", "utf8");
       const damaged = await svnPrecommit({ cwd: fixture.wc, paths: ["app.txt"], autoFixEol: "off" });
       expect(damaged.verdict).toBe("EOL_FIX_NEEDED");
+      expect(damaged.diff_operation_id).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+      expect(damaged.diff_evidence_expires_at).toEqual(expect.any(Number));
+      const capturedDiff = await svnDiff({
+        cwd: fixture.wc,
+        paths: ["app.txt"],
+        operationId: String(damaged.diff_operation_id)
+      });
+      expect(capturedDiff).toMatchObject({ ok: true, operation_id: damaged.diff_operation_id });
+      expect(capturedDiff.diff_excerpt).toContain("+TWO");
 
       const diff = await svnDiff({ cwd: fixture.wc, paths: ["app.txt"] });
       expectSvnArgs(diff.command, "diff --internal-diff -x --ignore-eol-style --");
@@ -203,6 +212,54 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("replays a precommit diff continuation from a subdirectory", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      const directory = path.join(fixture.wc, "nested");
+      const file = path.join(directory, "shared.txt");
+      fs.mkdirSync(directory);
+      fs.writeFileSync(file, "one\r\ntwo\r\nthree\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["nested/shared.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["nested/shared.txt"],
+        message: commitMessage("Add nested diff fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(file, "ONE\r\nTWO\r\nTHREE\r\nFOUR\r\n", "utf8");
+      const precommit = await svnPrecommit({
+        cwd: directory,
+        paths: ["shared.txt"],
+        lineLimit: 1,
+        autoFixEol: "off"
+      });
+      expect(precommit.next_action).toMatchObject({
+        tool: "svn_diff",
+        cwd: directory,
+        paths: ["shared.txt"],
+        operationId: precommit.diff_operation_id,
+        cursor: expect.any(String),
+        ignoreEol: true
+      });
+      const compactPrecommit = toToolResult("svn_precommit", precommit, {
+        responseMode: "compact",
+        request: { cwd: directory, paths: ["shared.txt"] }
+      }).structuredContent;
+      expect(compactPrecommit.nextAction).toMatchObject({ cwd: directory, paths: ["shared.txt"] });
+
+      const action = precommit.next_action as Record<string, unknown>;
+      const continued = await svnDiff({
+        cwd: String(action.cwd),
+        paths: action.paths as string[],
+        operationId: String(action.operationId),
+        cursor: String(action.cursor)
+      });
+      expect(continued).toMatchObject({ ok: true, operation_id: precommit.diff_operation_id });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses automatic EOL repair when mixed line endings also contain content changes", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -223,7 +280,22 @@ describe("SVN tool integration against a temp repository", () => {
         ok: false,
         verdict: "EOL_FIX_REFUSED",
         code: "EOL_AUTO_FIX_REFUSED",
-        auto_eol_fix_attempted: true
+        auto_eol_fix_attempted: true,
+        remediation: expect.stringContaining("run eol_fix_verified"),
+        next_action: {
+          tool: "eol_fix_verified",
+          cwd: fixture.wc,
+          paths: ["automatic-eol.txt"]
+        }
+      });
+      expect(precommit).not.toHaveProperty("diff_operation_id");
+      expect(precommit).not.toHaveProperty("diff_next_cursor");
+      expect(toToolResult("svn_precommit", precommit, {
+        responseMode: "compact",
+        request: { cwd: fixture.wc, paths: ["automatic-eol.txt"] }
+      }).structuredContent).toMatchObject({
+        remediation: expect.stringContaining("eol_fix_verified"),
+        nextAction: { tool: "eol_fix_verified", cwd: fixture.wc, paths: ["automatic-eol.txt"] }
       });
       expect(precommit.note).toContain("normalized BASE content shows a real content change");
       expect(fs.readFileSync(file, "utf8")).toBe("one\r\ntwo\nthree\r\n");
@@ -481,7 +553,14 @@ describe("SVN tool integration against a temp repository", () => {
         ok: false,
         verdict: "EOL_FIX_FAILED",
         code: "EOL_POST_REPAIR_CHECK_FAILED",
-        rollback_restored_paths: [relativePath]
+        rollback_restored_paths: [relativePath],
+        remediation: expect.stringContaining("rollback outcomes")
+      });
+      expect(precommit).not.toHaveProperty("diff_operation_id");
+      expect(precommit.next_action).toMatchObject({
+        tool: "eol_fix_verified",
+        cwd: fixture.wc,
+        paths: [relativePath]
       });
       expect(fs.readFileSync(file, "utf8")).toBe(original);
     } finally {
@@ -914,6 +993,47 @@ describe("SVN tool integration against a temp repository", () => {
     }
   });
 
+  it("reports untracked scratch separately from tracked cleanliness", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "tracked.txt"), "one\r\n", "utf8");
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["tracked.txt"] })).ok).toBe(true);
+      expect((await svnCommit({
+        cwd: fixture.wc,
+        paths: ["tracked.txt"],
+        message: commitMessage("Add tracked fixture")
+      })).ok).toBe(true);
+
+      fs.writeFileSync(path.join(fixture.wc, "tracked.txt"), "two\r\n", "utf8");
+      fs.writeFileSync(path.join(fixture.wc, "scratch.tmp"), "scratch\r\n", "utf8");
+      const committed = await svnCommit({
+        cwd: fixture.wc,
+        paths: ["tracked.txt"],
+        message: commitMessage("Update tracked fixture")
+      });
+
+      expect(committed).toMatchObject({
+        ok: true,
+        post_status_clean: true,
+        working_copy_clean: false,
+        tracked_clean: true,
+        untracked_count: 1
+      });
+      expect(committed.note).toBe("");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats ignored and external markers as non-dirty but blocks real status residue", () => {
+    expect(trackedWorkingCopyClean([{ status: "I", path: "ignored" }], [])).toBe(true);
+    expect(trackedWorkingCopyClean([{ status: "X", path: "external" }], [])).toBe(true);
+    for (const status of ["!", "C", "~"]) {
+      expect(trackedWorkingCopyClean([{ status, path: "problem" }], [])).toBe(false);
+    }
+    expect(trackedWorkingCopyClean([], [{ path: "conflict", type: "text" }])).toBe(false);
+  });
+
   it("returns a copy-ready recursive add action for directory targets", async () => {
     const fixture = createTempWorkingCopy();
     try {
@@ -1036,6 +1156,48 @@ describe("SVN tool integration against a temp repository", () => {
       const diagnosticBlame = await svnBlame({ cwd: fixture.wc, path: relativePath, showEolChanges: true });
       expect(diagnosticBlame).toMatchObject({ ok: true, ignore_eol: false, eol_changes_included: true });
       expect(diagnosticBlame.command).not.toContain("--ignore-eol-style");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports non-NUL control bytes as advisory and refuses only NUL binary files", async () => {
+    const fixture = createTempWorkingCopy();
+    try {
+      fs.writeFileSync(path.join(fixture.wc, "control.txt"), Buffer.from("one\r\ntwo\u0001bad\r\n", "utf8"));
+      fs.writeFileSync(path.join(fixture.wc, "binary.dat"), Buffer.from([0x00, 0x0a, 0xff]));
+      expect((await svnAdd({ cwd: fixture.wc, paths: ["control.txt", "binary.dat"] })).ok).toBe(true);
+
+      const checked = await eolCheck({ cwd: fixture.wc, paths: ["control.txt"] });
+      expect(checked.files).toEqual([expect.objectContaining({
+        kind: "crlf",
+        non_text_byte: { byte_offset: 8, line: 2, column: 4, byte_hex: "0x01" }
+      })]);
+      const compactResult = toToolResult("eol_check", checked, {
+        responseMode: "compact",
+        request: { paths: ["control.txt"] }
+      });
+      const compact = compactResult.structuredContent;
+      expect(compact).toMatchObject({
+        counts: { advisory: 1 },
+        files: [expect.objectContaining({
+          advisory: true,
+          nonTextByte: expect.objectContaining({ byte_hex: "0x01" })
+        })]
+      });
+      expect(compactResult.content[0]?.text).toContain("EOL CHECK REVIEW");
+      expect(compactResult.content[0]?.text).toContain("control-byte advisories");
+
+      const fixed = await eolFixVerified({ cwd: fixture.wc, path: "control.txt", target: "crlf" });
+      expect(fixed.ok).toBe(true);
+
+      const binary = await eolFixVerified({ cwd: fixture.wc, path: "binary.dat", target: "crlf" });
+      expect(binary).toMatchObject({
+        ok: false,
+        code: "BINARY_FILE",
+        note: "binary file refused"
+      });
+      expect(binary).not.toHaveProperty("next_action");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

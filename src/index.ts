@@ -8,7 +8,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
+import { advancedInputNames, advancedInputsFor } from "./capabilities.js";
 import { failEnvelope, redactText } from "./envelope.js";
+import { svnHelp } from "./help.js";
 import { COMMIT_MESSAGE_REQUIREMENT, RISK_ACK_PATH_THRESHOLD, readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
@@ -42,13 +44,14 @@ export const serverName = "svn";
 export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 export type ToolProfile = "full" | "docs" | "review";
+export { advancedInputNames } from "./capabilities.js";
 
 /** Canonical tools that never mutate SVN state. Keep this list in one place
  * so MCP annotations stay accurate when registration grows. */
 export const readOnlyToolNames = new Set([
   "svn_self_check", "svn_diagnose", "svn_status", "svn_info", "svn_snapshot",
   "svn_diff", "svn_log", "svn_cat", "svn_blame", "eol_check", "svn_propget",
-  "svn_lock_status"
+  "svn_lock_status", "svn_help"
 ]);
 
 export const fieldProjectionNames = {
@@ -73,6 +76,7 @@ export const fieldProjectionNames = {
     "ready", "verdict", "pathCount", "statusCounts", "diff", "eol", "mixedRevision",
     "revisionRange", "guardFailures", "riskSignals", "remediation", "eolCheckComplete",
     "eolPolicyIdentity", "precommitToken", "precommitExpiresAt", "remoteHeadRevision",
+    "diffOperationId", "diffEvidenceExpiresAt", "diffNextCursor", "diffEvidenceCapped",
     "baselineToken", "baselinePathChanges", "remoteHeadChangedSinceBaseline",
     "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated", "code",
     "rollbackRestoredPaths", "rollbackRestoredPathCount", "rollbackRestoredPathsTruncated",
@@ -96,36 +100,15 @@ export const fieldProjectionNames = {
     "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor",
     "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated",
     "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated", "postStatusScope", "postStatusPaths",
-    "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean"
+    "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean", "trackedClean", "untrackedCount"
   ]
 } as const;
 
-export const advancedInputNames = {
-  svn_status: ["afterCursor", "conflictCursor"],
-  svn_snapshot: ["afterCursor", "conflictCursor", "captureBaseline"],
-  svn_diff: ["file", "operationId"],
-  eol_fix_verified: ["operationId"],
-  svn_precommit: ["baselineToken", "autoFixEol"],
-  svn_log: ["changedPathsSummary", "maxTopLevelDirectories", "messageContains", "messageCaseSensitive", "scanLimit"],
-  svn_update: ["maxItems", "cursor", "conflictCursor", "taskPaths", "targetOverlapOnly", "operationId", "baselineToken"],
-  svn_commit: [
-    "operation", "revision", "expectedRemoteHead", "lineLimit", "requireUniformRevision",
-    "expandDescendants", "allowRoot", "allowDirectoryTargets", "operationId", "precommitToken",
-    "baselineToken", "detailOperationId", "cursor", "maxChars"
-  ],
-  svn_resolve: ["operationId"],
-  svn_lock: ["operationId"],
-  svn_unlock: ["operationId"],
-  svn_needs_lock: ["operationId"]
-} as const;
-
 const docsToolNames = [
-  "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
+  "svn_help", "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
 ] as const;
 const reviewToolNames = [...docsToolNames, "svn_diff", "svn_cat", "svn_blame"] as const;
 const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved", "svn_prepare_commit"]);
-const eolRecoveryWorkflow = "Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.";
-
 export function configuredToolProfile(value = process.env.SVN_MCP_TOOL_PROFILE): ToolProfile {
   const normalized = value?.trim().toLowerCase() || "full";
   if (normalized === "full" || normalized === "docs" || normalized === "review") {
@@ -219,6 +202,18 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   const maxChangedPaths = boundedIntegerSchema("maxChangedPaths", 1, 500, 100).optional();
   const maxLines = boundedIntegerSchema("maxLines", 1, 500, 100).optional();
   const maxValueChars = boundedIntegerSchema("maxValueChars", 256, 64000, 4096).optional();
+  const operationIdInput = z.string().max(36).optional().describe("UUID for idempotent replay or stored evidence.");
+  const evidenceTokenInput = z.string().max(36).optional().describe("Opaque exact-scope evidence UUID.");
+  const afterCursorInput = z.string().max(64).optional().describe("Snapshot token from the previous result.");
+
+  server.registerTool(
+    "svn_help",
+    {
+      description: "On-demand rules for one tool. Start with tool:eol for EOL defaults, refusals, and examples.",
+      inputSchema: { tool: z.string().min(1).max(64), ...response }
+    },
+    async (args, extra) => handleTool("svn_help", args, extra.signal, async () => svnHelp(compactArgs(args)))
+  );
 
   server.registerTool(
     "svn_self_check",
@@ -262,7 +257,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_status",
     {
-      description: "Return scoped status, counts, and conflicts.",
+      description: "Scoped status and conflicts. See svn_help.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -271,6 +266,8 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
+        afterCursor: afterCursorInput,
+        conflictCursor: cursor,
         maxItems,
         cursor,
         ...response
@@ -299,7 +296,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_snapshot",
     {
-      description: "Return one compact working-copy status and revision snapshot.",
+      description: "Snapshot; captureBaseline:true detects other writers. See svn_help.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -308,6 +305,9 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         statuses: z.array(z.string().max(64)).max(16).optional(),
         includeUnversioned: z.boolean().optional(),
         countOnly: z.boolean().optional(),
+        afterCursor: afterCursorInput,
+        conflictCursor: cursor,
+        captureBaseline: z.boolean().optional().describe("Return a baselineToken for multi-writer checks."),
         includeLockState: z.boolean().optional().describe("Include a bounded lock-state summary; default false avoids an extra repository probe."),
         maxItems,
         cursor,
@@ -320,10 +320,12 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_diff",
     {
-      description: `Return a bounded scoped diff and per-file counts. ${eolRecoveryWorkflow}`,
+      description: "Bounded diff; follow precommit nextAction. See svn_help.",
       inputSchema: {
         cwd,
         paths,
+        file: filesystemPath.optional().describe("One-file filter inside paths."),
+        operationId: z.string().optional().describe("Precommit diffOperationId."),
         ignoreEol: z.boolean().optional(),
         showEolChanges: z.boolean().optional().describe("Include EOL-only changes; default false."),
         lineLimit,
@@ -343,7 +345,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_log",
     {
-      description: "Return bounded structured history.",
+      description: "Bounded history; revision accepts N or N:M. See svn_help.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -353,6 +355,11 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         changedPaths: z.boolean().optional(),
         maxMessageChars,
         maxChangedPaths,
+        changedPathsSummary: z.boolean().optional().describe("Return bounded top-level change counts."),
+        maxTopLevelDirectories: boundedIntegerSchema("maxTopLevelDirectories", 1, 50, 10).optional(),
+        messageContains: z.string().min(1).max(256).optional(),
+        messageCaseSensitive: z.boolean().optional(),
+        scanLimit: boundedIntegerSchema("scanLimit", 1, 500, 100).optional(),
         cursor: logCursor,
         revision: revisionSelector,
         ...response
@@ -397,7 +404,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "eol_check",
     {
-      description: `Check EOL, BOM, and svn:eol-style. ${eolRecoveryWorkflow}`,
+      description: "Check EOL, BOM, property, and control bytes. See svn_help tool:eol before advanced use.",
       inputSchema: {
         cwd,
         paths,
@@ -433,10 +440,12 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_precommit",
     {
-      description: "Guarded precommit; safe EOL repair may normalize explicit text files. Use autoFixEol:\"off\" for checks only.",
+      description: "Guarded precommit; autoFixEol defaults safe. See svn_help tool:eol before advanced use.",
       inputSchema: {
         cwd,
         paths,
+        autoFixEol: z.enum(["safe", "off"]).optional().describe("Default safe; off is diagnostic-only."),
+        baselineToken: evidenceTokenInput,
         lineLimit,
         includeDiff: z.boolean().optional(),
         maxChars,
@@ -475,7 +484,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "eol_fix_verified",
     {
-      description: `Normalize and verify one or a bounded batch of explicit files. ${eolRecoveryWorkflow}`,
+      description: "Manual EOL repair; precommit normally auto-fixes safe cases. See svn_help tool:eol before advanced use.",
       inputSchema: {
         cwd,
         path: filesystemPath.optional().describe("One explicit file; use either path or paths."),
@@ -484,6 +493,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         removeBom: z.boolean().optional(),
         dryRun: z.boolean().optional(),
         allowLarge: z.boolean().optional(),
+        operationId: operationIdInput,
         ...response
       }
     },
@@ -493,7 +503,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_add",
     {
-      description: "Add explicit files; directory targets require allowRecursive:true.",
+      description: "Add files; directories need allowRecursive:true. See svn_help tool:eol before advanced use.",
       inputSchema: { cwd, paths, allowRecursive: z.boolean().optional(), ...response }
     },
     async (args, extra) => handleTool("svn_add", args, extra.signal, () => svnAdd(compactArgs(args)))
@@ -510,6 +520,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         workstationLabel,
         force: z.boolean().optional(),
         forceAck: z.boolean().optional(),
+        operationId: operationIdInput,
         ...response
       }
     },
@@ -525,6 +536,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         paths,
         force: z.boolean().optional(),
         forceAck: z.boolean().optional(),
+        operationId: operationIdInput,
         ...response
       }
     },
@@ -540,6 +552,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         paths,
         action: z.enum(["set", "remove"]),
         riskAck: z.boolean().optional(),
+        operationId: operationIdInput,
         ...response
       }
     },
@@ -549,7 +562,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: `Guarded commit; directory children require expandDescendants:true. ${COMMIT_MESSAGE_REQUIREMENT} A scope with more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`,
+      description: "Guarded commit; operation:safe is end-to-end. See svn_help tool:svn_commit before advanced use.",
       inputSchema: {
         cwd,
         paths,
@@ -563,6 +576,12 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
           "Required for operation:prepare and operation:safe."
         ),
         expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
+        operationId: operationIdInput,
+        precommitToken: evidenceTokenInput,
+        baselineToken: evidenceTokenInput,
+        detailOperationId: evidenceTokenInput,
+        cursor,
+        maxChars,
         lineLimit,
         riskAck: z.boolean().optional().describe(
           `Set riskAck:true when more than ${RISK_ACK_PATH_THRESHOLD} paths are in the commit scope or another G6 signal is present.`
@@ -622,7 +641,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_update",
     {
-      description: "Guarded update with conflicts postponed. Exact-file updates report omitted repository additions and recommend updating the containing directory. Unknown target metadata reports incomplete evidence and recommends inspection; confirmed directory scopes report complete-scope evidence.",
+      description: "Scoped update; no blanket update by default. See svn_help tool:svn_update before advanced use.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -631,6 +650,13 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional().describe(
           "With a numeric revision, refuse before updating unless repository HEAD still equals this revision."
         ),
+        maxItems,
+        cursor,
+        conflictCursor: cursor,
+        taskPaths: paths.optional().describe("Edited paths used for overlap filtering."),
+        targetOverlapOnly: z.boolean().optional(),
+        operationId: operationIdInput,
+        baselineToken: evidenceTokenInput,
         ...response
       }
     },
@@ -677,6 +703,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         cwd,
         path: filesystemPath,
         accept: z.enum(["working", "mine-full", "theirs-full", "base"]),
+        operationId: operationIdInput,
         ...response
       }
     },
@@ -808,7 +835,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: workflowPromptArgs
     },
     ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
-      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} First use a valid subject, blank second line, and - verification bullets in the message. Supply explicit paths, revision, expectedRemoteHead, and operationId. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
+      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} For multi-writer work, capture baselineToken with svn_snapshot captureBaseline:true before editing and pass it to the safe commit. Use a valid subject, blank second line, and - verification bullets. Supply explicit paths, revision, expectedRemoteHead, and operationId. Safe commit performs scoped update, collision checks, safe EOL repair, precommit, commit, and verification. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
     )
   );
   server.registerPrompt(
@@ -819,7 +846,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: { cwd, paths: promptPaths }
     },
     ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
-      `Repair EOL issues only for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Run eol_check, then eol_fix_verified for failing files, then svn_diff with ignoreEol:true. Confirm LF/BOM evidence, byte/content preservation, and no concurrent-edit refusal before commit.`
+      `Repair EOL issues only for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} First run svn_precommit with its default autoFixEol:safe; it automatically handles explicit added files with declared EOL policy and verified EOL-only changes. If it refuses a real content change or non-text byte, follow its exact diagnostic. Use eol_fix_verified only for an explicit manual repair, then verify with svn_diff ignoreEol:true. If a diff is truncated, continue it with the returned diffOperationId and cursor.`
     )
   );
   server.registerPrompt(
@@ -869,8 +896,13 @@ function withToolAnnotations(name: string, config: unknown): unknown {
   if (!config || typeof config !== "object") {
     return config;
   }
+  const typed = config as Record<string, unknown>;
+  const description = typeof typed.description === "string" ? typed.description : "";
   return {
-    ...(config as Record<string, unknown>),
+    ...typed,
+    ...(name !== "svn_help" && description && !description.includes("svn_help")
+      ? { description: `${description} See svn_help before advanced use.` }
+      : {}),
     annotations: {
       ...((config as { annotations?: Record<string, unknown> }).annotations ?? {}),
       destructiveHint: false,
@@ -888,10 +920,8 @@ function focusedProfileConfig(name: string, config: unknown): unknown {
     return config;
   }
   const inputSchema = { ...typed.inputSchema };
-  if (name === "svn_commit") {
-    for (const advanced of advancedInputNames.svn_commit) {
-      delete inputSchema[advanced];
-    }
+  for (const advanced of advancedInputsFor(name)) {
+    delete inputSchema[advanced];
   }
   return {
     ...typed,
@@ -1050,6 +1080,11 @@ function validateAdvancedInputs(name: string, args: Record<string, unknown>): Re
       extras.cursor = args.cursor;
     }
     copyOptionalInteger(extras, args, "maxChars", 256, 64000);
+  }
+  const registeredInputs = new Set(advancedInputsFor(name));
+  const unregisteredInputs = Object.keys(extras).filter((inputName) => !registeredInputs.has(inputName));
+  if (unregisteredInputs.length > 0) {
+    throw new Error(`advanced input registry missing ${name}: ${unregisteredInputs.join(", ")}`);
   }
   return extras;
 }

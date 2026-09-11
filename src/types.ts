@@ -103,6 +103,12 @@ export interface EolSniff {
   has_bom: boolean;
   size: number;
   sniff: "ok" | "skipped-too-large" | "not-a-file";
+  non_text_byte?: {
+    byte_offset: number;
+    line: number;
+    column: number;
+    byte_hex: string;
+  };
 }
 
 export interface EolCheckResult extends EolSniff {

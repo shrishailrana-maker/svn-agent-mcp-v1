@@ -11,7 +11,7 @@
   comparison decision.
 - `../CHANGELOG.md` records release history.
 
-The current source release is `1.8.3`; query `npm view svn-agent-mcp version` for the registry
+The current source release is `1.9.0`; query `npm view svn-agent-mcp version` for the registry
 release. Release history is recorded in `../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the
 local ignored `current` release pointer, then use `svn_self_check` to verify it and the bundled
@@ -29,5 +29,5 @@ approval_policy = "never"
 default_tools_approval_mode = "approve"
 ```
 
-All 29 full-profile tools advertise `destructiveHint=false`; the host setting is persistent and
+All 30 full-profile tools advertise `destructiveHint=false`; the host setting is persistent and
 server-scoped.

@@ -93,12 +93,12 @@ describe("runner executable resolution", () => {
     expect(run.command).toContain("--non-interactive");
   });
 
-  it("forces a stable C locale for child tools", async () => {
+  it("forces a stable English locale with UTF-8 on Unix", async () => {
     const run = await runExecutable(process.execPath, ["-e", "process.stdout.write(process.env.LC_ALL || '')"], {
       cwd: process.cwd()
     });
 
-    expect(run.stdout).toBe("C");
+    expect(run.stdout).toBe(process.platform === "darwin" ? "en_US.UTF-8" : process.platform === "linux" ? "C.UTF-8" : "C");
   });
 
   it("falls back to latin1 when child output is not valid UTF-8", async () => {

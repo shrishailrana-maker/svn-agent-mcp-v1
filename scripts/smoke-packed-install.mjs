@@ -79,8 +79,8 @@ try {
     await client.connect(transport);
     const tools = await client.listTools();
     const prompts = await client.listPrompts();
-    if (tools.tools.length !== 29) {
-      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 29 canonical tools`);
+    if (tools.tools.length !== 30) {
+      throw new Error(`installed MCP exposed ${tools.tools.length} tools instead of 30 canonical tools`);
     }
     for (const tool of tools.tools) {
       if (tool.annotations?.destructiveHint !== false) {
@@ -128,7 +128,7 @@ try {
   }
 
   console.log(`Packed install smoke passed: ${filename}`);
-  console.log("  MCP handshake: 29 canonical tools, destructiveHint:false, healthy self-check");
+  console.log("  MCP handshake: 30 canonical tools, destructiveHint:false, healthy self-check");
   console.log(`  layout: ${check.runtime_layout}`);
   console.log(`  dist files: ${check.dist_file_count}`);
   console.log(`  bin files: ${check.bin_file_count}`);

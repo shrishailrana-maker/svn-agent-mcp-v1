@@ -671,10 +671,15 @@ function nonInteractiveSvnArgs(args: string[]): string[] {
 }
 
 function stableToolEnv(): NodeJS.ProcessEnv {
+  const stableLocale = process.platform === "darwin"
+    ? "en_US.UTF-8"
+    : process.platform === "linux"
+      ? "C.UTF-8"
+      : "C";
   return {
     ...process.env,
-    LC_ALL: "C",
-    LANG: "C",
+    LC_ALL: stableLocale,
+    LANG: stableLocale,
     LANGUAGE: "C"
   };
 }

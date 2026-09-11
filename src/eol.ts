@@ -56,7 +56,8 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
       kind: "binary",
       has_bom: scan.hasBom,
       size: stat.size,
-      sniff: "ok"
+      sniff: "ok",
+      ...(scan.nonTextByte ? { non_text_byte: scan.nonTextByte } : {})
     };
   }
 
@@ -65,7 +66,8 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
     kind: classifyEolCounts(scan.crlf, scan.lf, scan.crOnly),
     has_bom: scan.hasBom,
     size: stat.size,
-    sniff: "ok"
+    sniff: "ok",
+    ...(scan.nonTextByte ? { non_text_byte: scan.nonTextByte } : {})
   };
 }
 
@@ -361,6 +363,12 @@ async function scanEolFile(filePath: string): Promise<{
   crlf: number;
   lf: number;
   crOnly: number;
+  nonTextByte?: {
+    byte_offset: number;
+    line: number;
+    column: number;
+    byte_hex: string;
+  };
 }> {
   const stream = fs.createReadStream(filePath, {
     highWaterMark: 1024 * 1024,
@@ -373,22 +381,53 @@ async function scanEolFile(filePath: string): Promise<{
   let lf = 0;
   let crOnly = 0;
   let pendingCr = false;
+  let byteOffset = 0;
+  let line = 1;
+  let column = 1;
+  let nonTextByte: { byte_offset: number; line: number; column: number; byte_hex: string } | undefined;
   for await (const chunkValue of stream) {
     const chunk = chunkValue as Buffer;
     for (const byte of chunk) {
       if (prefix.length < 3) prefix.push(byte);
-      if (scanned < BINARY_SCAN_BYTES && byte === 0) binary = true;
+      const followsCr = pendingCr;
+      if (followsCr && byte !== 0x0a) {
+        line += 1;
+        column = 1;
+      }
+      if (scanned < BINARY_SCAN_BYTES && isNonTextControlByte(byte) && !nonTextByte) {
+        // Preserve the historical classification contract: only NUL marks a
+        // file binary. Other controls are advisory because form feed, vertical
+        // tab, and ESC can be intentional in versioned text.
+        if (byte === 0) binary = true;
+        nonTextByte = {
+          byte_offset: byteOffset,
+          line,
+          column,
+          byte_hex: `0x${byte.toString(16).padStart(2, "0").toUpperCase()}`
+        };
+      }
       scanned += 1;
+      let countedAsCrlf = false;
       if (pendingCr) {
         pendingCr = false;
         if (byte === 0x0a) {
           crlf += 1;
-          continue;
+          countedAsCrlf = true;
+        } else {
+          crOnly += 1;
         }
-        crOnly += 1;
       }
-      if (byte === 0x0d) pendingCr = true;
-      else if (byte === 0x0a) lf += 1;
+      if (!countedAsCrlf) {
+        if (byte === 0x0d) pendingCr = true;
+        else if (byte === 0x0a) lf += 1;
+      }
+      if (byte === 0x0a) {
+        line += 1;
+        column = 1;
+      } else if (byte !== 0x0d) {
+        column += 1;
+      }
+      byteOffset += 1;
     }
   }
   if (pendingCr) crOnly += 1;
@@ -397,8 +436,13 @@ async function scanEolFile(filePath: string): Promise<{
     binary,
     crlf,
     lf,
-    crOnly
+    crOnly,
+    ...(nonTextByte ? { nonTextByte } : {})
   };
+}
+
+function isNonTextControlByte(byte: number): boolean {
+  return (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) || byte === 0x7f;
 }
 
 function rawContentHashSync(filePath: string): string | null {

@@ -283,25 +283,104 @@ describe("repository lock support", () => {
       await server.connect(serverTransport);
       await client.connect(clientTransport);
       const listed = await client.listTools();
-      expect(listed.tools).toHaveLength(29);
+      expect(listed.tools).toHaveLength(30);
       const commit = listed.tools.find((tool) => tool.name === "svn_commit");
-      expect(commit?.description).toContain(COMMIT_MESSAGE_REQUIREMENT);
-      expect(commit?.description).toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`);
+      expect(commit?.description).toContain("svn_help tool:svn_commit");
       const imported = listed.tools.find((tool) => tool.name === "svn_import");
       expect(imported?.description).toContain(COMMIT_MESSAGE_REQUIREMENT);
       for (const toolName of ["svn_diff", "eol_check", "eol_fix_verified"]) {
         const tool = listed.tools.find((candidate) => candidate.name === toolName);
-        expect(tool?.description).toContain("eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true)");
-        expect(tool?.description).toContain("LF/BOM");
-        expect(tool?.description).toContain("byte/content preservation");
+        expect(tool?.description).toContain("svn_help");
       }
-      for (const tool of listed.tools.filter((candidate) => candidate.name !== "svn_commit")) {
-        expect(tool.description ?? "").not.toContain(`more than ${RISK_ACK_PATH_THRESHOLD} paths requires riskAck:true.`);
-      }
+      const eolHelp = await client.callTool({ name: "svn_help", arguments: { tool: "eol", responseMode: "structured-only" } });
+      expect(eolHelp.structuredContent).toMatchObject({
+        ok: true,
+        tool: "eol",
+        pathRules: expect.arrayContaining([expect.stringContaining("eol_fix_verified accepts regular files only")]),
+        contract: {
+          normalFlow: expect.arrayContaining([expect.stringContaining("autoFixEol defaults to safe")]),
+          fixDefaults: { removeBom: true, sizeLimit: expect.stringContaining("5 MiB") },
+          converter: {
+            executables: expect.stringContaining("dos2unix"),
+            resolutionOrder: expect.stringContaining("SVN_AGENT_DOS2UNIX_DIR"),
+            unavailable: expect.stringContaining("svn_self_check")
+          },
+          refusals: { controlByte: expect.stringContaining("1-based byte column") }
+        }
+      });
+      const commitHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_commit", responseMode: "structured-only" } });
+      expect(commitHelp.structuredContent).toMatchObject({
+        contract: {
+          messageExample: expect.stringContaining("- Verified:"),
+          riskAckTriggers: expect.arrayContaining([
+            `more than ${RISK_ACK_PATH_THRESHOLD} paths`,
+            "version file touched"
+          ]),
+          requiredResultFields: ["revision", "committedPaths", "postStatusClean"]
+        }
+      });
+      const addHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_add", responseMode: "structured-only" } });
+      expect(addHelp.structuredContent).toMatchObject({
+        contract: { add: { directories: expect.stringContaining("allowRecursive:true") } }
+      });
+      const fallbackHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_status", responseMode: "structured-only" } });
+      expect(fallbackHelp.structuredContent).toMatchObject({
+        contract: {
+          extendedContract: true,
+          advancedInputs: expect.arrayContaining(["afterCursor", "conflictCursor"])
+        }
+      });
+      const snapshotHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_snapshot", responseMode: "structured-only" } });
+      expect(snapshotHelp.structuredContent).toMatchObject({
+        contract: {
+          captureBaseline: expect.stringContaining("before editing"),
+          advancedInputs: expect.arrayContaining(["captureBaseline", "afterCursor", "conflictCursor"])
+        }
+      });
+      const logHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_log", responseMode: "structured-only" } });
+      expect(logHelp.structuredContent).toMatchObject({
+        contract: { filters: { messageContains: expect.any(String), scanLimit: expect.any(String) } }
+      });
+      const updateHelp = await client.callTool({ name: "svn_help", arguments: { tool: "svn_update", responseMode: "structured-only" } });
+      expect(updateHelp.structuredContent).toMatchObject({
+        contract: { filters: { maxItems: expect.any(String), targetOverlapOnly: expect.any(String) } }
+      });
+      const unknownHelp = await client.callTool({ name: "svn_help", arguments: { tool: "not-a-tool", responseMode: "structured-only" } });
+      expect(unknownHelp.structuredContent).toMatchObject({
+        ok: false,
+        availableTopics: expect.arrayContaining(["eol", "svn_commit"])
+      });
       for (const tool of listed.tools) {
         expect(tool.annotations?.destructiveHint).toBe(false);
         expect(tool.annotations?.readOnlyHint).toBe(readOnlyToolNames.has(tool.name));
+        if (tool.name !== "svn_help") expect(tool.description).toContain("svn_help");
       }
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("keeps focused profiles trimmed while retaining generated advanced help", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer("docs");
+    const client = new Client({ name: "focused-help-test", version: "1.0.0" });
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const listed = await client.listTools();
+      expect(listed.tools).toHaveLength(9);
+      expect(listed.tools.find((tool) => tool.name === "svn_status")?.inputSchema.properties)
+        .not.toHaveProperty("afterCursor");
+      expect(listed.tools.find((tool) => tool.name === "svn_commit")?.inputSchema.properties)
+        .not.toHaveProperty("detailOperationId");
+      const help = await client.callTool({
+        name: "svn_help",
+        arguments: { tool: "svn_status", responseMode: "structured-only" }
+      });
+      expect(help.structuredContent).toMatchObject({
+        contract: { advancedInputs: expect.arrayContaining(["afterCursor", "conflictCursor"]) }
+      });
     } finally {
       await client.close();
       await server.close();

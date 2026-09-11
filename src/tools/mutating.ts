@@ -70,6 +70,11 @@ const UPDATE_SCOPE_PARENT_LIMIT = 10;
 const UPDATE_SCOPE_ENTRY_LIMIT = 5000;
 const UPDATE_OMITTED_ADDITION_LIMIT = 100;
 
+export function trackedWorkingCopyClean(changes: ChangedPath[], conflicts: Conflict[]): boolean {
+  const nonDirtyStatuses = new Set(["?", "I", "X"]);
+  return changes.every((entry) => nonDirtyStatuses.has(entry.status)) && conflicts.length === 0;
+}
+
 export function defaultWorkstationLabel(): string {
   const configured = process.env.SVN_MCP_WORKSTATION_LABEL?.trim();
   if (configured) {
@@ -736,6 +741,12 @@ export async function svnCommit(input: {
     const workingCopyClean = workingCopyStatus?.ok
       ? workingCopyStatus.changed_paths.length === 0 && workingCopyStatus.conflicts.length === 0
       : null;
+    const untrackedCount = workingCopyStatus?.ok
+      ? workingCopyStatus.changed_paths.filter((entry) => entry.status === "?").length
+      : null;
+    const trackedClean = workingCopyStatus?.ok
+      ? trackedWorkingCopyClean(workingCopyStatus.changed_paths, workingCopyStatus.conflicts)
+      : null;
     const postVersionRun = commitSucceeded ? await runSvnVersion(guard.wcRoot, guard.cwd) : null;
     const postVersion = postVersionRun?.exitCode === 0 ? parseSvnVersion(postVersionRun.stdout) : null;
     const reportedVersion = postVersion ?? baseVersion;
@@ -751,7 +762,7 @@ export async function svnCommit(input: {
     const noteParts = [
       failureNote,
       commitSucceeded && !postStatusClean ? "committed-path post-status has residue" : "",
-      commitSucceeded && workingCopyClean === false ? "working copy has uncommitted changes" : "",
+      commitSucceeded && trackedClean === false ? "working copy has tracked changes" : "",
       commitSucceeded && workingCopyClean === null ? "whole-working-copy post-status unavailable" : ""
     ].filter(Boolean);
     const boundedPostStatusPaths = committedPaths.slice(0, POST_STATUS_PATH_LIMIT);
@@ -788,7 +799,9 @@ export async function svnCommit(input: {
             post_status_paths: boundedPostStatusPaths,
             post_status_path_count: committedPaths.length,
             ...(committedPaths.length > boundedPostStatusPaths.length ? { post_status_paths_truncated: true } : {}),
-            working_copy_clean: workingCopyClean
+            working_copy_clean: workingCopyClean,
+            tracked_clean: trackedClean,
+            untracked_count: untrackedCount
           }
         : {}),
       working_copy_mixed: reportedVersion?.mixed ?? null,

@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.42 — public implementation contract. Single source of truth.**
+**Spec version 1.43 - public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -195,7 +195,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
-| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 29 canonical tools), `docs` (8), or `review` (11) |
+| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 30 canonical tools), `docs` (9), or `review` (12) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 | `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
 | `SVN_MCP_WORKSTATION_LABEL` | No | Optional lock workstation label; when absent, the normalized machine hostname is used |
@@ -284,7 +284,7 @@ These records coordinate retries on one host only and are not a distributed lock
 ### 6.5 Tool profiles
 
 Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
-29 canonical tools. `docs` advertises `svn_update`, `svn_status`, `svn_log`, `svn_add`,
+30 canonical tools. `docs` advertises `svn_help`, `svn_update`, `svn_status`, `svn_log`, `svn_add`,
 `eol_check`, `eol_fix_verified`, `svn_precommit`, and `svn_commit`. `review` adds `svn_diff`,
 `svn_cat`, and `svn_blame`. A call to an unadvertised tool in a focused profile returns a typed
 `TOOL_PROFILE` refusal with remediation. READONLY checks and every mutation guard still run
@@ -485,8 +485,10 @@ usable when the complete XML document is larger than 20 MiB.
 It omits file text by design; callers use `svn_cat` only for the file page they actually need.
 
 **`eol_check`** — `{ cwd?, paths: string[], includePassing?: boolean = false, countOnly?, maxItems?, cursor? }`
-Pure read: batched `svn propget svn:eol-style --xml` + async byte sniff (cap 5 MB, larger →
-`sniff:"skipped-too-large"`; NUL byte in first 8 KB → `kind:"binary"`; directory or other
+Pure read: batched `svn propget svn:eol-style --xml` + async byte sniff (cap 5 MB, larger ->
+`sniff:"skipped-too-large"`; NUL in the first 8 KB -> `kind:"binary"`; other C0/DEL controls
+remain text and add advisory `non_text_byte:{byte_offset,line,column,byte_hex}`, where `column` is
+a 1-based byte column; directory or other
 non-file target → `kind:"not-a-file"`, never a thrown error). Extra per file:
 `{ path, kind: "crlf"|"lf"|"mixed"|"none"|"binary"|"not-a-file", eol_style: string|null,
 has_bom: boolean, mismatch: boolean }`. `mismatch` = text file whose working EOL does not match `svn:eol-style`
@@ -494,6 +496,16 @@ has_bom: boolean, mismatch: boolean }`. `mismatch` = text file whose working EOL
 resolve literally). Files with no line breaks (`kind:"none"`) are not mismatches. Compact output
 returns counts and failing paths only unless `includePassing:true` is requested. Result pages
 default to 100 items and expose `nextCursor` when more remain.
+
+**`svn_help`** - `{ tool: string }`
+Returns extended rules for one tool or the `eol` topic on demand. Every response includes common
+path rules and response-mode meanings. EOL help leads with the normal automatic-precommit flow and
+lists target/BOM/binary/size defaults plus exact refusal fixes. Commit help includes the message
+example, actual `riskAck` triggers, token lifetime, and required receipt fields. This tool is
+read-only and is advertised in every profile; normal tool schemas remain bounded.
+The full profile advertises all entries from the shared advanced-input capability registry.
+Focused profiles remove those fields from their always-loaded schemas, and `svn_help` returns the
+same generated input-name list so help and runtime validation cannot drift independently.
 
 **`svn_propget`** — `{ cwd?, paths: string[], name: string, fields?: ("path"|"name"|"value")[], maxValueChars?, countOnly?, maxItems?, cursor? }`
 Pure read: `svn propget --xml -- <name> <paths…>`. Property names are bounded to ordinary SVN
@@ -618,6 +630,9 @@ mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt 
 of implying that diff or EOL checks passed.
 It also returns `eolCheckComplete:true` and a SHA256 `eolPolicyIdentity` over the checked target and
 exclude policy, allowing a caller to avoid a redundant standalone EOL check for the same slice.
+When captured diff evidence is truncated, the receipt exposes its operation ID, expiry, and next
+cursor. `svn_diff` can page the same stored evidence using the original explicit path scope, so an
+agent does not need a native SVN fallback or a second diff run.
 Working-copy-root and existing-directory targets use the same `allowRoot` and
 `allowDirectoryTargets` acknowledgements as `svn_commit`, so `READY` does not contradict those
 target-scope guards for the same requested slice.
@@ -769,7 +784,8 @@ Extra: `{ revision, post_status_clean: boolean, risk_signals: string[] }`. Mixed
 warning in `note`, commit proceeds (D3).
 `postStatusClean` is the compatibility field for the committed path scope only. The receipt also
 publishes `postStatusScope:"committed-paths"`, bounded `postStatusPaths`, and separate
-`workingCopyClean` evidence from a whole-working-copy status check. These fields remove ambiguity;
+`workingCopyClean` evidence from a whole-working-copy status check. `trackedClean` ignores unknown
+and ignored paths, while `untrackedCount` reports unknown paths separately. These fields remove ambiguity;
 `postStatusClean` is not deprecated in 1.7.0.
 Whitespace-only messages are refused. Naming the working-copy root is refused unless
 `allowRoot:true`. Existing directory targets are refused unless `allowDirectoryTargets:true`
@@ -1025,6 +1041,18 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.43 / v1.9.0 - 2026-09-11
+
+- Reports unsafe control bytes separately with a bounded byte value and exact location.
+- Exposes precommit's stored diff evidence for paged continuation through `svn_diff`.
+- Separates tracked working-copy cleanliness from the number of untracked paths.
+- Makes normal EOL, captured-diff, safe-commit, and multi-writer workflows discoverable through
+  concise tool descriptions and copy-ready next actions while retaining schema budgets.
+- Adds read-only `svn_help(tool)` to every profile; its small on-demand schema replaces full
+  per-tool contracts and adds one tool to each advertised profile.
+- Advertises all runtime-supported advanced inputs in the full profile and generates on-demand
+  help input lists from the same registry. EOL help documents converter lookup and recovery.
 
 ### Spec 1.36 / v1.6.0 — 2026-08-08
 

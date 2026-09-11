@@ -469,6 +469,25 @@ export async function svnPrecommit(input: {
     diff_totals_complete: diff.totals_complete === true,
     eol_policy_identity: eolPolicyIdentity,
     ...(diff.recovery_tool ? { diff_recovery_tool: diff.recovery_tool } : {}),
+    ...(diff.operation_id ? { diff_operation_id: diff.operation_id } : {}),
+    ...(diff.evidence_expires_at ? { diff_evidence_expires_at: diff.evidence_expires_at } : {}),
+    ...(diff.next_cursor ? { diff_next_cursor: diff.next_cursor } : {}),
+    ...(diff.evidence_terminal_truncation === true ? { diff_evidence_capped: true } : {}),
+    ...(diff.truncated === true && diff.operation_id && diff.next_cursor
+      && diff.evidence_terminal_truncation !== true
+      ? {
+          next_action: {
+            tool: "svn_diff",
+            cwd: scope.expanded ? context.wcRoot : context.cwd,
+            paths: scope.expanded
+              ? scopedPaths.map((target) => repoRelativePath(target, context.wcRoot))
+              : input.paths,
+            operationId: diff.operation_id,
+            cursor: diff.next_cursor,
+            ignoreEol: true
+          }
+        }
+      : {}),
     ...(remediation ? { remediation } : {}),
     diff_excerpt: diff.diff_excerpt,
     eol_only: diff.eol_only === true,
@@ -478,20 +497,36 @@ export async function svnPrecommit(input: {
   if (verdict === "EOL_FIX_NEEDED" && input.autoFixEol !== "off") {
     if (readonlyMode()) {
       return {
-        ...result,
-        auto_eol_fix_unavailable: "READONLY instance"
+        ...withoutPrecommitDiffContinuation(result),
+        auto_eol_fix_unavailable: "READONLY instance",
+        remediation: "rerun on a writable SVN MCP or set autoFixEol:off for diagnostics"
       };
     }
     const repaired = await automaticallyRepairEol(context.cwd, result, explicitFilePaths);
     if (!repaired.ok) {
       const repairCode = repaired.envelope.code ?? "EOL_AUTO_FIX_FAILED";
       const repairRefused = repairCode === "EOL_AUTO_FIX_REFUSED" || repairCode === "EOL_TARGET_UNDECLARED";
+      const eolPaths = precommitEolPaths(result);
+      const converterFailure = repairCode === "EOL_CONVERTER_FAILED";
+      const manualRepair = repairCode !== "EOL_TARGET_UNDECLARED" && !converterFailure && eolPaths.length > 0;
       return {
-        ...result,
+        ...withoutPrecommitDiffContinuation(result),
         ok: false,
         verdict: repairRefused ? "EOL_FIX_REFUSED" : "EOL_FIX_FAILED",
         code: repairCode,
         note: repaired.envelope.note,
+        remediation: manualRepair
+          ? "inspect the refusal, run eol_fix_verified on the exact files, then rerun svn_precommit"
+          : converterFailure
+            ? "run svn_self_check; repair SVN_AGENT_DOS2UNIX_DIR, bundled converters, or PATH before retrying"
+          : repairCode === "EOL_TARGET_UNDECLARED"
+            ? "declare svn:eol-style or repository normalizeEol policy, then rerun svn_precommit"
+            : "inspect the EOL repair failure and rerun svn_precommit",
+        ...(manualRepair
+          ? { next_action: { tool: "eol_fix_verified", cwd: context.cwd, paths: eolPaths } }
+          : converterFailure
+            ? { next_action: { tool: "svn_self_check", cwd: context.cwd } }
+            : {}),
         auto_eol_fix_attempted: true,
         ...(repaired.envelope.rollback_outcomes ? { rollback_outcomes: repaired.envelope.rollback_outcomes } : {}),
         ...(repaired.envelope.rollback_restored_paths ? { rollback_restored_paths: repaired.envelope.rollback_restored_paths } : {}),
@@ -504,11 +539,13 @@ export async function svnPrecommit(input: {
     } catch {
       const outcomes = await repaired.rollback();
       return {
-        ...result,
+        ...withoutPrecommitDiffContinuation(result),
         ok: false,
         verdict: "EOL_FIX_FAILED",
         code: "EOL_POST_REPAIR_CHECK_FAILED",
         note: "automatic EOL repair post-check failed; rollback attempted",
+        remediation: "inspect rollback outcomes, then rerun svn_precommit",
+        next_action: { tool: "eol_fix_verified", cwd: context.cwd, paths: repaired.paths },
         auto_eol_fix_attempted: true,
         ...rollbackOutcomeFields(outcomes)
       };
@@ -523,11 +560,12 @@ export async function svnPrecommit(input: {
     if (!targetCheck.ok) {
       const outcomes = await repaired.rollback();
       return {
-        ...result,
+        ...withoutPrecommitDiffContinuation(result),
         ok: false,
         verdict: "EOL_FIX_REFUSED",
         code: "EOL_POLICY_CHANGED_DURING_REPAIR",
         note: `safe automatic EOL repair refused: ${targetCheck.note}`,
+        remediation: "recheck svn:eol-style or repository EOL policy, then rerun svn_precommit",
         auto_eol_fix_attempted: true,
         ...rollbackOutcomeFields(outcomes)
       };
@@ -535,7 +573,7 @@ export async function svnPrecommit(input: {
     const afterStatus = await svnStatus({ cwd: context.cwd, paths: scopedPaths, depth: "empty" });
     if (afterStatus.ok && afterStatus.changed_paths.length === 0 && afterStatus.conflicts.length === 0) {
       return {
-        ...result,
+        ...withoutPrecommitDiffContinuation(result),
         ok: true,
         verdict: "NOTHING_TO_COMMIT",
         changed_paths: [],
@@ -565,10 +603,12 @@ export async function svnPrecommit(input: {
     }
     const outcomes = await repaired.rollback();
     return {
-      ...afterRepair,
+      ...withoutPrecommitDiffContinuation(afterRepair),
       ok: false,
       verdict: "EOL_FIX_FAILED",
       note: `automatic EOL repair completed but precommit remained ${String(afterRepair.verdict)}`,
+      remediation: "inspect the reported post-repair verdict, then rerun svn_precommit",
+      next_action: { tool: "eol_fix_verified", cwd: context.cwd, paths: repaired.paths },
       auto_eol_fix_attempted: true,
       ...rollbackOutcomeFields(outcomes)
     };
@@ -653,6 +693,29 @@ export async function svnPrecommit(input: {
         }
       : {})
   };
+}
+
+function withoutPrecommitDiffContinuation(result: ToolEnvelope): ToolEnvelope {
+  const {
+    diff_operation_id: _diffOperationId,
+    diff_evidence_expires_at: _diffEvidenceExpiresAt,
+    diff_next_cursor: _diffNextCursor,
+    diff_evidence_capped: _diffEvidenceCapped,
+    next_action: nextAction,
+    ...rest
+  } = result;
+  return nextAction && typeof nextAction === "object"
+    && !Array.isArray(nextAction)
+    && (nextAction as Record<string, unknown>).tool !== "svn_diff"
+    ? { ...rest, next_action: nextAction }
+    : rest;
+}
+
+function precommitEolPaths(result: ToolEnvelope): string[] {
+  return ((result.per_file as Array<Record<string, unknown>> | undefined) ?? [])
+    .filter((file) => file.eol_mismatch === true || file.pure_eol_churn === true)
+    .map((file) => file.path)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
 export async function svnPrepareCommit(input: {
@@ -1913,7 +1976,14 @@ export async function eolFixVerified(input: {
       target: result.target,
       pure_eol_churn: result.pure_eol_churn === true,
       normalized_content_hash: result.normalized_content_hash,
-      ...(result.ok ? {} : { failure: result.note })
+      ...(result.ok
+        ? {}
+        : {
+            failure: result.note,
+            ...(result.code ? { code: result.code } : {}),
+            ...(result.remediation ? { remediation: result.remediation } : {}),
+            ...(result.next_action ? { next_action: result.next_action } : {})
+          })
     });
   }
   const passed = files.filter((file) => file.ok === true).length;
@@ -1976,6 +2046,7 @@ async function eolFixOneVerified(input: {
   if (isBinaryKind(before.kind)) {
     return {
       ...failEnvelope("eol_fix_verified", context.cwd, "binary file refused"),
+      code: "BINARY_FILE",
       before
     };
   }
@@ -2034,6 +2105,8 @@ async function eolFixOneVerified(input: {
           note: "EOL converter failed; original remained unchanged"
         }),
         code: "EOL_CONVERTER_FAILED",
+        remediation: "run svn_self_check; repair SVN_AGENT_DOS2UNIX_DIR, bundled converters, or PATH before retrying",
+        next_action: { tool: "svn_self_check", cwd: context.cwd },
         target,
         eol_style: eolStyle,
         converter,

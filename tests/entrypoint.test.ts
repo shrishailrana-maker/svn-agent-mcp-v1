@@ -14,15 +14,32 @@ describe("server entrypoint launch detection", () => {
   it("selects bounded tool profiles while keeping full as the default", () => {
     expect(configuredToolProfile(undefined)).toBe("full");
     expect([...(toolNamesForProfile("docs") ?? [])]).toEqual([
-      "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
+      "svn_help", "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
     ]);
-    expect(toolNamesForProfile("review")?.size).toBe(11);
+    expect(toolNamesForProfile("review")?.size).toBe(12);
     expect(toolNamesForProfile("full")).toBeNull();
     expect(() => configuredToolProfile("wide-open")).toThrow("allowed full, docs, review");
   });
 
   it("uses the package version as the MCP server version", () => {
     expect(serverVersion).toBe(packageJson.version);
+  });
+
+  it("keeps every runtime advanced-input assignment in the shared registry", () => {
+    const source = fs.readFileSync(path.resolve("src", "index.ts"), "utf8");
+    const validator = source.slice(
+      source.indexOf("function validateAdvancedInputs"),
+      source.indexOf("function validatedEvidenceToken")
+    );
+    const assigned = new Set<string>();
+    for (const match of validator.matchAll(/extras\.([A-Za-z][A-Za-z0-9]*)\s*=/g)) {
+      if (match[1]) assigned.add(match[1]);
+    }
+    for (const match of validator.matchAll(/copyOptional(?:Boolean|Integer)\(extras,\s*args,\s*"([^"]+)"/g)) {
+      if (match[1]) assigned.add(match[1]);
+    }
+    const registered = new Set(Object.values(advancedInputNames).flat());
+    expect([...assigned].filter((name) => !registered.has(name as never))).toEqual([]);
   });
 
   it("publishes projections for revision, update-scope, and cleanliness evidence", () => {
@@ -64,7 +81,7 @@ describe("server entrypoint launch detection", () => {
       expect(inspectPrompt?.arguments?.map((argument) => argument.name)).not.toContain("revision");
       const safeCommitPrompt = await client.getPrompt({
         name: "svn_safe_commit",
-        arguments: { cwd: "C:\\Projects\\sample", paths: "src\\Program.cs", revision: "42" }
+        arguments: { cwd: path.resolve("sample"), paths: "src/Program.cs", revision: "42" }
       });
       expect(safeCommitPrompt.messages[0]?.content).toMatchObject({
         type: "text",
@@ -77,9 +94,27 @@ describe("server entrypoint launch detection", () => {
       ]);
       expect(status?.inputSchema.properties).not.toHaveProperty("humanText");
       expect(status?.inputSchema.properties).not.toHaveProperty("fields");
-      expect(status?.inputSchema.properties).not.toHaveProperty("afterCursor");
+      expect(status?.inputSchema.properties).toHaveProperty("afterCursor");
+      expect(status?.inputSchema.properties).toHaveProperty("conflictCursor");
       const diff = tools.tools.find((tool) => tool.name === "svn_diff");
-      expect(diff?.inputSchema.properties).not.toHaveProperty("operationId");
+      expect(diff?.inputSchema.properties).toHaveProperty("operationId");
+      expect(diff?.description).toContain("precommit nextAction");
+      const precommit = tools.tools.find((tool) => tool.name === "svn_precommit");
+      expect(precommit?.description).toContain("autoFixEol defaults safe");
+      expect(precommit?.description).toContain("svn_help");
+      const snapshot = tools.tools.find((tool) => tool.name === "svn_snapshot");
+      expect(snapshot?.description).toContain("captureBaseline:true detects other writers");
+      const commit = tools.tools.find((tool) => tool.name === "svn_commit");
+      expect(commit?.description).toContain("operation:safe");
+      expect(commit?.description).toContain("svn_help");
+      expect(tools.tools.find((tool) => tool.name === "svn_help")?.description).toContain("tool:eol");
+      for (const [toolName, names] of Object.entries(advancedInputNames)) {
+        const advertised = tools.tools.find((tool) => tool.name === toolName);
+        expect(advertised).toBeDefined();
+        for (const inputName of names) {
+          expect(advertised?.inputSchema.properties).toHaveProperty(inputName);
+        }
+      }
       expect(advancedInputNames.svn_status).toContain("afterCursor");
       expect(advancedInputNames.svn_diff).toContain("operationId");
       expect(advancedInputNames.svn_update).toContain("operationId");

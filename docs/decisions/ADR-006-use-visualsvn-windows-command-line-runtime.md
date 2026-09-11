@@ -26,7 +26,7 @@ Apache Subversion 1.14.5, was compiled in June 2026, and does not ship separate 
 DLLs.
 
 Retain the archive SHA256, every bundled file's SHA256, the archive's complete license directory,
-and the Apache Subversion notice in the source and npm package. Keep dos2unix 7.5.6 as the EOL
+and the Apache Subversion notice in the source and npm package. Keep the current stable dos2unix release as the EOL
 converter payload under its own reproduced license.
 
 Embed the standard Windows UTF-8 active-code-page application manifest in `svn.exe`. The selected

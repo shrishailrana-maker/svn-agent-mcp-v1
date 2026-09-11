@@ -31,11 +31,13 @@ archive. Microsoft redistributable runtime license terms apply to those files.
 ## dos2unix / unix2dos
 
 - Files: `bin/dos2unix.exe`, `bin/unix2dos.exe`, `bin/mac2unix.exe`, and `bin/unix2mac.exe`
-- Bundled version: `7.5.6` (May 28, 2026)
+- Bundled version: `7.5.7` (August 27, 2026)
+- Distribution archive: `dos2unix-7.5.7-win64.zip`
+- Distribution archive SHA256: `8C1AF6E366E641A859A1D58457663AEDD1F3B4AAE37E67621449BEEF145CF934`
 - Upstream: https://dos2unix.sourceforge.io/ and https://waterlander.net/dos2unix/
 - License: FreeBSD-style license, GPL-compatible
 
-dos2unix is maintained by Erwin Waterlander. Its complete distribution license is reproduced at
+dos2unix is maintained by Erwin Waterlander. Its complete 7.5.7 distribution license is reproduced at
 `third_party_licenses/dos2unix/COPYING.txt`.
 
 ## Binary Checksums

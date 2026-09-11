@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.8.3"
+    "version": "1.9.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -106,6 +106,10 @@
         "precommitToken",
         "precommitExpiresAt",
         "remoteHeadRevision",
+        "diffOperationId",
+        "diffEvidenceExpiresAt",
+        "diffNextCursor",
+        "diffEvidenceCapped",
         "baselineToken",
         "baselinePathChanges",
         "remoteHeadChangedSinceBaseline",
@@ -194,7 +198,9 @@
         "postStatusPaths",
         "postStatusPathCount",
         "postStatusPathsTruncated",
-        "workingCopyClean"
+        "workingCopyClean",
+        "trackedClean",
+        "untrackedCount"
       ]
     },
     "advancedInputs": {
@@ -285,8 +291,43 @@
   },
   "tools": [
     {
+      "name": "svn_help",
+      "description": "On-demand rules for one tool. Start with tool:eol for EOL defaults, refusals, and examples.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "responseMode": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "standard",
+              "full",
+              "receipt",
+              "structured-only"
+            ]
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "svn_self_check",
-      "description": "Check package and bundled runtime health.",
+      "description": "Check package and bundled runtime health. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -323,7 +364,7 @@
     },
     {
       "name": "svn_diagnose",
-      "description": "Diagnose local and remote working-copy health.",
+      "description": "Diagnose local and remote working-copy health. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -381,7 +422,7 @@
     },
     {
       "name": "svn_lock_status",
-      "description": "Return bounded repository lock state without exposing lock tokens.",
+      "description": "Return bounded repository lock state without exposing lock tokens. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -440,7 +481,7 @@
     },
     {
       "name": "svn_status",
-      "description": "Return scoped status, counts, and conflicts.",
+      "description": "Scoped status and conflicts. See svn_help.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -482,6 +523,16 @@
           "countOnly": {
             "type": "boolean"
           },
+          "afterCursor": {
+            "description": "Snapshot token from the previous result.",
+            "type": "string",
+            "maxLength": 64
+          },
+          "conflictCursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
           "maxItems": {
             "type": "integer",
             "minimum": 1,
@@ -515,7 +566,7 @@
     },
     {
       "name": "svn_info",
-      "description": "Return WC revision and mixed-revision state.",
+      "description": "Return WC revision and mixed-revision state. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -581,7 +632,7 @@
     },
     {
       "name": "svn_snapshot",
-      "description": "Return one compact working-copy status and revision snapshot.",
+      "description": "Snapshot; captureBaseline:true detects other writers. See svn_help.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -623,6 +674,20 @@
           "countOnly": {
             "type": "boolean"
           },
+          "afterCursor": {
+            "description": "Snapshot token from the previous result.",
+            "type": "string",
+            "maxLength": 64
+          },
+          "conflictCursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "captureBaseline": {
+            "description": "Return a baselineToken for multi-writer checks.",
+            "type": "boolean"
+          },
           "includeLockState": {
             "description": "Include a bounded lock-state summary; default false avoids an extra repository probe.",
             "type": "boolean"
@@ -660,7 +725,7 @@
     },
     {
       "name": "svn_diff",
-      "description": "Return a bounded scoped diff and per-file counts. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
+      "description": "Bounded diff; follow precommit nextAction. See svn_help.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -682,6 +747,17 @@
               "pattern": "^[^\\x00]*$"
             },
             "description": "One to 500 explicit paths inside one WC."
+          },
+          "file": {
+            "description": "One-file filter inside paths.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\x00]*$"
+          },
+          "operationId": {
+            "description": "Precommit diffOperationId.",
+            "type": "string"
           },
           "ignoreEol": {
             "type": "boolean"
@@ -761,7 +837,7 @@
     },
     {
       "name": "svn_log",
-      "description": "Return bounded structured history.",
+      "description": "Bounded history; revision accepts N or N:M. See svn_help.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -807,6 +883,28 @@
             "minimum": 1,
             "maximum": 500
           },
+          "changedPathsSummary": {
+            "description": "Return bounded top-level change counts.",
+            "type": "boolean"
+          },
+          "maxTopLevelDirectories": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "messageContains": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "messageCaseSensitive": {
+            "type": "boolean"
+          },
+          "scanLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
           "cursor": {
             "type": "string",
             "maxLength": 65,
@@ -840,7 +938,7 @@
     },
     {
       "name": "svn_cat",
-      "description": "Return a bounded page of one file at an optional revision.",
+      "description": "Return a bounded page of one file at an optional revision. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -898,7 +996,7 @@
     },
     {
       "name": "svn_blame",
-      "description": "Return bounded blame for one file.",
+      "description": "Return bounded blame for one file. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -960,7 +1058,7 @@
     },
     {
       "name": "eol_check",
-      "description": "Check EOL, BOM, and svn:eol-style. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
+      "description": "Check EOL, BOM, property, and control bytes. See svn_help tool:eol before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1025,7 +1123,7 @@
     },
     {
       "name": "svn_propget",
-      "description": "Read one property from explicit paths.",
+      "description": "Read one property from explicit paths. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1109,7 +1207,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Guarded precommit; safe EOL repair may normalize explicit text files. Use autoFixEol:\"off\" for checks only.",
+      "description": "Guarded precommit; autoFixEol defaults safe. See svn_help tool:eol before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1131,6 +1229,19 @@
               "pattern": "^[^\\x00]*$"
             },
             "description": "One to 500 explicit paths inside one WC."
+          },
+          "autoFixEol": {
+            "description": "Default safe; off is diagnostic-only.",
+            "type": "string",
+            "enum": [
+              "safe",
+              "off"
+            ]
+          },
+          "baselineToken": {
+            "description": "Opaque exact-scope evidence UUID.",
+            "type": "string",
+            "maxLength": 36
           },
           "lineLimit": {
             "type": "integer",
@@ -1187,7 +1298,7 @@
     },
     {
       "name": "eol_fix_verified",
-      "description": "Normalize and verify one or a bounded batch of explicit files. Use this verified recovery sequence: eol_check -> eol_fix_verified -> svn_diff(ignoreEol:true). Record LF/BOM evidence and confirm byte/content preservation.",
+      "description": "Manual EOL repair; precommit normally auto-fixes safe cases. See svn_help tool:eol before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1233,6 +1344,11 @@
           "allowLarge": {
             "type": "boolean"
           },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -1256,7 +1372,7 @@
     },
     {
       "name": "svn_add",
-      "description": "Add explicit files; directory targets require allowRecursive:true.",
+      "description": "Add files; directories need allowRecursive:true. See svn_help tool:eol before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1308,7 +1424,7 @@
     },
     {
       "name": "svn_lock",
-      "description": "Acquire guarded repository locks with a workstation-labelled comment.",
+      "description": "Acquire guarded repository locks with a workstation-labelled comment. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1347,6 +1463,11 @@
           "forceAck": {
             "type": "boolean"
           },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -1374,7 +1495,7 @@
     },
     {
       "name": "svn_unlock",
-      "description": "Release guarded repository locks, refusing mismatched working-copy tokens.",
+      "description": "Release guarded repository locks, refusing mismatched working-copy tokens. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1403,6 +1524,11 @@
           "forceAck": {
             "type": "boolean"
           },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -1429,7 +1555,7 @@
     },
     {
       "name": "svn_needs_lock",
-      "description": "Set or remove svn:needs-lock on explicit regular versioned files.",
+      "description": "Set or remove svn:needs-lock on explicit regular versioned files. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1462,6 +1588,11 @@
           "riskAck": {
             "type": "boolean"
           },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -1489,7 +1620,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit; directory children require expandDescendants:true. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. A scope with more than 8 paths requires riskAck:true.",
+      "description": "Guarded commit; operation:safe is end-to-end. See svn_help tool:svn_commit before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1539,6 +1670,36 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
+          },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
+          "precommitToken": {
+            "description": "Opaque exact-scope evidence UUID.",
+            "type": "string",
+            "maxLength": 36
+          },
+          "baselineToken": {
+            "description": "Opaque exact-scope evidence UUID.",
+            "type": "string",
+            "maxLength": 36
+          },
+          "detailOperationId": {
+            "description": "Opaque exact-scope evidence UUID.",
+            "type": "string",
+            "maxLength": 36
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 64000
           },
           "lineLimit": {
             "type": "integer",
@@ -1590,7 +1751,7 @@
     },
     {
       "name": "svn_path_change",
-      "description": "Move, rename, or copy one working-copy path.",
+      "description": "Move, rename, or copy one working-copy path. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1649,7 +1810,7 @@
     },
     {
       "name": "svn_update",
-      "description": "Guarded update with conflicts postponed. Exact-file updates report omitted repository additions and recommend updating the containing directory. Unknown target metadata reports incomplete evidence and recommends inspection; confirmed directory scopes report complete-scope evidence.",
+      "description": "Scoped update; no blanket update by default. See svn_help tool:svn_update before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1686,6 +1847,46 @@
             "minimum": 0,
             "maximum": 9007199254740991
           },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "conflictCursor": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^\\d+$"
+          },
+          "taskPaths": {
+            "description": "Edited paths used for overlap filtering.",
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\x00]*$"
+            }
+          },
+          "targetOverlapOnly": {
+            "type": "boolean"
+          },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
+          },
+          "baselineToken": {
+            "description": "Opaque exact-scope evidence UUID.",
+            "type": "string",
+            "maxLength": 36
+          },
           "responseMode": {
             "type": "string",
             "enum": [
@@ -1709,7 +1910,7 @@
     },
     {
       "name": "svn_revert",
-      "description": "Preview or perform a guarded revert.",
+      "description": "Preview or perform a guarded revert. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1768,7 +1969,7 @@
     },
     {
       "name": "svn_delete",
-      "description": "Preview or schedule guarded deletion of explicit paths.",
+      "description": "Preview or schedule guarded deletion of explicit paths. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1826,7 +2027,7 @@
     },
     {
       "name": "svn_resolve",
-      "description": "Resolve one conflict with an explicit mode.",
+      "description": "Resolve one conflict with an explicit mode. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1851,6 +2052,11 @@
               "theirs-full",
               "base"
             ]
+          },
+          "operationId": {
+            "description": "UUID for idempotent replay or stored evidence.",
+            "type": "string",
+            "maxLength": 36
           },
           "responseMode": {
             "type": "string",
@@ -1879,7 +2085,7 @@
     },
     {
       "name": "svn_cleanup",
-      "description": "Run non-destructive WC cleanup.",
+      "description": "Run non-destructive WC cleanup. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1919,7 +2125,7 @@
     },
     {
       "name": "svn_propset_eol_style",
-      "description": "Set svn:eol-style on explicit files.",
+      "description": "Set svn:eol-style on explicit files. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1976,7 +2182,7 @@
     },
     {
       "name": "svn_propset",
-      "description": "Guarded property write on explicit paths.",
+      "description": "Guarded property write on explicit paths. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2039,7 +2245,7 @@
     },
     {
       "name": "svn_export",
-      "description": "Export an explicit SVN source.",
+      "description": "Export an explicit SVN source. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2097,7 +2303,7 @@
     },
     {
       "name": "svn_import",
-      "description": "Import with an explicit source, URL, and message. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
+      "description": "Import with an explicit source, URL, and message. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {

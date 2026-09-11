@@ -307,6 +307,62 @@ describe("guards and EOL sniffing", () => {
     }
   });
 
+  it("reports the first non-text control byte as advisory text with a precise location", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-eol-control-"));
+    try {
+      const file = path.join(dir, "control.txt");
+      fs.writeFileSync(file, Buffer.from("first\r\nsecond\u0001line\r\n", "utf8"));
+
+      await expect(sniffEol(file)).resolves.toMatchObject({
+        kind: "crlf",
+        non_text_byte: {
+          byte_offset: 13,
+          line: 2,
+          column: 7,
+          byte_hex: "0x01"
+        }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks control-byte locations after CR-only line endings", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-eol-control-cr-"));
+    try {
+      const file = path.join(dir, "control.txt");
+      fs.writeFileSync(file, Buffer.from("first\rsecond\u0001line", "utf8"));
+
+      await expect(sniffEol(file)).resolves.toMatchObject({
+        kind: "mixed",
+        non_text_byte: { byte_offset: 12, line: 2, column: 7, byte_hex: "0x01" }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps form-feed and escape bytes as text advisories", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-eol-advisory-"));
+    try {
+      const formFeed = path.join(dir, "form-feed.txt");
+      const escape = path.join(dir, "escape.txt");
+      fs.writeFileSync(formFeed, Buffer.from("page\u000cbreak\r\n", "utf8"));
+      fs.writeFileSync(escape, Buffer.from("log\u001b[31m\r\n", "utf8"));
+
+      await expect(sniffEol(formFeed)).resolves.toMatchObject({
+        kind: "crlf",
+        non_text_byte: { byte_hex: "0x0C" }
+      });
+      await expect(sniffEol(escape)).resolves.toMatchObject({
+        kind: "crlf",
+        non_text_byte: { byte_hex: "0x1B" }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns a structured not-a-file sniff for directories instead of throwing", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-eol-dir-"));
     try {

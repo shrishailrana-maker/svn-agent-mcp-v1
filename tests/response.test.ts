@@ -1349,13 +1349,27 @@ describe("public MCP response shaping", () => {
       files: [
         { ok: true, path: "good-a.ts" },
         { ok: true, path: "good-b.ts" },
-        { ok: false, path: "bad.ts", failure: "converter failed" }
+        {
+          ok: false,
+          path: "bad.ts",
+          failure: "converter failed",
+          code: "EOL_CONVERTER_FAILED",
+          remediation: "run svn_self_check",
+          next_action: { tool: "svn_self_check", cwd: "E:\\dev\\example" }
+        }
       ]
     }, { responseMode: "compact", request: { paths: ["good-a.ts", "good-b.ts", "bad.ts"] } });
     expect(fixResult.content).toEqual([{
       type: "text",
       text: "EOL FIX PARTIAL: 3 files; 2 verified, 1 failed, 0 skipped; next: inspect failures and retry eol_fix_verified"
     }]);
+    expect(fixResult.structuredContent).toMatchObject({
+      failures: [expect.objectContaining({
+        code: "EOL_CONVERTER_FAILED",
+        remediation: "run svn_self_check",
+        nextAction: { tool: "svn_self_check", cwd: "E:\\dev\\example" }
+      })]
+    });
   });
 
   it("keeps standard EOL success, refusal, and failure summaries aligned with structured evidence", () => {
@@ -1411,16 +1425,25 @@ describe("public MCP response shaping", () => {
 
     const failure = toToolResult("eol_fix_verified", {
       ...createEnvelope({ ok: false, command: "unix2dos", cwd: root, note: "converter failed" }),
+      code: "EOL_CONVERTER_FAILED",
+      remediation: "run svn_self_check; repair SVN_AGENT_DOS2UNIX_DIR, bundled converters, or PATH before retrying",
+      next_action: { tool: "svn_self_check", cwd: root },
       before: { kind: "lf", has_bom: false },
       target: "crlf"
     }, {
-      responseMode: "standard",
+      responseMode: "compact",
       request: { path: "a.ts" }
     });
     expect(failure.content[0]?.text).toBe(
       "EOL FIX FAIL: 1 file; 0 verified, 1 failed, 0 skipped; next: inspect failures and retry eol_fix_verified"
     );
-    expect(failure.structuredContent).toMatchObject({ ok: false, target: "crlf" });
+    expect(failure.structuredContent).toMatchObject({
+      ok: false,
+      code: "EOL_CONVERTER_FAILED",
+      target: "crlf",
+      remediation: expect.stringContaining("SVN_AGENT_DOS2UNIX_DIR"),
+      nextAction: { tool: "svn_self_check", cwd: root }
+    });
   });
 
   it("makes precommit and mutation success receipts authoritative without raw command echoes", () => {
@@ -1430,7 +1453,8 @@ describe("public MCP response shaping", () => {
         command: "svn_precommit",
         cwd: "E:\\dev\\example",
         changed_paths: [{ status: "M", path: "E:\\dev\\example\\src\\a.ts" }],
-        note: "READY"
+        note: "READY",
+        truncated: true
       }),
       verdict: "READY",
       per_file: [{
@@ -1449,6 +1473,17 @@ describe("public MCP response shaping", () => {
       mixed_revision: false,
       eol_check_complete: true,
       eol_policy_identity: "sha256:abc123",
+      diff_operation_id: "11111111-1111-4111-8111-111111111111",
+      diff_evidence_expires_at: "2026-09-11T12:00:00.000Z",
+      diff_next_cursor: "200",
+      next_action: {
+        tool: "svn_diff",
+        cwd: "E:\\dev\\example",
+        paths: ["src/a.ts"],
+        operationId: "11111111-1111-4111-8111-111111111111",
+        cursor: "200",
+        ignoreEol: true
+      },
       diff_excerpt: "+large source line that should not be in compact precommit"
     };
     const precommit = toToolResult("svn_precommit", precommitPayload, {
@@ -1460,15 +1495,35 @@ describe("public MCP response shaping", () => {
     expect(precommit.pathCount).toBe(1);
     expect(precommit).not.toHaveProperty("intendedPaths");
     expect(precommit.statusCounts).toEqual({ modified: 1 });
-    expect(precommit.diff).toEqual({ files: 1, added: 3, removed: 1, truncated: false });
+    expect(precommit.diff).toEqual({ files: 1, added: 3, removed: 1, truncated: true });
     expect(precommit.eol).toEqual({ ok: true });
     expect(precommit.eolCheckComplete).toBe(true);
     expect(precommit.eolPolicyIdentity).toBe("sha256:abc123");
+    expect(precommit.diffOperationId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(precommit.diffEvidenceExpiresAt).toBe("2026-09-11T12:00:00.000Z");
+    expect(precommit.diffNextCursor).toBe("200");
+    expect(precommit.nextAction).toEqual({
+      tool: "svn_diff",
+      cwd: "E:\\dev\\example",
+      paths: ["src/a.ts"],
+      operationId: "11111111-1111-4111-8111-111111111111",
+      cursor: "200",
+      ignoreEol: true
+    });
     expect(precommit).not.toHaveProperty("properties");
     expect(precommit).not.toHaveProperty("mixedRevision");
     expect(precommit).not.toHaveProperty("guardFailures");
     expect(precommit.riskSignals).toEqual(["build-system file touched"]);
     expect(precommit).not.toHaveProperty("diff_excerpt");
+
+    const capped = toToolResult("svn_precommit", {
+      ...precommitPayload,
+      diff_evidence_capped: true,
+      diff_next_cursor: undefined,
+      next_action: undefined
+    }, { responseMode: "compact", request: { paths: ["src/a.ts"] } }).structuredContent;
+    expect(capped).toMatchObject({ diffEvidenceCapped: true });
+    expect(capped).not.toHaveProperty("nextAction");
 
     const blocked = toToolResult("svn_precommit", {
       ...createEnvelope({
@@ -1843,7 +1898,9 @@ describe("public MCP response shaping", () => {
       post_status_clean: true,
       post_status_scope: "committed-paths",
       post_status_paths: ["src/a.ts"],
-      working_copy_clean: false
+      working_copy_clean: false,
+      tracked_clean: true,
+      untracked_count: 3
     };
 
     for (const responseMode of ["compact", "receipt", "structured-only"] as const) {
@@ -1852,7 +1909,9 @@ describe("public MCP response shaping", () => {
         postStatusClean: true,
         postStatusScope: "committed-paths",
         postStatusPaths: ["src/a.ts"],
-        workingCopyClean: false
+        workingCopyClean: false,
+        trackedClean: true,
+        untrackedCount: 3
       });
     }
 
@@ -1861,16 +1920,30 @@ describe("public MCP response shaping", () => {
       post_status_clean: true,
       post_status_scope: "committed-paths",
       post_status_paths: ["src/a.ts"],
-      working_copy_clean: false
+      working_copy_clean: false,
+      tracked_clean: true,
+      untracked_count: 3
+    });
+
+    const projected = toToolResult("svn_commit", payload, {
+      responseMode: "compact",
+      request: { fields: ["revision"] }
+    }).structuredContent;
+    expect(projected).toMatchObject({
+      workingCopyClean: false,
+      trackedClean: true,
+      untrackedCount: 3
     });
 
     for (const responseMode of ["compact", "receipt", "standard", "full"] as const) {
       expect(toToolResult("svn_commit", payload, { responseMode }).content[0]?.text).toBe(
-        "COMMIT OK: committed-paths clean; working copy dirty; next: review remaining working-copy changes"
+        "COMMIT OK: committed-paths clean; working copy tracked clean; 3 untracked; next: no action"
       );
       expect(toToolResult("svn_commit", {
         ...payload,
-        working_copy_clean: true
+        working_copy_clean: true,
+        tracked_clean: true,
+        untracked_count: 0
       }, { responseMode }).content[0]?.text).toBe(
         "COMMIT OK: committed-paths clean; working copy clean; next: no action"
       );

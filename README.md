@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.8.3`; each source clone can prepare a local runtime under `releases/v1.8.3`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.0`; each source clone can prepare a local runtime under `releases/v1.9.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -154,9 +154,9 @@ The completed historical project backlog was migrated as issues
 vulnerabilities through the private process in `SECURITY.md`, not a public issue.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
-`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 29
-canonical tools, `docs` exposes the 8-tool edit/commit workflow, and `review` adds bounded diff,
-cat, and blame for 11 tools total. Focused profiles reduce tool-definition context without changing
+`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 30
+canonical tools, `docs` exposes the 9-tool edit/commit workflow, and `review` adds bounded diff,
+cat, and blame for 12 tools total. Focused profiles reduce tool-definition context without changing
 any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
 workflow needs another operation.
 `SVN_MCP_RESPONSE_MODE` selects `compact` (default), `receipt`, `structured-only`, `standard`, or
@@ -265,10 +265,10 @@ If bounded SVN metadata cannot classify every target, the result uses `scopeKind
 not authoritative for an unknown scope.
 
 `svn_commit` keeps `postStatusClean` for compatibility, but it applies only to the committed path
-scope. Read `postStatusScope:"committed-paths"` and `postStatusPaths` to identify that scope. The
-separate `workingCopyClean` field reports the whole-working-copy check. Do not infer whole-working-copy
-cleanliness from `postStatusClean`; these explicit fields remove the ambiguity without deprecating it
-in 1.7.0.
+scope. Read `postStatusScope:"committed-paths"` and `postStatusPaths` to identify that scope.
+`trackedClean` reports whether tracked changes remain, while `untrackedCount` reports unknown
+scratch paths separately. The legacy `workingCopyClean` field remains the strict whole-working-copy
+check. Do not infer whole-working-copy cleanliness from `postStatusClean`.
 
 `svn_commit operation:"prepare"` performs a pinned update of explicit intended paths with conflicts
 postponed, checks an optional expected remote HEAD, refuses any path touched outside that scope, and
@@ -285,7 +285,8 @@ paths, and UUID `operationId`. Without a token it captures the current explicit-
 update, keeping the common workflow to one call. Its normal response is a compact receipt. Use
 `operation:"detail"` with the returned `detailOperationId` and cursor to
 page bounded stage evidence only when an audit needs it. This adds no advertised tool schema; the
-full profile advertises 29 canonical tools. The focused `docs` and `review` profiles remain unchanged.
+full profile advertises 30 canonical tools. The focused `docs` and `review` profiles include
+`svn_help` so agents can load one tool's extended rules on demand.
 
 Scheduled-added files are not valid `svn update` operands, so safe mode omits only those files from
 the pinned update while still verifying the expected repository HEAD. They remain in the exact
@@ -395,6 +396,21 @@ Compact commit receipts omit per-file hashes; request `fields:["contentHashes"]`
 precommit diff: total added/removed lines and up to 25 paths / 4 KiB of file entries. Larger
 scopes report `filesTruncated:true`; full output includes all available entries. Statistics
 describe the checked content diff, ignoring EOL, and `complete:false` means counts are partial.
+
+Precommit returns a copy-ready `svn_diff` `nextAction` when captured diff evidence has another
+page. Permanently capped evidence reports `diffEvidenceCapped:true` without a retry loop. NUL keeps
+the historical binary refusal. Other C0/DEL controls remain text and are reported as advisories
+with hexadecimal value, byte offset, line, and 1-based byte column.
+
+Agents do not need to discover these workflows in this README first. The advertised tool
+descriptions state the normal defaults, and exceptional results provide a copy-ready `nextAction`.
+Advanced fields remain out of focused schemas where possible so discovery does not increase the
+token cost of every session. See
+[`ADR-015`](docs/decisions/ADR-015-keep-agent-workflows-discoverable-within-schema-budgets.md).
+The `full` profile advertises every runtime-supported advanced input. Focused profiles keep those
+fields out of their always-loaded schemas, while `svn_help` lists the exact names from the same
+capability registry. EOL help also identifies the real `dos2unix`/`unix2dos` converters and the
+`SVN_AGENT_DOS2UNIX_DIR`, bundled-runtime, then `PATH` lookup order.
 
 ## Commands
 
