@@ -299,7 +299,7 @@ describe("repository lock support", () => {
         pathRules: expect.arrayContaining([expect.stringContaining("eol_fix_verified accepts regular files only")]),
         contract: {
           normalFlow: expect.arrayContaining([expect.stringContaining("autoFixEol defaults to safe")]),
-          fixDefaults: { removeBom: true, sizeLimit: expect.stringContaining("5 MiB") },
+          fixDefaults: { removeBom: expect.stringContaining("preserves the current BOM"), sizeLimit: expect.stringContaining("5 MiB") },
           converter: {
             executables: expect.stringContaining("dos2unix"),
             resolutionOrder: expect.stringContaining("SVN_AGENT_DOS2UNIX_DIR"),

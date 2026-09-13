@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.0`; each source clone can prepare a local runtime under `releases/v1.9.0`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.1`; each source clone can prepare a local runtime under `releases/v1.9.1`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -378,16 +378,19 @@ final `svn_diff({"paths":["src/example.cs"],"ignoreEol":true})` call proves byte
 without dumping an unbounded diff.
 
 `svn_precommit`, `svn_commit`, `svn_prepare_commit`, and `svn_commit operation:"safe"`
-default to `autoFixEol:"safe"`. They repair only explicit tracked text files when the ignored-EOL
-diff, or a normalized BASE comparison for SVN's inconsistent-EOL diagnostic, proves there is no
-content or property change and no BOM/encoding risk exists in either the working file or BASE. They return
-`autoEolFixed:true` and bounded `autoEolFixedPaths` in the receipt. Set `autoFixEol:"off"` on
-`svn_precommit` only when a diagnostic-only check is needed.
+default to `autoFixEol:"safe"`. For each explicit failing text file, the server snapshots the current
+working bytes, normalizes a temporary copy, and proves the two are identical after canonicalizing
+line endings only. Intended content and property changes remain visible in the normal SVN diff and
+do not block EOL repair. The current encoding, BOM, and final-newline presence must be preserved.
+Set `autoFixEol:"off"` only for a diagnostic-only check.
+Mixed profiles containing lone CR bytes fail with `EOL_LONE_CR_CHANGED`, preventing raw CR inside
+strings or embedded content from being rewritten. Genuine CR-only classic-Mac files use
+`mac2unix` before conversion to the declared target.
 
-Newly added text files have no `BASE`. For status `A`, the same safe mode uses an explicit
-`svn:eol-style` or `.svn-mcp-policy.json normalizeEol` target, verifies valid UTF-8/no BOM and
-normalized-content identity, applies only that explicit file, and continues to issue the precommit
-token in the same call. An explicit file property takes precedence over repository fallback policy;
+Newly added text files use the same working-snapshot proof without requiring `BASE`. Safe mode uses
+an explicit `svn:eol-style` or `.svn-mcp-policy.json normalizeEol` target, verifies valid UTF-8 and
+normalized-content identity, preserves any current BOM, applies only that explicit file, and issues
+the precommit token in the same call. An explicit file property takes precedence over repository policy;
 the implementation never infers EOL policy from neighboring files. Added files can be normalized
 alongside ordinary modifications in the same explicit scope, including calls from a subdirectory.
 
@@ -401,6 +404,8 @@ Precommit returns a copy-ready `svn_diff` `nextAction` when captured diff eviden
 page. Permanently capped evidence reports `diffEvidenceCapped:true` without a retry loop. NUL keeps
 the historical binary refusal. Other C0/DEL controls remain text and are reported as advisories
 with hexadecimal value, byte offset, line, and 1-based byte column.
+Compact repair evidence includes `autoEolRepairs` with target and content/BOM/final-newline checks,
+plus `autoEolRemainingFailures` when any explicit path still needs attention.
 
 Agents do not need to discover these workflows in this README first. The advertised tool
 descriptions state the normal defaults, and exceptional results provide a copy-ready `nextAction`.

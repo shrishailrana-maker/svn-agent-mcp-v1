@@ -17,6 +17,7 @@ import {
 import { createEnvelope, envelopeFromRun, failEnvelope, noteFromRun } from "../envelope.js";
 import {
   converterForEolTarget,
+  convertClassicMacEol,
   convertEol,
   expectedEolKind,
   isBinaryKind,
@@ -42,7 +43,7 @@ import {
   resolveTargetsInsideWc,
   validateCommitMessage
 } from "../guards.js";
-import { escapeSvnTarget, runExecutable, runSvn, runSvnStreamingChunks, runSvnVersion } from "../runner.js";
+import { escapeSvnTarget, runExecutable, runSvn, runSvnVersion } from "../runner.js";
 import type { ToolEnvelope } from "../types.js";
 import { recoverCommittedOperation, svnCommit, svnUpdate } from "./mutating.js";
 import {
@@ -60,7 +61,6 @@ import {
   svnStatus
 } from "./readonly.js";
 
-const AUTO_EOL_BASE_MAX_BYTES = 10 * 1024 * 1024;
 const WINDOWS_STAGED_APPLY_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$target = $args[0]; $candidate = $args[1]; $backup = $args[2]; $expected = $args[3]; $candidateExpected = $args[4]",
@@ -508,7 +508,8 @@ export async function svnPrecommit(input: {
       const repairRefused = repairCode === "EOL_AUTO_FIX_REFUSED" || repairCode === "EOL_TARGET_UNDECLARED";
       const eolPaths = precommitEolPaths(result);
       const converterFailure = repairCode === "EOL_CONVERTER_FAILED";
-      const manualRepair = repairCode !== "EOL_TARGET_UNDECLARED" && !converterFailure && eolPaths.length > 0;
+      const loneCrFailure = repairCode === "EOL_LONE_CR_CHANGED";
+      const manualRepair = repairCode !== "EOL_TARGET_UNDECLARED" && !converterFailure && !loneCrFailure && eolPaths.length > 0;
       return {
         ...withoutPrecommitDiffContinuation(result),
         ok: false,
@@ -519,6 +520,8 @@ export async function svnPrecommit(input: {
           ? "inspect the refusal, run eol_fix_verified on the exact files, then rerun svn_precommit"
           : converterFailure
             ? "run svn_self_check; repair SVN_AGENT_DOS2UNIX_DIR, bundled converters, or PATH before retrying"
+          : loneCrFailure
+            ? "inspect lone CR bytes in string literals or embedded content; no automatic retry was performed"
           : repairCode === "EOL_TARGET_UNDECLARED"
             ? "declare svn:eol-style or repository normalizeEol policy, then rerun svn_precommit"
             : "inspect the EOL repair failure and rerun svn_precommit",
@@ -528,6 +531,7 @@ export async function svnPrecommit(input: {
             ? { next_action: { tool: "svn_self_check", cwd: context.cwd } }
             : {}),
         auto_eol_fix_attempted: true,
+        auto_eol_remaining_failures: eolPaths,
         ...(repaired.envelope.rollback_outcomes ? { rollback_outcomes: repaired.envelope.rollback_outcomes } : {}),
         ...(repaired.envelope.rollback_restored_paths ? { rollback_restored_paths: repaired.envelope.rollback_restored_paths } : {}),
         ...(repaired.envelope.rollback_concurrent_paths ? { rollback_concurrent_paths: repaired.envelope.rollback_concurrent_paths } : {}),
@@ -547,6 +551,29 @@ export async function svnPrecommit(input: {
         remediation: "inspect rollback outcomes, then rerun svn_precommit",
         next_action: { tool: "eol_fix_verified", cwd: context.cwd, paths: repaired.paths },
         auto_eol_fix_attempted: true,
+        auto_eol_remaining_failures: repaired.paths,
+        ...rollbackOutcomeFields(outcomes)
+      };
+    }
+    const concurrentPaths: string[] = [];
+    for (const filePath of repaired.paths) {
+      const absolutePath = explicitFilePaths.get(filePath);
+      const expectedHash = repaired.appliedHashes.get(filePath);
+      if (!absolutePath || !expectedHash || await sha256File(absolutePath) !== expectedHash) {
+        concurrentPaths.push(filePath);
+      }
+    }
+    if (concurrentPaths.length > 0) {
+      const outcomes = await repaired.rollback();
+      return {
+        ...withoutPrecommitDiffContinuation(result),
+        ok: false,
+        verdict: "EOL_FIX_REFUSED",
+        code: "EOL_CONCURRENT_CHANGE",
+        note: `automatic EOL repair refused: file changed after normalization: ${concurrentPaths.join(", ")}`,
+        remediation: "review the concurrent edits and rerun svn_precommit on the same explicit scope",
+        auto_eol_fix_attempted: true,
+        auto_eol_remaining_failures: concurrentPaths,
         ...rollbackOutcomeFields(outcomes)
       };
     }
@@ -567,6 +594,7 @@ export async function svnPrecommit(input: {
         note: `safe automatic EOL repair refused: ${targetCheck.note}`,
         remediation: "recheck svn:eol-style or repository EOL policy, then rerun svn_precommit",
         auto_eol_fix_attempted: true,
+        auto_eol_remaining_failures: repaired.paths,
         ...rollbackOutcomeFields(outcomes)
       };
     }
@@ -580,7 +608,9 @@ export async function svnPrecommit(input: {
         conflicts: [],
         note: "automatic EOL repair restored a clean working-copy scope",
         auto_eol_fixed: true,
-        auto_eol_fixed_paths: repaired.paths
+        auto_eol_fixed_paths: repaired.paths,
+        auto_eol_repairs: repaired.receipts,
+        auto_eol_remaining_failures: []
       };
     }
     const afterRepair = await svnPrecommit({
@@ -598,7 +628,9 @@ export async function svnPrecommit(input: {
       return {
         ...afterRepair,
         auto_eol_fixed: true,
-        auto_eol_fixed_paths: repaired.paths
+        auto_eol_fixed_paths: repaired.paths,
+        auto_eol_repairs: repaired.receipts,
+        auto_eol_remaining_failures: []
       };
     }
     const outcomes = await repaired.rollback();
@@ -610,6 +642,7 @@ export async function svnPrecommit(input: {
       remediation: "inspect the reported post-repair verdict, then rerun svn_precommit",
       next_action: { tool: "eol_fix_verified", cwd: context.cwd, paths: repaired.paths },
       auto_eol_fix_attempted: true,
+      auto_eol_remaining_failures: repaired.paths,
       ...rollbackOutcomeFields(outcomes)
     };
   }
@@ -1515,7 +1548,19 @@ async function automaticallyRepairEol(
   precommit: ToolEnvelope,
   explicitFilePaths?: ReadonlyMap<string, string>
 ): Promise<
-  { ok: true; paths: string[]; rollback: () => Promise<Array<{ path: string; outcome: "restored" | "changed" | "failed" }>> }
+  {
+    ok: true;
+    paths: string[];
+    receipts: Array<{
+      path: string;
+      target: "crlf" | "lf";
+      content_preserved: true;
+      bom_preserved: true;
+      final_newline_preserved: true;
+    }>;
+    appliedHashes: ReadonlyMap<string, string>;
+    rollback: () => Promise<Array<{ path: string; outcome: "restored" | "changed" | "failed" }>>;
+  }
   | { ok: false; envelope: ToolEnvelope }
 > {
   const candidates = ((precommit.per_file as Array<Record<string, unknown>> | undefined) ?? [])
@@ -1541,6 +1586,8 @@ async function automaticallyRepairEol(
   }
   const expectedContentHashes = new Map<string, string>();
   const expectedNormalizedHashes = new Map<string, string>();
+  const expectedBom = new Map<string, boolean>();
+  const expectedFinalNewline = new Map<string, boolean>();
   for (const file of candidates) {
     const filePath = typeof file.path === "string" ? file.path : "unknown path";
     const absolutePath = explicitFilePaths?.get(filePath);
@@ -1562,9 +1609,7 @@ async function automaticallyRepairEol(
       };
     }
     const allowsCleanEolMismatch = file.eol_mismatch === true && String(file.status ?? "") === "";
-    const refusal = file.bom === true
-        ? `${filePath}: BOM or encoding risk requires explicit repair`
-        : file.binary === true || file.eol === "binary"
+    const refusal = file.binary === true || file.eol === "binary"
           ? `${filePath}: binary file refused`
           : file.eol === "skipped-too-large"
             ? `${filePath}: file is too large for automatic repair`
@@ -1581,7 +1626,7 @@ async function automaticallyRepairEol(
     }
     try {
       const workingContent = await fs.promises.readFile(absolutePath);
-      if (hasUtf8Bom(workingContent) || !isValidUtf8(workingContent)) {
+      if (!isValidUtf8(workingContent)) {
         return {
           ok: false,
           envelope: failEnvelope("svn_precommit", cwd, `safe automatic EOL repair refused: ${filePath}: BOM or encoding risk requires explicit repair`, {
@@ -1591,6 +1636,8 @@ async function automaticallyRepairEol(
       }
       expectedContentHashes.set(filePath, createHash("sha256").update(workingContent).digest("hex"));
       expectedNormalizedHashes.set(filePath, normalizedContentHash(workingContent));
+      expectedBom.set(filePath, hasUtf8Bom(workingContent));
+      expectedFinalNewline.set(filePath, hasFinalLineBreak(workingContent));
     } catch {
       return {
         ok: false,
@@ -1600,19 +1647,14 @@ async function automaticallyRepairEol(
       };
     }
   }
-  const ignoredDiffProvesEolOnly = precommit.diff_totals_complete === true && precommit.eol_only === true;
-  if (!ignoredDiffProvesEolOnly) {
-    const refusal = await proveExactEolOnlyAgainstBase(cwd, precommit, candidates, explicitFilePaths, expectedContentHashes);
-    if (refusal) {
-      return {
-        ok: false,
-        envelope: failEnvelope("svn_precommit", cwd, `safe automatic EOL repair refused: ${refusal}`, {
-          code: "EOL_AUTO_FIX_REFUSED"
-        })
-      };
-    }
-  }
   const repairs: Array<{ path: string; absolutePath: string; backup: Buffer; convertedHash: string }> = [];
+  const receipts: Array<{
+    path: string;
+    target: "crlf" | "lf";
+    content_preserved: true;
+    bom_preserved: true;
+    final_newline_preserved: true;
+  }> = [];
   const rollback = async (): Promise<Array<{ path: string; outcome: "restored" | "changed" | "failed" }>> => {
     return Promise.all(repairs.map(async (repair) => ({
       path: repair.path,
@@ -1673,23 +1715,26 @@ async function automaticallyRepairEol(
         )
       };
     }
-    const fixed = await eolFixVerified({ cwd, path: absolutePath, expectedContentHash, target: eolTarget });
+    const fixed = await eolFixVerified({
+      cwd,
+      path: absolutePath,
+      expectedContentHash,
+      target: eolTarget,
+      removeBom: false,
+      preserveLoneCr: true
+    });
     if (!fixed.ok) {
       const outcomes = await rollback();
       return { ok: false, envelope: withRollbackOutcomes(fixed, outcomes) };
     }
     const convertedHash = await sha256File(absolutePath);
     repairs.push({ path: filePath, absolutePath, backup, convertedHash });
-    const addedTextFile = file.status === "A" && file.added_text_file === true;
-    const verified = addedTextFile ? null : await svnDiff({ cwd, paths: [absolutePath], ignoreEol: true });
-    const contentPreserved = addedTextFile
-      ? typeof fixed.normalized_content_hash === "string"
-        && fixed.normalized_content_hash === expectedNormalizedHashes.get(filePath)
-      : verified?.ok === true
-        && verified.totals_complete === true
-        && verified.per_file.length === 0
-        && verified.property_files === 0;
-    if (!contentPreserved) {
+    const convertedContent = await fs.promises.readFile(absolutePath);
+    const contentPreserved = typeof fixed.normalized_content_hash === "string"
+      && fixed.normalized_content_hash === expectedNormalizedHashes.get(filePath);
+    const bomPreserved = hasUtf8Bom(convertedContent) === expectedBom.get(filePath);
+    const finalNewlinePreserved = hasFinalLineBreak(convertedContent) === expectedFinalNewline.get(filePath);
+    if (!contentPreserved || !bomPreserved || !finalNewlinePreserved) {
       const outcomes = await rollback();
       return {
         ok: false,
@@ -1697,57 +1742,28 @@ async function automaticallyRepairEol(
           failEnvelope(
             "svn_precommit",
             cwd,
-            `safe automatic EOL repair refused: ${filePath}: ignored-EOL diff is incomplete or contains content/property changes; rollback attempted`,
+            `safe automatic EOL repair refused: ${filePath}: converter changed content, BOM, or final-newline presence; rollback attempted`,
             { code: "EOL_AUTO_FIX_REFUSED" }
           ),
           outcomes
         )
       };
     }
+    receipts.push({
+      path: filePath,
+      target: eolTarget,
+      content_preserved: true,
+      bom_preserved: true,
+      final_newline_preserved: true
+    });
   }
-  return { ok: true, paths: repairs.map((repair) => repair.path), rollback };
-}
-
-async function proveExactEolOnlyAgainstBase(
-  cwd: string,
-  precommit: ToolEnvelope,
-  candidates: Array<Record<string, unknown>>,
-  explicitFilePaths?: ReadonlyMap<string, string>,
-  expectedContentHashes?: ReadonlyMap<string, string>
-): Promise<string | null> {
-  if (precommit.diff_recovery_tool !== "eol_fix_verified" && precommit.diff_totals_complete !== true) {
-    return "ignored-EOL diff evidence is incomplete";
-  }
-  const candidateByPath = new Map(candidates
-    .filter((file): file is Record<string, unknown> & { path: string } => typeof file.path === "string")
-    .map((file) => [file.path, file]));
-  const candidatePaths = new Set(candidateByPath.keys());
-  // Only repaired files need EOL-only proof. Ordinary changes elsewhere in the
-  // explicit scope remain untouched and are checked again before minting a token.
-  for (const filePath of candidatePaths) {
-    if (candidateByPath.get(filePath)?.status === "A") continue;
-    const absolutePath = explicitFilePaths?.get(filePath);
-    if (!absolutePath) return `${filePath}: automatic repair requires an exact explicit file target`;
-    const workingContent = await fs.promises.readFile(absolutePath);
-    const expectedContentHash = expectedContentHashes?.get(filePath);
-    if (!expectedContentHash || createHash("sha256").update(workingContent).digest("hex") !== expectedContentHash) {
-      return `${filePath}: file changed while safe EOL proof was running`;
-    }
-    const baseContent = await readBaseContent(cwd, absolutePath);
-    if (!baseContent) return `${filePath}: repository BASE content is unavailable for safe comparison`;
-    if (hasUtf8Bom(baseContent) || !isValidUtf8(baseContent)) {
-      return `${filePath}: repository BASE has BOM or encoding risk`;
-    }
-    const propertyChanged = await localPropertyChangeState(cwd, absolutePath);
-    if (propertyChanged === null) {
-      return `${filePath}: property-change evidence is unavailable`;
-    }
-    if (propertyChanged) return `${filePath}: property changes require explicit repair`;
-    if (normalizedContentHash(workingContent) !== normalizedContentHash(baseContent)) {
-      return `${filePath}: normalized BASE content shows a real content change`;
-    }
-  }
-  return null;
+  return {
+    ok: true,
+    paths: repairs.map((repair) => repair.path),
+    receipts,
+    appliedHashes: new Map(repairs.map((repair) => [repair.path, repair.convertedHash])),
+    rollback
+  };
 }
 
 async function verifyRepairedEolTargets(input: {
@@ -1787,44 +1803,20 @@ async function verifyRepairedEolTargets(input: {
     if ((expectedTarget !== "crlf" && expectedTarget !== "lf") || currentTarget !== expectedTarget) {
       return { ok: false, note: `${filePath}: declared EOL target changed during automatic repair` };
     }
-    if (current?.has_bom === true || (current?.kind !== currentTarget && current?.kind !== "none")) {
+    if (current?.kind !== currentTarget && current?.kind !== "none") {
       return { ok: false, note: `${filePath}: repaired EOL no longer matches the declared target` };
     }
   }
   return { ok: true };
 }
 
-async function localPropertyChangeState(cwd: string, absolutePath: string): Promise<boolean | null> {
-  const status = await runSvn(["status", "--xml", "--verbose", "--depth", "empty", "--", escapeSvnTarget(absolutePath)], cwd);
-  if (status.exitCode !== 0 || status.truncated) return null;
-  const propertyMatch = /<wc-status\b[^>]*\bprops="([^"]*)"/.exec(status.stdout);
-  if (!propertyMatch) return null;
-  const value = propertyMatch[1] ?? "";
-  return value !== "" && value !== "none" && value !== "normal";
-}
-
-async function readBaseContent(cwd: string, absolutePath: string): Promise<Buffer | null> {
-  const chunks: Buffer[] = [];
-  let length = 0;
-  let exceeded = false;
-  const result = await runSvnStreamingChunks(
-    ["cat", "-r", "BASE", "--", escapeSvnTarget(absolutePath)],
-    cwd,
-    (chunk) => {
-      if (exceeded) return;
-      if (length + chunk.length > AUTO_EOL_BASE_MAX_BYTES) {
-        exceeded = true;
-        return;
-      }
-      chunks.push(chunk);
-      length += chunk.length;
-    }
-  );
-  return result.exitCode === 0 && !exceeded ? Buffer.concat(chunks, length) : null;
-}
-
 function hasUtf8Bom(content: Buffer): boolean {
   return content.length >= 3 && content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf;
+}
+
+function hasFinalLineBreak(content: Buffer): boolean {
+  const finalByte = content.at(-1);
+  return finalByte === 0x0a || finalByte === 0x0d;
 }
 
 function isValidUtf8(content: Buffer): boolean {
@@ -1924,6 +1916,7 @@ export async function eolFixVerified(input: {
   allowLarge?: boolean;
   expectedContentHash?: string;
   operationId?: string;
+  preserveLoneCr?: boolean;
 }): Promise<ToolEnvelope> {
   if (input.operationId) {
     const { operationId, ...coreInput } = input;
@@ -1940,7 +1933,8 @@ export async function eolFixVerified(input: {
         removeBom: input.removeBom ?? true,
         dryRun: input.dryRun ?? false,
         allowLarge: input.allowLarge ?? false,
-        expectedContentHash: input.expectedContentHash ?? null
+        expectedContentHash: input.expectedContentHash ?? null,
+        preserveLoneCr: input.preserveLoneCr ?? false
       }),
       command: "eol_fix_verified",
       cwd,
@@ -2009,6 +2003,7 @@ async function eolFixOneVerified(input: {
   dryRun?: boolean;
   allowLarge?: boolean;
   expectedContentHash?: string;
+  preserveLoneCr?: boolean;
 }): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode() && !input.dryRun) {
@@ -2061,7 +2056,13 @@ async function eolFixOneVerified(input: {
   const prop = await runSvn(["propget", "--", "svn:eol-style", escapeSvnTarget(filePath)], context.cwd);
   const eolStyle = prop.exitCode === 0 ? prop.stdout.trim() || null : null;
   const target = normalizeEolTarget(input.target, eolStyle);
-  const converter = converterForEolTarget(target);
+  const beforeLoneCr = before.lone_cr_count ?? 0;
+  const classicMacProfile = beforeLoneCr > 0
+    && (before.crlf_count ?? 0) === 0
+    && (before.lf_count ?? 0) === 0;
+  const converter = input.preserveLoneCr === true && classicMacProfile
+    ? target === "crlf" ? "mac2unix -> unix2dos" : "mac2unix"
+    : converterForEolTarget(target);
   if (input.dryRun) {
     return {
       ...createEnvelope({
@@ -2091,12 +2092,15 @@ async function eolFixOneVerified(input: {
       return failEnvelope("eol_fix_verified", context.cwd, "file changed after safe EOL proof; conversion refused");
     }
     await fs.promises.copyFile(backupFile, convertedFile);
-    const conversion = await convertEol({
+    const conversionInput = {
       filePath: convertedFile,
       target,
       removeBom: input.removeBom ?? true,
       cwd: context.cwd
-    });
+    };
+    const conversion = input.preserveLoneCr === true && classicMacProfile
+      ? await convertClassicMacEol(conversionInput)
+      : await convertEol(conversionInput);
     if (conversion.exitCode !== 0) {
       return {
         ...envelopeFromRun({
@@ -2119,7 +2123,31 @@ async function eolFixOneVerified(input: {
     const after = await sniffEol(convertedFile, input.allowLarge ? Number.MAX_SAFE_INTEGER : undefined);
     const normalizedHashAfter = await normalizedContentHashFile(convertedFile);
     const contentPreserved = normalizedHashAfter === normalizedHashBefore;
-    const targetVerified = (after.kind === target || after.kind === "none") && !after.has_bom;
+    const removeBom = input.removeBom ?? true;
+    const targetVerified = (after.kind === target || after.kind === "none")
+      && (removeBom ? !after.has_bom : after.has_bom === before.has_bom);
+    const afterLoneCr = after.lone_cr_count ?? 0;
+    if (input.preserveLoneCr === true && beforeLoneCr > 0 && !classicMacProfile
+        && (beforeLoneCr !== afterLoneCr || !targetVerified)) {
+      return {
+        ...failEnvelope(
+          "eol_fix_verified",
+          context.cwd,
+          beforeLoneCr === afterLoneCr
+            ? `mixed EOL contains ${beforeLoneCr} lone CR byte(s) that cannot be normalized safely; original remained unchanged`
+            : `lone CR count changed from ${beforeLoneCr} to ${afterLoneCr}; original remained unchanged`
+        ),
+        code: "EOL_LONE_CR_CHANGED",
+        remediation: "inspect lone CR bytes in string literals or embedded content before retrying",
+        before,
+        after,
+        target,
+        eol_style: eolStyle,
+        converter,
+        normalized_content_hash: normalizedHashAfter,
+        original_unchanged: true
+      };
+    }
     if (!contentPreserved || !targetVerified) {
       return {
         ...failEnvelope(

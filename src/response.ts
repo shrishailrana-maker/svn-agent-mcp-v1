@@ -1695,14 +1695,28 @@ function compactMutation(tool: string, payload: ToolEnvelope, request: Record<st
 }
 
 function compactAutoEol(payload: ToolEnvelope): Record<string, unknown> {
-  if (payload.auto_eol_fixed !== true) {
+  const allRepairs = recordArray(payload.auto_eol_repairs);
+  const allRemaining = stringArray(payload.auto_eol_remaining_failures);
+  const hasRemainingEvidence = Array.isArray(payload.auto_eol_remaining_failures);
+  if (payload.auto_eol_fixed !== true && allRepairs.length === 0 && allRemaining.length === 0) {
     return {};
   }
   const paths = stringArray(payload.auto_eol_fixed_paths).slice(0, 100);
+  const repairs = allRepairs.slice(0, 100).map((repair) => ({
+    path: repair.path,
+    target: repair.target,
+    contentPreserved: repair.content_preserved === true,
+    bomPreserved: repair.bom_preserved === true,
+    finalNewlinePreserved: repair.final_newline_preserved === true
+  }));
+  const remaining = allRemaining.slice(0, 100);
   return {
-    autoEolFixed: true,
-    autoEolFixedPaths: paths,
-    ...(stringArray(payload.auto_eol_fixed_paths).length > paths.length ? { autoEolFixedPathsTruncated: true } : {})
+    ...(payload.auto_eol_fixed === true ? { autoEolFixed: true, autoEolFixedPaths: paths } : {}),
+    ...(repairs.length > 0 ? { autoEolRepairs: repairs } : {}),
+    ...(hasRemainingEvidence ? { autoEolRemainingFailures: remaining } : {}),
+    ...(stringArray(payload.auto_eol_fixed_paths).length > paths.length ? { autoEolFixedPathsTruncated: true } : {}),
+    ...(allRepairs.length > repairs.length ? { autoEolRepairsTruncated: true } : {}),
+    ...(allRemaining.length > remaining.length ? { autoEolRemainingFailuresTruncated: true } : {})
   };
 }
 

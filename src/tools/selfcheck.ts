@@ -20,7 +20,8 @@ export async function svnSelfCheck(input: { cwd?: string }, runningServerVersion
   const releasePrepareAvailable = releasePrepare.includes("scripts/prepare-release.mjs")
     && await fileExists(path.join(root, "scripts", "prepare-release.mjs"));
   const clean = packageJson.scripts?.clean ?? "";
-  const toolchainOk = probe.svn.ok && probe.svnversion.ok && probe.svnadmin.ok && probe.dos2unix.ok && probe.unix2dos.ok;
+  const toolchainOk = probe.svn.ok && probe.svnversion.ok && probe.svnadmin.ok
+    && probe.dos2unix.ok && probe.unix2dos.ok && probe.mac2unix.ok;
   let layoutNote = "";
   if (!layout.layoutOk) {
     layoutNote = layout.currentMatchesPackage
@@ -125,7 +126,7 @@ async function runtimePayloadComplete(
   if (platform !== "win32") {
     return true;
   }
-  const requiredExecutables = ["svn.exe", "svnadmin.exe", "svnversion.exe", "dos2unix.exe", "unix2dos.exe"];
+  const requiredExecutables = ["svn.exe", "svnadmin.exe", "svnversion.exe", "dos2unix.exe", "unix2dos.exe", "mac2unix.exe"];
   return binFileCount >= 35 && (await Promise.all(
     requiredExecutables.map((name) => fileExists(path.join(runtimeRoot, "bin", name)))
   )).every(Boolean);

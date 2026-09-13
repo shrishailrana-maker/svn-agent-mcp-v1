@@ -54,7 +54,7 @@ export function svnAdminExecutable(): string {
   return siblingExecutable(svnPath, "svnadmin");
 }
 
-export function dos2UnixExecutable(name: "dos2unix" | "unix2dos"): string {
+export function dos2UnixExecutable(name: "dos2unix" | "unix2dos" | "mac2unix"): string {
   const dir = process.env.SVN_AGENT_DOS2UNIX_DIR;
   if (dir) {
     return path.join(dir, platformExecutableName(name));
@@ -588,7 +588,7 @@ export async function runSvnVersion(target: string, cwd: string): Promise<RunRes
   return runExecutable(svnVersionExecutable(), [target], { cwd });
 }
 
-export async function runDos2Unix(name: "dos2unix" | "unix2dos", args: string[], cwd: string): Promise<RunResult> {
+export async function runDos2Unix(name: "dos2unix" | "unix2dos" | "mac2unix", args: string[], cwd: string): Promise<RunResult> {
   return runExecutable(dos2UnixExecutable(name), args, { cwd });
 }
 
@@ -599,13 +599,15 @@ export async function startupProbe(cwd = process.cwd()): Promise<{
   svnadmin: { ok: boolean; note: string };
   dos2unix: { ok: boolean; note: string };
   unix2dos: { ok: boolean; note: string };
+  mac2unix: { ok: boolean; note: string };
 }> {
-  const [svn, svnversion, svnadmin, dos2unix, unix2dos] = await Promise.all([
+  const [svn, svnversion, svnadmin, dos2unix, unix2dos, mac2unix] = await Promise.all([
     runExecutable(svnExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
     runExecutable(svnVersionExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
     runExecutable(svnAdminExecutable(), ["--version", "--quiet"], { cwd, timeout: 10000 }),
     runExecutable(dos2UnixExecutable("dos2unix"), ["--version"], { cwd, timeout: 10000 }),
-    runExecutable(dos2UnixExecutable("unix2dos"), ["--version"], { cwd, timeout: 10000 })
+    runExecutable(dos2UnixExecutable("unix2dos"), ["--version"], { cwd, timeout: 10000 }),
+    runExecutable(dos2UnixExecutable("mac2unix"), ["--version"], { cwd, timeout: 10000 })
   ]);
   const svnVersion = svn.exitCode === 0 ? svn.stdout.trim() : null;
   const svnSupported = svnVersion !== null && isSupportedSvnVersion(svnVersion);
@@ -638,6 +640,10 @@ export async function startupProbe(cwd = process.cwd()): Promise<{
     unix2dos: {
       ok: unix2dos.exitCode === 0,
       note: unix2dos.exitCode === 0 ? firstLine(unix2dos.stdout) : "unix2dos unavailable"
+    },
+    mac2unix: {
+      ok: mac2unix.exitCode === 0,
+      note: mac2unix.exitCode === 0 ? firstLine(mac2unix.stdout) : "mac2unix unavailable"
     }
   };
 }

@@ -4,6 +4,17 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-09-13
+
+### Changed
+
+- `svn_precommit autoFixEol:"safe"` now repairs mixed EOL in explicit text files that also contain
+  intended content or property edits. Authorization compares a staged conversion with the current
+  working snapshot, preserving encoding, BOM, final-newline state, and concurrent edits.
+- Compact EOL receipts now report per-file target and preservation checks plus remaining failures.
+- Automatic repair refuses mixed profiles when a lone CR could be embedded content, returning
+  `EOL_LONE_CR_CHANGED` without a retry loop. Genuine CR-only files use `mac2unix` before conversion.
+
 ## [1.9.0] - 2026-09-11
 
 ### Added

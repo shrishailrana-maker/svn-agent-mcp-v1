@@ -43,6 +43,7 @@ describe("runner executable resolution", () => {
       expect(path.normalize(svnAdminExecutable())).toBe(expected("svnadmin"));
       expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(expected("dos2unix"));
       expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(expected("unix2dos"));
+      expect(path.normalize(dos2UnixExecutable("mac2unix"))).toBe(expected("mac2unix"));
     });
   });
 
@@ -60,6 +61,7 @@ describe("runner executable resolution", () => {
       expect(path.normalize(svnAdminExecutable())).toBe(path.join(path.dirname(svn), platformExecutableName("svnadmin")));
       expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(eol, platformExecutableName("dos2unix")));
       expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(eol, platformExecutableName("unix2dos")));
+      expect(path.normalize(dos2UnixExecutable("mac2unix"))).toBe(path.join(eol, platformExecutableName("mac2unix")));
     });
   });
 
@@ -67,7 +69,7 @@ describe("runner executable resolution", () => {
     withCleanToolEnv(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "svn-agent-bin-"));
       try {
-        for (const name of ["svn", "svnversion", "svnadmin", "dos2unix", "unix2dos"]) {
+        for (const name of ["svn", "svnversion", "svnadmin", "dos2unix", "unix2dos", "mac2unix"]) {
           const executable = platformExecutableName(name);
           fs.writeFileSync(path.join(dir, executable), "");
         }
@@ -79,6 +81,7 @@ describe("runner executable resolution", () => {
         expect(path.normalize(svnAdminExecutable())).toBe(path.join(dir, platformExecutableName("svnadmin")));
         expect(path.normalize(dos2UnixExecutable("dos2unix"))).toBe(path.join(dir, platformExecutableName("dos2unix")));
         expect(path.normalize(dos2UnixExecutable("unix2dos"))).toBe(path.join(dir, platformExecutableName("unix2dos")));
+        expect(path.normalize(dos2UnixExecutable("mac2unix"))).toBe(path.join(dir, platformExecutableName("mac2unix")));
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

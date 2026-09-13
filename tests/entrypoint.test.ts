@@ -100,7 +100,7 @@ describe("server entrypoint launch detection", () => {
       expect(diff?.inputSchema.properties).toHaveProperty("operationId");
       expect(diff?.description).toContain("precommit nextAction");
       const precommit = tools.tools.find((tool) => tool.name === "svn_precommit");
-      expect(precommit?.description).toContain("autoFixEol defaults safe");
+      expect(precommit?.description).toContain("autoFixEol safely preserves current edits");
       expect(precommit?.description).toContain("svn_help");
       const snapshot = tools.tools.find((tool) => tool.name === "svn_snapshot");
       expect(snapshot?.description).toContain("captureBaseline:true detects other writers");

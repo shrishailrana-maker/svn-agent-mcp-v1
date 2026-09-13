@@ -29,17 +29,18 @@ const eolContract = {
   normalFlow: [
     "Run svn_precommit normally. autoFixEol defaults to safe; do not call eol_fix_verified first.",
     "Added text with declared svn:eol-style or repository policy is normalized and rechecked automatically.",
-    "Modified files are auto-repaired only when ignored-EOL proof shows no real content/property change.",
-    "Real content changes are never silently accepted. Follow the returned refusal or nextAction."
+    "Modified files with intended edits are normalized when a temporary converted copy matches the current working snapshot after canonicalizing EOL only.",
+    "The intended SVN content/property diff remains visible. Only converter-introduced content, BOM, encoding, or final-newline changes are refused."
   ],
   fixDefaults: {
     target: "Explicit target, else svn:eol-style, else platform native EOL.",
-    removeBom: true,
+    removeBom: "Automatic precommit preserves the current BOM. Manual eol_fix_verified defaults to removeBom:true.",
     sizeLimit: "5 MiB unless allowLarge:true.",
-    binary: "NUL in the first 8 KiB; never converted. Other C0/DEL controls are advisory only."
+    binary: "NUL in the first 8 KiB; never converted. Other C0/DEL controls are advisory only.",
+    loneCr: "Mixed profiles containing lone CR bytes refuse automatic repair. Genuine CR-only classic-Mac files use mac2unix before the target converter."
   },
   converter: {
-    executables: "unix2dos for CRLF and dos2unix for LF; both run with --remove-bom -q by default.",
+    executables: "unix2dos for CRLF and dos2unix for LF; CR-only classic-Mac input first uses mac2unix. Manual repair runs with --remove-bom -q by default.",
     resolutionOrder: "SVN_AGENT_DOS2UNIX_DIR, then bundled binary, then PATH.",
     unavailable: "Run svn_self_check. Set SVN_AGENT_DOS2UNIX_DIR to the converter directory or install dos2unix/unix2dos on PATH."
   },
@@ -47,7 +48,8 @@ const eolContract = {
     mixedEol: "Use default svn_precommit first; for manual repair run eol_fix_verified on the exact files.",
     controlByte: "Inspect the reported byte, line, 1-based byte column, and offset. Non-NUL controls are advisory; NUL means binary and is refused.",
     largeFile: "Review the file, then retry eol_fix_verified with allowLarge:true.",
-    realContentChange: "Review the content diff. Use explicit eol_fix_verified only after deciding the rewrite is intended.",
+    converterChangedContent: "The original file is preserved or restored; inspect the exact failure before retrying.",
+    loneCrChanged: "Inspect lone CR bytes in string literals or embedded content. Automatic retry is suppressed.",
     converterFailed: "Run svn_self_check; repair SVN_AGENT_DOS2UNIX_DIR, bundled runtime, or PATH before retrying the file.",
     truncatedDiff: "Call the copy-ready svn_diff nextAction returned by precommit; continue until no cursor remains."
   },

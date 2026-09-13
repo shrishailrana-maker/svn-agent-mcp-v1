@@ -27,6 +27,7 @@ describe("svn self-check", () => {
     expect(check.startup_probe.svnadmin.ok).toBe(true);
     expect(check.startup_probe.dos2unix.ok).toBe(true);
     expect(check.startup_probe.unix2dos.ok).toBe(true);
+    expect(check.startup_probe.mac2unix.ok).toBe(true);
   });
 
   it("fails when the running server version does not match the package", async () => {
@@ -206,7 +207,7 @@ async function writeRuntimeFiles(root: string, platform: NodeJS.Platform): Promi
   }
   const bin = path.join(root, "bin");
   await fs.mkdir(bin, { recursive: true });
-  const executables = ["svn.exe", "svnadmin.exe", "svnversion.exe", "dos2unix.exe", "unix2dos.exe"];
+  const executables = ["svn.exe", "svnadmin.exe", "svnversion.exe", "dos2unix.exe", "unix2dos.exe", "mac2unix.exe"];
   for (const executable of executables) {
     await fs.writeFile(path.join(bin, executable), "runtime");
   }

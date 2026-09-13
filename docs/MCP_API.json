@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.9.0"
+    "version": "1.9.1"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -117,6 +117,10 @@
         "autoEolFixedPaths",
         "autoEolFixedPathsTruncated",
         "code",
+        "autoEolRepairs",
+        "autoEolRepairsTruncated",
+        "autoEolRemainingFailures",
+        "autoEolRemainingFailuresTruncated",
         "rollbackRestoredPaths",
         "rollbackRestoredPathCount",
         "rollbackRestoredPathsTruncated",
@@ -191,6 +195,10 @@
         "autoEolFixed",
         "autoEolFixedPaths",
         "autoEolFixedPathsTruncated",
+        "autoEolRepairs",
+        "autoEolRepairsTruncated",
+        "autoEolRemainingFailures",
+        "autoEolRemainingFailuresTruncated",
         "outOfDatePaths",
         "outOfDatePathCount",
         "outOfDatePathsTruncated",
@@ -1207,7 +1215,7 @@
     },
     {
       "name": "svn_precommit",
-      "description": "Guarded precommit; autoFixEol defaults safe. See svn_help tool:eol before advanced use.",
+      "description": "Guarded precommit; autoFixEol safely preserves current edits. See svn_help tool:eol before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {

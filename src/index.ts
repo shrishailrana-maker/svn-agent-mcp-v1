@@ -79,6 +79,7 @@ export const fieldProjectionNames = {
     "diffOperationId", "diffEvidenceExpiresAt", "diffNextCursor", "diffEvidenceCapped",
     "baselineToken", "baselinePathChanges", "remoteHeadChangedSinceBaseline",
     "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated", "code",
+    "autoEolRepairs", "autoEolRepairsTruncated", "autoEolRemainingFailures", "autoEolRemainingFailuresTruncated",
     "rollbackRestoredPaths", "rollbackRestoredPathCount", "rollbackRestoredPathsTruncated",
     "rollbackConcurrentPaths", "rollbackConcurrentPathCount", "rollbackConcurrentPathsTruncated",
     "rollbackFailedPaths", "rollbackFailedPathCount", "rollbackFailedPathsTruncated"
@@ -99,6 +100,7 @@ export const fieldProjectionNames = {
     "finalCommitScope", "conflicts", "precommitToken", "operation", "finalScopeClean", "scopeUniform",
     "finalRevisionRange", "detailOperationId", "detailExpiresAt", "detail", "nextCursor",
     "autoEolFixed", "autoEolFixedPaths", "autoEolFixedPathsTruncated",
+    "autoEolRepairs", "autoEolRepairsTruncated", "autoEolRemainingFailures", "autoEolRemainingFailuresTruncated",
     "outOfDatePaths", "outOfDatePathCount", "outOfDatePathsTruncated", "postStatusScope", "postStatusPaths",
     "postStatusPathCount", "postStatusPathsTruncated", "workingCopyClean", "trackedClean", "untrackedCount"
   ]
@@ -440,7 +442,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_precommit",
     {
-      description: "Guarded precommit; autoFixEol defaults safe. See svn_help tool:eol before advanced use.",
+      description: "Guarded precommit; autoFixEol safely preserves current edits. See svn_help tool:eol before advanced use.",
       inputSchema: {
         cwd,
         paths,
@@ -1200,7 +1202,7 @@ export async function main(): Promise<void> {
   if (!probe.svnversion.ok || !probe.svnadmin.ok) {
     console.error("svn-agent starting with an incomplete SVN toolchain; svnversion or svnadmin is unavailable");
   }
-  if (!probe.dos2unix.ok || !probe.unix2dos.ok) {
+  if (!probe.dos2unix.ok || !probe.unix2dos.ok || !probe.mac2unix.ok) {
     console.error("svn-agent starting with unavailable EOL converter; eol_fix_verified may fail");
   }
 

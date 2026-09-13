@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.43 - public implementation contract. Single source of truth.**
+**Spec version 1.44 - public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -601,28 +601,30 @@ Intended flow: **precommit → (review summary; fetch full per-file diff only if
 wrong) → commit.** Two round trips.
 
 For EOL failures, `svn_precommit` defaults to `autoFixEol:"safe"`: it automatically runs the
-verified recovery sequence **`eol_check` → `eol_fix_verified` → `svn_diff(ignoreEol:true)`** only
-for an explicit tracked text file with `pure_eol_churn:true`, no property/content diff, and no
-BOM or encoding risk. The EOL scan must be complete. Normal repair additionally requires complete
-ignored-EOL totals; SVN's own inconsistent-EOL diagnostic can instead use a direct normalized
-comparison with the file's valid UTF-8, BOM-free `BASE` revision plus a verbose local property-status check. Any other failed or incomplete
-evidence is refused without writing. It rechecks the original scope once, then stops red if it
-remains non-ready.
+verified recovery sequence for each explicit tracked text file that fails EOL policy. It snapshots
+the current working bytes and hash, converts a staged copy, and requires normalized-content identity
+after canonicalizing line endings only. It also preserves encoding, BOM state, and final-newline
+presence. Repository `BASE` is not part of converter authorization, so intended content and property
+changes remain visible without blocking repair. The original scope is rechecked once.
+For a mixed profile, the lone-CR count must remain unchanged. A count change, or a target that cannot
+be reached without consuming lone CR, returns `EOL_LONE_CR_CHANGED` before replacement. A profile
+containing only CR line endings is treated as classic Mac text and converted with `mac2unix` before
+the declared target converter.
 All other EOL cases return the exact file and refusal reason. Set `autoFixEol:"off"` for a
 diagnostic-only `EOL_FIX_NEEDED` result. Commit workflows always use the same safe default.
-For an explicit status-`A` text file, no `BASE` exists. Safe mode instead requires a target declared
-by `svn:eol-style` or `.svn-mcp-policy.json normalizeEol`, valid UTF-8 without BOM, and normalized
+For an explicit status-`A` text file, safe mode requires a target declared by `svn:eol-style` or
+`.svn-mcp-policy.json normalizeEol`, valid UTF-8, preserved BOM/final-newline state, and normalized
 content identity before/after conversion. It never infers policy from neighboring files. The same
 precommit call then revalidates the scope and issues the bound token. An explicit `svn:eol-style`
 property is authoritative; repository policy is only the fallback when that property is absent.
 The target is re-read after conversion; a concurrent declaration change triggers guarded rollback
 and no token is issued.
 `eol_check` records LF, mixed-EOL, and BOM evidence.
-`eol_fix_verified` converts a staged sibling copy, verifies canonical LF/no-BOM content, then
+`eol_fix_verified` converts a staged sibling copy, verifies canonical content and requested BOM policy, then
 applies it only after the original matches its captured hash. A converter failure therefore
 leaves the original untouched; a concurrent change is reported rather than rolled back. Receipts expose
-`autoEolFixed` and bounded `autoEolFixedPaths`. A final `svn_diff(ignoreEol:true)` must show no
-unintended content or property change before commit.
+`autoEolFixed`, bounded `autoEolFixedPaths`, per-file `autoEolRepairs`, and
+`autoEolRemainingFailures`. The normal post-repair diff retains intended content/property edits.
 
 Compact mode returns one authoritative receipt: path count, status counts, diff totals, EOL and
 mixed-revision verdicts, guard failures, and `ready`. It omits the diff excerpt unless
@@ -1041,6 +1043,14 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.44 / v1.9.1 - 2026-09-13
+
+- Authorizes safe automatic EOL repair by comparing a staged conversion with the current working
+  snapshot rather than SVN `BASE`, while preserving encoding, BOM, final newline, and concurrency.
+- Adds concise per-file automatic-repair receipts and remaining-failure evidence.
+- Refuses ambiguous lone-CR conversion in mixed profiles while supporting genuine CR-only files
+  through a verified `mac2unix` conversion stage.
 
 ### Spec 1.43 / v1.9.0 - 2026-09-11
 

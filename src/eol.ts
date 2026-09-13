@@ -57,6 +57,9 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
       has_bom: scan.hasBom,
       size: stat.size,
       sniff: "ok",
+      crlf_count: scan.crlf,
+      lf_count: scan.lf,
+      lone_cr_count: scan.crOnly,
       ...(scan.nonTextByte ? { non_text_byte: scan.nonTextByte } : {})
     };
   }
@@ -67,6 +70,9 @@ export async function sniffEol(filePath: string, limitBytes = SNIFF_LIMIT_BYTES)
     has_bom: scan.hasBom,
     size: stat.size,
     sniff: "ok",
+    crlf_count: scan.crlf,
+    lf_count: scan.lf,
+    lone_cr_count: scan.crOnly,
     ...(scan.nonTextByte ? { non_text_byte: scan.nonTextByte } : {})
   };
 }
@@ -91,6 +97,18 @@ export async function convertEol(input: {
   const executable = converterForEolTarget(input.target);
   const args = input.removeBom ? ["--remove-bom", "-q", input.filePath] : ["-q", input.filePath];
   return runDos2Unix(executable, args, input.cwd);
+}
+
+export async function convertClassicMacEol(input: {
+  filePath: string;
+  target: "crlf" | "lf";
+  removeBom: boolean;
+  cwd: string;
+}): Promise<RunResult> {
+  const args = input.removeBom ? ["--remove-bom", "-q", input.filePath] : ["-q", input.filePath];
+  const macToUnix = await runDos2Unix("mac2unix", args, input.cwd);
+  if (macToUnix.exitCode !== 0 || input.target === "lf") return macToUnix;
+  return convertEol(input);
 }
 
 export async function prepareEolNormalization(input: {
