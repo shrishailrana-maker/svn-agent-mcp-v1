@@ -271,8 +271,8 @@ describe("SVN tool integration against a temp repository", () => {
         paths: ["automatic-eol.txt"],
         message: commitMessage("Add automatic EOL fixture")
       })).ok).toBe(true);
-      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "native", file], { cwd: fixture.wc });
-      execFileSync(svnExecutable(), ["commit", "-m", "set automatic native EOL property", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["propset", "svn:eol-style", "CRLF", file], { cwd: fixture.wc });
+      execFileSync(svnExecutable(), ["commit", "-m", "set automatic CRLF property", file], { cwd: fixture.wc });
 
       fs.writeFileSync(file, "one\r\nTWO\nthree\r\n", "utf8");
       const precommit = await svnPrecommit({ cwd: fixture.wc, paths: ["automatic-eol.txt"] });
