@@ -1,8 +1,8 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.46 - public implementation contract. Single source of truth.**
+**Spec version 1.47 - public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
-hostnames, or product-specific role assignments. Date: 2026-08-08.
+hostnames, or product-specific role assignments. Date: 2026-11-15.
 
 **What this is:** one document containing the pain points, the resolution strategy, the full
 architecture and tool contracts for a strict SVN MCP server, companion operational guidance, and
@@ -195,7 +195,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
-| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `review` (default, 14), `docs` (9), or `full` (30 canonical tools) |
+| `SVN_MCP_TOOL_PROFILE` | No | Startup tool list: `review` (default, 14), `docs` (9), or `full` (30 canonical tools) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 | `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
 | `SVN_MCP_WORKSTATION_LABEL` | No | Optional lock workstation label; when absent, the normalized machine hostname is used |
@@ -283,18 +283,19 @@ These records coordinate retries on one host only and are not a distributed lock
 
 ### 6.5 Tool profiles
 
-Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
+Tool profiles reduce startup schema context. `full` starts with
 30 canonical tools. `docs` advertises `svn_help`, `svn_update`, `svn_status`, `svn_log`, `svn_add`,
 `eol_check`, `eol_fix_verified`, `svn_precommit`, and `svn_commit`. `review` adds `svn_diff`,
 `svn_cat`, `svn_blame`, `svn_info`, and `svn_propset_eol_style`. The 14-tool `review` profile
-is the default. A call to an unadvertised tool in a focused profile returns a typed
-`TOOL_PROFILE` refusal with remediation. READONLY checks and every mutation guard still run
-independently.
+is the default. `svn_help({tool:"tools"})` lists advertised and on-demand names without changing
+the catalog. Naming an on-demand tool in `svn_help` returns its schema and adds only that tool
+to this server session's `tools/list`, with a `notifications/tools/list_changed` notification.
+All registered tools can also be called directly by name; input validation, READONLY checks, and
+mutation guards are identical across profiles. Hosts that keep a fixed list can use `full`.
 
-The full profile omits legacy `svn_move`, `svn_rename`, `svn_copy`, and `svn_resolved` from tool
-discovery. Existing clients may continue calling those routes in full mode, while new clients use
-`svn_path_change` and `svn_resolve`. This retains wire compatibility without charging every agent
-for four redundant schemas.
+Every profile omits legacy `svn_move`, `svn_rename`, `svn_copy`, `svn_resolved`, and
+`svn_prepare_commit` from discovery. Existing clients can call those routes by name, while new
+clients use `svn_path_change`, `svn_resolve`, and `svn_commit`.
 
 Internally, tools retain this complete envelope so composite and mutation safety logic does not
 depend on the selected public response mode:
@@ -499,7 +500,9 @@ returns counts and failing paths only unless `includePassing:true` is requested.
 default to 100 items and expose `nextCursor` when more remain.
 
 **`svn_help`** - `{ tool: string }`
-Returns extended rules for one tool or the `eol` topic on demand. Every response includes common
+Use `tool:"tools"` for `contract.advertised` and `contract.onDemand`, or name a tool to load it.
+For a tool outside the starting catalog, `contract.discovery` holds its description, input schema,
+and `newlyAdvertised` flag. Tool-specific help and the `eol` topic include common
 path rules and response-mode meanings. EOL help leads with the normal automatic-precommit flow and
 lists target/BOM/binary/size defaults plus exact refusal fixes. Commit help includes the message
 example, actual `riskAck` triggers, token lifetime, and required receipt fields. This tool is
@@ -1061,9 +1064,10 @@ housekeeping — separate initiative.
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
 
-### Spec 1.46 / v1.10.0 - 2026-11-15
+### Spec 1.47 / v1.10.0 - 2026-11-15
 
-- Defaults to the 14-tool review profile and reduces repeated schema metadata.
+- Defaults to the 14-tool review startup list and reduces repeated schema metadata. All tools
+  remain callable; help lists and loads additional tools on demand for the current session.
 - Accepts number or decimal-string revisions for pinned workflows and issues optional safe commit
   UUIDs. Adds retry overrides for risk acknowledgement and eligible folder scopes.
 

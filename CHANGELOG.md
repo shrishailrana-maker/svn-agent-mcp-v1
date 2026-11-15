@@ -10,8 +10,9 @@ All notable changes to the SVN MCP are recorded here.
 
 - The default tool profile is now `review` instead of `full` (30 tools). `review` now also
   includes `svn_info` and `svn_propset_eol_style`, for 14 tools. This cuts the default tool list
-  from about 33,200 to about 13,900 characters. Set `SVN_MCP_TOOL_PROFILE=full` to advertise and
-  call every tool, including `svn_revert`, `svn_delete`, locks, and other properties.
+  from about 33,200 to about 13,900 characters. Every tool remains callable. Use `svn_help` with
+  `tool:"tools"` to discover more tools or name a tool to load only its schema for the current
+  session. The `full` profile advertises all 30 canonical tools at startup.
 - `revision` and `expectedRemoteHead` accept a number or a numeric string, for example `123` or `"123"`.
 - Safe commit returns a generated UUID when `operationId` is omitted. A caller-provided UUID
   supports replay when the original reply is lost.

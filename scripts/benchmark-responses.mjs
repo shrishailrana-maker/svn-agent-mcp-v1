@@ -250,10 +250,15 @@ async function measureProfileSchemas(profile) {
   try {
     await profileClient.connect(profileTransport);
     const listed = await profileClient.listTools();
-    const hidden = await profileClient.callTool({ name: "svn_delete", arguments: { paths: ["unused"] } });
-    const refusal = hidden.structuredContent ?? {};
-    if (refusal.code !== "TOOL_PROFILE" || refusal.tool !== "svn_delete" || refusal.activeProfile !== profile) {
-      throw new Error(`${profile} profile did not return a typed hidden-tool refusal`);
+    if (listed.tools.some((tool) => tool.name === "svn_delete")) {
+      throw new Error(`${profile} profile advertised svn_delete at startup`);
+    }
+    const help = await profileClient.callTool({ name: "svn_help", arguments: { tool: "svn_delete" } });
+    const updated = await profileClient.listTools();
+    if (!help.structuredContent?.contract?.discovery?.newlyAdvertised
+      || updated.tools.length !== listed.tools.length + 1
+      || !updated.tools.some((tool) => tool.name === "svn_delete")) {
+      throw new Error(`${profile} profile did not load svn_delete on demand`);
     }
     return {
       toolCount: listed.tools.length,

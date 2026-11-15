@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import fs from "node:fs";
@@ -10,7 +10,7 @@ import * as z from "zod/v4";
 import packageJson from "../package.json" with { type: "json" };
 import { advancedInputNames, advancedInputsFor } from "./capabilities.js";
 import { failEnvelope, redactText } from "./envelope.js";
-import { svnHelp } from "./help.js";
+import { svnHelp, type ToolDiscovery } from "./help.js";
 import { COMMIT_MESSAGE_REQUIREMENT, RISK_ACK_PATH_THRESHOLD, readonlyMode as isReadonlyMode } from "./guards.js";
 import { toToolResult, type ResponseMode } from "./response.js";
 import { startupProbe, withRequestCancellation } from "./runner.js";
@@ -44,6 +44,11 @@ export const serverName = "svn";
 export const serverVersion = packageJson.version;
 export const readonlyMode = isReadonlyMode();
 export type ToolProfile = "full" | "docs" | "review";
+type ToolRegistration = {
+  config: { inputSchema?: z.ZodRawShape };
+  callback: unknown;
+  tool: RegisteredTool;
+};
 export { advancedInputNames } from "./capabilities.js";
 
 /** Canonical tools that never mutate SVN state. Keep this list in one place
@@ -142,24 +147,50 @@ function boundedIntegerSchema(name: string, minimum: number, maximum: number, ex
 
 export function createServer(profileOverride?: ToolProfile): McpServer {
   const profile = profileOverride ?? configuredToolProfile();
-  const enabledNames = toolNamesForProfile(profile);
+  const startingNames = toolNamesForProfile(profile);
   const server = new McpServer({
     name: serverName,
     version: serverVersion
   });
-  const profileRegistrations = new Map<string, { config: unknown; callback: unknown }>();
+  const registrations = new Map<string, ToolRegistration>();
   const register = server.registerTool.bind(server);
-  server.registerTool = ((name: string, config: unknown, callback: unknown) => {
-    profileRegistrations.set(name, { config, callback });
-    const advertised = enabledNames ? enabledNames.has(name) : !hiddenLegacyToolNames.has(name);
-    const focusedConfig = advertised && enabledNames ? focusedProfileConfig(name, config) : config;
+  server.registerTool = ((name: string, config: ToolRegistration["config"], callback: unknown) => {
+    const advertised = startingNames ? startingNames.has(name) : !hiddenLegacyToolNames.has(name);
+    const focusedConfig = advertised && startingNames ? focusedProfileConfig(name, config) : config;
     const publicConfig = withToolAnnotations(name, focusedConfig);
     const tool = register(name, publicConfig as never, callback as never);
+    registrations.set(name, { config, callback, tool });
     if (!advertised) {
       tool.disable();
     }
     return tool;
   }) as typeof server.registerTool;
+
+  const discovery: ToolDiscovery = {
+    list() {
+      const advertised: string[] = [];
+      const onDemand: string[] = [];
+      for (const [name, { tool }] of registrations) {
+        if (!hiddenLegacyToolNames.has(name)) {
+          (tool.enabled ? advertised : onDemand).push(name);
+        }
+      }
+      return { advertised: advertised.sort(), onDemand: onDemand.sort() };
+    },
+    load(name) {
+      const entry = registrations.get(name);
+      if (!entry || !startingNames || startingNames.has(name) || hiddenLegacyToolNames.has(name)) {
+        return undefined;
+      }
+      const { tool, config } = entry;
+      const inputSchema = z.toJSONSchema(z.object(config.inputSchema ?? {}), { target: "draft-7", io: "input" });
+      const newlyAdvertised = !tool.enabled;
+      if (newlyAdvertised) {
+        tool.enable(); // The SDK sends one tools/list_changed notification.
+      }
+      return { description: tool.description, inputSchema, newlyAdvertised };
+    }
+  };
 
   const noNul = /^[^\x00]*$/;
   // Length and NUL checks run in refinements so they are enforced at runtime
@@ -233,10 +264,10 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_help",
     {
-      description: "On-demand rules for one tool. Start with tool:eol for EOL defaults, refusals, and examples.",
+      description: "tool:tools lists available tools; name one to load it. tool:eol covers EOL repair.",
       inputSchema: { tool: z.string().min(1).max(64), ...response }
     },
-    async (args, extra) => handleTool("svn_help", args, extra.signal, async () => svnHelp(compactArgs(args)))
+    async (args, extra) => handleTool("svn_help", args, extra.signal, async () => svnHelp(compactArgs(args), discovery))
   );
 
   server.registerTool(
@@ -248,8 +279,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
     async (args, extra) => handleTool("svn_self_check", args, extra.signal, async () => ({
       ...await svnSelfCheck(compactArgs(args), serverVersion),
       tool_profile: profile,
-      advertised_tool_count: enabledNames?.size
-        ?? [...profileRegistrations.keys()].filter((name) => !hiddenLegacyToolNames.has(name)).length
+      advertised_tool_count: discovery.list().advertised.length
     }))
   );
 
@@ -837,7 +867,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: inspectPromptArgs
     },
     ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
-      `Inspect the SVN working copy with svn_snapshot in compact mode. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Include lock state only when needed by setting includeLockState:true. Use the returned next action and cursors; do not call separate status or info tools unless the snapshot reports incomplete data.`
+      `Inspect the SVN working copy with svn_snapshot in compact mode. If unlisted, load it with svn_help tool:svn_snapshot. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Include lock state only when needed by setting includeLockState:true. Use the returned next action and cursors; do not call separate status or info tools unless the snapshot reports incomplete data.`
     )
   );
   server.registerPrompt(
@@ -859,7 +889,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: workflowPromptArgs
     },
     ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
-      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} For a pre-edit multi-writer baseline, use the full profile and capture baselineToken with svn_snapshot captureBaseline:true. Use a valid subject, blank second line, and - verification bullets. Supply exact files, revision, and expectedRemoteHead. Omit operationId for a generated receipt UUID, or supply your own to replay an identical call if the reply is lost. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
+      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} For a pre-edit multi-writer baseline, load svn_snapshot with svn_help if unlisted and use captureBaseline:true. Use a valid subject, blank second line, and - verification bullets. Supply exact files, revision, and expectedRemoteHead. Omit operationId for a generated receipt UUID, or supply your own to replay an identical call if the reply is lost. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
     )
   );
   server.registerPrompt(
@@ -881,7 +911,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: { cwd, paths: promptPaths }
     },
     ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
-      `Use the SVN lock workflow for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Call svn_lock with a short comment, perform the edit, call svn_lock_status when needed, and call svn_unlock when finished. Let the server derive the workstation label unless an override is required. Never force-steal a lock without forceAck:true and a UUID operationId.`
+      `Use the SVN lock workflow for the requested files. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Load unlisted tools by name with svn_help. Call svn_lock with a short comment, perform the edit, call svn_lock_status when needed, and call svn_unlock when finished. Let the server derive the workstation label unless an override is required. Never force-steal a lock without forceAck:true and a UUID operationId.`
     )
   );
   server.registerPrompt(
@@ -892,11 +922,11 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: { cwd, paths: promptPaths }
     },
     ({ cwd: promptCwd, paths: promptPaths }) => promptResult(
-      `Diagnose the failed SVN commit for the requested scope. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Use svn_snapshot, svn_diff, svn_precommit, and svn_diagnose as needed. Check outOfDatePaths, workingCopyMixed, conflicts, EOL verdicts, and post-status scope. Retry only after the returned remediation is satisfied.`
+      `Diagnose the failed SVN commit for the requested scope. ${promptArguments({ cwd: promptCwd, paths: promptPaths })} Use svn_snapshot, svn_diff, svn_precommit, and svn_diagnose as needed. Load unlisted tools by name with svn_help. Check outOfDatePaths, workingCopyMixed, conflicts, EOL verdicts, and post-status scope. Retry only after the returned remediation is satisfied.`
     )
   );
 
-  installProfileCallHandler(server, profile, enabledNames, profileRegistrations);
+  installToolCallHandler(server, registrations);
   return server;
 }
 
@@ -956,36 +986,19 @@ function focusedProfileConfig(name: string, config: unknown): unknown {
   };
 }
 
-function installProfileCallHandler(
+function installToolCallHandler(
   server: McpServer,
-  profile: ToolProfile,
-  enabledNames: ReadonlySet<string> | null,
-  registrations: Map<string, { config: unknown; callback: unknown }>
+  registrations: ReadonlyMap<string, ToolRegistration>
 ): void {
   server.server.removeRequestHandler("tools/call");
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
-    if (enabledNames && !enabledNames.has(name)) {
-      const note = `tool ${name} is not exposed by the ${profile} profile; set SVN_MCP_TOOL_PROFILE=full`;
-      return {
-        isError: true,
-        content: [{ type: "text", text: `ERROR ${name}: ${note}` }],
-        structuredContent: {
-          ok: false,
-          code: "TOOL_PROFILE",
-          tool: name,
-          activeProfile: profile,
-          note,
-          remediation: "use the full profile and restart the MCP client"
-        }
-      };
-    }
-
+    // The profile filters tools/list only; every call uses the same full validation and guards.
     const registration = registrations.get(name);
     if (!registration) {
       throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
     }
-    const config = registration.config as { inputSchema?: z.ZodRawShape };
+    const { config } = registration;
     const parsed = z.object(config.inputSchema ?? {}).safeParse(request.params.arguments ?? {});
     if (!parsed.success) {
       const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ");

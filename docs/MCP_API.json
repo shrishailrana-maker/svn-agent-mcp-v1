@@ -300,7 +300,7 @@
   "tools": [
     {
       "name": "svn_help",
-      "description": "On-demand rules for one tool. Start with tool:eol for EOL defaults, refusals, and examples.",
+      "description": "tool:tools lists available tools; name one to load it. tool:eol covers EOL repair.",
       "inputSchema": {
         "type": "object",
         "properties": {

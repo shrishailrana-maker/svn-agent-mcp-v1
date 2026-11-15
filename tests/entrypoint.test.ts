@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 import {
-  advancedInputNames, configuredToolProfile, fieldProjectionNames, handleTool, serverVersion, toolNamesForProfile
+  advancedInputNames, configuredToolProfile, createServer, fieldProjectionNames, handleTool, serverVersion, toolNamesForProfile
 } from "../src/index.js";
 
 const distIndex = path.resolve("dist", "index.js");
@@ -25,6 +25,50 @@ describe("server entrypoint launch detection", () => {
 
   it("uses the package version as the MCP server version", () => {
     expect(serverVersion).toBe(packageJson.version);
+  });
+
+  it("starts with review tools and discovers one extra tool without restricting calls", async () => {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { ToolListChangedNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
+    const server = createServer("review");
+    const client = new Client({ name: "profile-discovery", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    let notices = 0;
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => { notices++; });
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+      const starting = (await client.listTools()).tools;
+      expect(starting).toHaveLength(14);
+      expect(starting.map((tool) => tool.name)).not.toContain("svn_delete");
+
+      const direct = await client.callTool({ name: "svn_delete", arguments: { paths: ["unused"], dryRun: true } });
+      expect(direct.structuredContent).toMatchObject({ ok: false, code: "EXPLICIT_SCOPE" });
+      const catalog = await client.callTool({ name: "svn_help", arguments: { tool: "tools" } });
+      expect(catalog.structuredContent).toMatchObject({ contract: {
+        advertised: expect.arrayContaining(["svn_commit", "svn_info"]),
+        onDemand: expect.arrayContaining(["svn_delete", "svn_lock_status"])
+      } });
+      expect((await client.listTools()).tools).toEqual(starting);
+      expect(notices).toBe(0);
+
+      const load = () => client.callTool({ name: "svn_help", arguments: { tool: "svn_delete" } });
+      const loaded = await load();
+      const after = (await client.listTools()).tools;
+      const added = after.find((tool) => tool.name === "svn_delete");
+      expect(added).toBeDefined();
+      expect(after.filter((tool) => tool.name !== "svn_delete")).toEqual(starting);
+      expect(loaded.structuredContent).toMatchObject({ contract: { discovery: {
+        inputSchema: added?.inputSchema, newlyAdvertised: true
+      } } });
+      expect((await load()).structuredContent).toMatchObject({ contract: { discovery: { newlyAdvertised: false } } });
+      expect(notices).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 
   it("keeps every runtime advanced-input assignment in the shared registry", () => {

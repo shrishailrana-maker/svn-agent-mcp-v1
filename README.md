@@ -30,8 +30,8 @@ Register one MCP server named `svn` and let the client resolve the globally inst
 ```
 
 Restart the MCP client after changing its configuration. Call `svn_help` to check the connection
-and `svn_info` with an absolute working-copy path to check SVN access. Switch to the `full` profile
-and restart when you need `svn_self_check` for runtime diagnostics.
+and `svn_info` with an absolute working-copy path to check SVN access. For runtime diagnostics,
+load `svn_self_check` with `svn_help` and call it in the same session.
 
 ## Generic Agent Install Prompt
 
@@ -47,7 +47,7 @@ For Codex, merge [mcp_servers.svn] and set SVN_MCP_TOOL_PROFILE = "review" under
 For Claude Code, inspect an existing entry with claude mcp get svn. For a new user-scoped entry, run claude mcp add --env SVN_MCP_TOOL_PROFILE=review --scope user --transport stdio svn -- svn-agent-mcp. Preserve the existing scope if updating an entry. If the user wants automatic approval for this server, merge "mcp__svn__*" into permissions.allow in their chosen Claude Code settings file.
 On Windows, enable the client's hidden/no-window process option. If the npm command shim still opens a console, resolve the global module root with `npm root -g`, then use command "node" with args `["<global-module-root>\\svn-agent-mcp\\dist\\index.js"]`; the server cannot choose its parent process creation flags.
 Query the registry version with: npm view svn-agent-mcp version
-Restart the MCP client. In Claude Code check /mcp. Call svn_help with tool:"svn_info", then use svn_info on an absolute working-copy path when available. For extended diagnostics use the full profile and svn_self_check. Report the installed and registry versions, launcher, configured profile, and the connection checks that ran.
+Restart the MCP client. In Claude Code check /mcp. Call svn_help with tool:"svn_info", then use svn_info on an absolute working-copy path when available. For other SVN tools, use svn_help with tool:"tools" to discover names, then pass the needed name to svn_help to load only that tool. For runtime diagnostics, load svn_self_check this way. Report the installed and registry versions, launcher, configured profile, and the connection checks that ran.
 ```
 
 ## Source Setup From GitHub
@@ -157,12 +157,17 @@ The completed historical project backlog was migrated as issues
 vulnerabilities through the private process in `SECURITY.md`, not a public issue.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
-`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `review` (default) exposes the
+`SVN_MCP_TOOL_PROFILE` controls the starting tool list: `review` (default) advertises the
 edit/commit workflow plus bounded diff, cat, blame, `svn_info`, and `svn_propset_eol_style` for 14
-tools total, `docs` exposes the 9-tool edit/commit workflow, and `full` exposes all 30 canonical
-tools, including `svn_revert`, locks, and other properties. Focused profiles reduce tool-definition context without changing
-any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
-workflow needs another operation.
+tools total, `docs` starts with the 9-tool edit/commit workflow, and `full` starts with all 30
+canonical tools. Profiles save startup tokens. Every tool remains callable and keeps its normal guards.
+
+- `svn_help({"tool":"tools"})` lists tool names without loading their schemas.
+- `svn_help({"tool":"svn_lock_status"})` returns that tool's inputs and adds it to the current
+  session's tool list. Clients that refresh the MCP tool list can then call it without restarting.
+  Clients that can call by name can also call it directly. For hosts with a fixed list, `full`
+  still advertises everything at startup.
+
 `SVN_MCP_RESPONSE_MODE` selects `compact` (default), `receipt`, `structured-only`, `standard`, or
 `full` responses. `structuredContent` is authoritative. Every mode except `structured-only` returns
 exactly one bounded text block by default; `structured-only` returns no text block. The text block is
@@ -339,7 +344,7 @@ Lock status reports `held-elsewhere`, `orphaned-token`, and `stale-candidate` di
 candidate is a lock older than seven days. All lock and property mutations keep the normal
 working-copy containment, never-commit, durable-receipt, and `--readonly` guards.
 
-In the full profile, `svn_snapshot` provides a single inspection call. Its compact response includes the
+`svn_snapshot` provides a single inspection call. Load it with `svn_help` if it is not listed yet. Its compact response includes the
 working-copy root, repository URL/root, changed and conflict counts, and remote HEAD. Pass
 `includeLockState:true` when the agent needs a bounded lock summary; the extra repository probe
 is opt-in.
@@ -483,9 +488,9 @@ capability registry. EOL help also identifies the real `dos2unix`/`unix2dos` con
 
 ## Operator Diagnostics
 
-In the full profile, use `svn_self_check` to verify the package and runtime, or `svn_diagnose` for working-copy, repository, and authentication problems.
+Use `svn_self_check` to verify the package and runtime, or `svn_diagnose` for working-copy, repository, and authentication problems. Load either tool by name with `svn_help` if it is not listed yet.
 
-Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete`, canonical `svn_resolve`, and `svn_path_change` with an explicit `move`, `rename`, or `copy` action. Legacy direct calls to `svn_resolved`, `svn_move`, `svn_rename`, and `svn_copy` remain callable in the full profile for compatibility but are no longer advertised.
+Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete`, canonical `svn_resolve`, and `svn_path_change` with an explicit `move`, `rename`, or `copy` action. Legacy aliases remain callable by name for compatibility and stay out of discovery.
 
 For SVN property work, use `svn_propget` and guarded `svn_propset` instead of raw `svn propget`/`svn propset`. `svn_propset_eol_style` remains the safer shortcut for `svn:eol-style` normalization.
 

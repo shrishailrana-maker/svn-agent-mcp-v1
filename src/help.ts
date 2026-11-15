@@ -2,13 +2,14 @@ import { createEnvelope, failEnvelope } from "./envelope.js";
 import { advancedInputsFor } from "./capabilities.js";
 import type { ToolEnvelope } from "./types.js";
 
-const knownTools = new Set([
-  "eol", "eol_check", "eol_fix_verified", "svn_add", "svn_blame", "svn_cat", "svn_cleanup",
-  "svn_commit", "svn_delete", "svn_diagnose", "svn_diff", "svn_export", "svn_help", "svn_import",
-  "svn_info", "svn_lock", "svn_lock_status", "svn_log", "svn_needs_lock", "svn_path_change",
-  "svn_precommit", "svn_propget", "svn_propset", "svn_propset_eol_style", "svn_resolve", "svn_revert",
-  "svn_self_check", "svn_snapshot", "svn_status", "svn_unlock", "svn_update"
-]);
+export type ToolDiscovery = {
+  list(): { advertised: string[]; onDemand: string[] };
+  load(name: string): {
+    description: string | undefined;
+    inputSchema: Record<string, unknown>;
+    newlyAdvertised: boolean;
+  } | undefined;
+};
 
 const pathRules = [
   "Relative paths resolve from cwd; cwd must be an absolute working-copy directory.",
@@ -59,16 +60,25 @@ const eolContract = {
   ]
 };
 
-export function svnHelp(input: { tool: string; cwd?: string }): ToolEnvelope {
+export function svnHelp(input: { tool: string; cwd?: string }, discovery: ToolDiscovery): ToolEnvelope {
   const tool = input.tool.trim().toLowerCase();
   const cwd = input.cwd ?? process.cwd();
-  if (!knownTools.has(tool)) {
+  const catalog = discovery.list();
+  if (tool === "tools") {
+    return {
+      ...createEnvelope({ ok: true, command: "svn_help", cwd, note: "SVN tool catalog" }),
+      tool,
+      contract: { ...catalog, load: "Call svn_help with the tool name to load it for this session." }
+    };
+  }
+  if (tool !== "eol" && !catalog.advertised.includes(tool) && !catalog.onDemand.includes(tool)) {
     return {
       ...failEnvelope("svn_help", cwd, `unknown help topic: ${input.tool}`),
-      available_topics: [...knownTools].sort()
+      available_topics: ["eol", "tools", ...catalog.advertised, ...catalog.onDemand].sort()
     };
   }
 
+  const loaded = discovery.load(tool);
   return {
     ...createEnvelope({ ok: true, command: "svn_help", cwd, note: `help for ${tool}` }),
     tool,
@@ -76,11 +86,12 @@ export function svnHelp(input: { tool: string; cwd?: string }): ToolEnvelope {
     response_modes: responseModes,
     contract: {
       ...contractFor(tool),
+      ...(loaded ? { discovery: loaded } : {}),
       ...(advancedInputsFor(tool).length > 0
         ? {
             extendedContract: true,
             advancedInputs: [...advancedInputsFor(tool)],
-            advancedInputAvailability: "Advertised by the full profile; focused profiles keep schemas trimmed but svn_help lists them."
+            advancedInputAvailability: "Accepted in every profile; focused startup schemas omit these fields."
           }
         : {})
     }
@@ -120,7 +131,7 @@ function contractFor(tool: string): Record<string, unknown> {
         revision: 'Pinned revision as a number or numeric string, e.g. 123 or "123".',
         expectedRemoteHead: "Repository HEAD as a number or numeric string, e.g. 123. Get remoteHeadRevision from svn_info.",
         operationId: "Optional. The server returns a generated UUID when omitted. Supply your own UUID if you need to replay after a lost reply. Reuse an ID only for identical inputs.",
-        scope: "Automatic baseline capture requires exact files. The full profile's svn_snapshot captureBaseline option issues file-scoped tokens."
+        scope: "Automatic baseline capture requires exact files. Load svn_snapshot with svn_help; captureBaseline issues file-scoped tokens."
       },
       messageContract: "Subject, blank second line, then one or more '- ' bullets.",
       messageExample: "Update parser\n\n- Verified: 270 tests passed\n- State: requested paths clean",

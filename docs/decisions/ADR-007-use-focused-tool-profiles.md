@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The default and call restrictions below were superseded by
+[ADR-017](ADR-017-default-to-review-tool-profile.md).
 
 ## Date
 

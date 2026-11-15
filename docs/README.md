@@ -14,7 +14,7 @@
 The current source release is `1.10.0`; query `npm view svn-agent-mcp version` for the registry
 release. Release history is recorded in `../CHANGELOG.md`.
 Run `npm run prepare:local` after cloning to create the local ignored `current` release pointer.
-Use the `full` profile for `svn_self_check` and `svn_diagnose`. Global npm installations use
+Load `svn_self_check` or `svn_diagnose` on demand by passing its name to `svn_help`. Global npm installations use
 package-root `dist/` and `bin/` directly and do not require
 `current`; self-check marks the pointer as not applicable for that layout. Windows uses the bundled VisualSVN Apache Subversion and dos2unix toolchain; macOS and Linux resolve native SVN and dos2unix
 commands from `PATH`. Use `svn_diagnose` for read-only SVN working-copy health checks.
