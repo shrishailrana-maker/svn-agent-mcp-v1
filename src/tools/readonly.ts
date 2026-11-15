@@ -64,7 +64,10 @@ export async function getWcContext(cwdInput?: string, pathHints: string[] = []):
   if (!cwdInput && !pathHints.some((hint) => path.isAbsolute(hint))) {
     return {
       ok: false,
-      envelope: failEnvelope("svn info --xml", process.cwd(), "cwd or absolute path required")
+      envelope: {
+        ...failEnvelope("svn info --xml", process.cwd(), "cwd or absolute path required", { code: "EXPLICIT_SCOPE" }),
+        remediation: "Set cwd to the absolute working-copy folder for relative paths, or supply an absolute target path."
+      }
     };
   }
 

@@ -121,7 +121,13 @@ export async function svnAdd(input: { cwd?: string; paths: string[]; allowRecurs
           ...failEnvelope("svn add", guard.cwd, `directory add requires allowRecursive:true: ${target}`, {
             code: "DIRECTORY_SCOPE"
           }),
-          next_action: { tool: "svn_add", paths: input.paths, allowRecursive: true }
+          remediation: "Review the folder contents, then retry the same scope with allowRecursive:true.",
+          ...(guard.paths.length <= 25
+            ? { next_action: {
+                tool: "svn_add", cwd: guard.cwd, paths: guard.paths.map((candidate) => path.relative(guard.cwd, candidate) || "."),
+                allowRecursive: true
+              } }
+            : {})
         };
       }
       const descendantHit = await firstNeverCommitDescendant(target, guard.wcRoot);
@@ -681,7 +687,8 @@ export async function svnCommit(input: {
   if (riskSignals.length > 0 && !input.riskAck) {
     return {
       ...failEnvelope("svn commit", guard.cwd, `riskAck required: ${riskSignals.join(", ")}`),
-      risk_signals: riskSignals
+      risk_signals: riskSignals,
+      remediation: "Review the listed risk signals, then retry the same scope with riskAck:true if authorized. Use a fresh UUID if the previous call had an operationId."
     };
   }
   const commitPaths = commitPathsWithAddedParents(scopedPaths, guard.wcRoot, status.map);

@@ -2,7 +2,7 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.1`; each source clone can prepare a local runtime under `releases/v1.9.1`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.2`; each source clone can prepare a local runtime under `releases/v1.9.2`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
@@ -238,6 +238,18 @@ Commit messages for `svn_commit` and `svn_import` require a subject, a blank sec
 least one `- ` verification bullet. A `svn_commit` scope with more than 8 paths requires
 `riskAck:true`; exactly 8 paths does not trigger this path-count signal. Other risk signals keep
 their existing G6 behavior.
+
+For routine changes, use the default `svn_commit` operation with exact changed file paths. It runs
+precommit and safe EOL checks and includes scheduled-added parent folders. To add a folder first,
+review its contents and pass `allowRecursive:true` to `svn_add`. Pass an absolute `cwd` for relative
+targets, or use absolute target paths. For a broad tracked-change review, set
+`includeUnversioned:false` on `svn_status` in compact or receipt mode.
+
+If your MCP client defers tool discovery, load the `svn_commit` schema before calling it.
+`svn_help(tool:"svn_commit")` also describes the pinned `safe` workflow. It needs exact file paths,
+a generated UUID v4 `operationId`, a string `revision` such as `"123"`, and an integer
+`expectedRemoteHead` such as `123`. Reuse the UUID for an identical retry and generate a fresh UUID
+when inputs change.
 
 Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision

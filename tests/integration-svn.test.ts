@@ -865,6 +865,11 @@ describe("SVN tool integration against a temp repository", () => {
         operationId
       });
       expect(first.note).toContain("riskAck required");
+      expect(toToolResult("svn_commit", first, { responseMode: "receipt" }).structuredContent).toMatchObject({
+        guardCode: "RISK_ACK",
+        riskSignals: ["more than 8 paths"],
+        remediation: expect.stringContaining("riskAck:true")
+      });
 
       const replay = await svnCommitWorkflow({
         operation: "commit",
@@ -1218,15 +1223,40 @@ describe("SVN tool integration against a temp repository", () => {
       expect(refused).toMatchObject({
         ok: false,
         code: "DIRECTORY_SCOPE",
-        next_action: { tool: "svn_add", paths: ["new-directory"], allowRecursive: true }
+        next_action: { tool: "svn_add", cwd: fixture.wc, paths: ["new-directory"], allowRecursive: true }
       });
-      expect(toToolResult("svn_add", refused, {
+      const result = toToolResult("svn_add", refused, {
         responseMode: "compact",
         request: { paths: ["new-directory"] }
-      }).structuredContent).toMatchObject({
+      }).structuredContent;
+      expect(result).toMatchObject({
         ok: false,
-        nextAction: { tool: "svn_add", paths: ["new-directory"], allowRecursive: true }
+        nextAction: { tool: "svn_add", cwd: fixture.wc, paths: ["new-directory"], allowRecursive: true }
       });
+      const { cwd, paths, allowRecursive } = result.nextAction as {
+        cwd: string; paths: string[]; allowRecursive: boolean
+      };
+      expect((await svnAdd({ cwd, paths, allowRecursive })).ok).toBe(true);
+
+      const safe = await svnCommitWorkflow({
+        operation: "safe", cwd, paths, revision: "0", expectedRemoteHead: 0,
+        operationId: randomUUID(), message: commitMessage("Commit new directory")
+      });
+      expect(toToolResult("svn_commit", safe, { responseMode: "compact" }).structuredContent).toMatchObject({
+        code: "BASELINE_FILE_SCOPE_REQUIRED",
+        remediation: expect.stringContaining("Pass the exact files")
+      });
+
+      const status = await svnStatus({ cwd });
+      fs.writeFileSync(path.join(cwd, "scratch.txt"), "scratch", "utf8");
+      const withScratch = await svnStatus({ cwd });
+      expect(withScratch.changed_paths.length).toBeGreaterThan(status.changed_paths.length);
+      for (const responseMode of ["compact", "receipt"] as const) {
+        const options = { responseMode, request: { includeUnversioned: false } };
+        const { snapshotToken: _beforeToken, ...before } = toToolResult("svn_status", status, options).structuredContent;
+        const { snapshotToken: _afterToken, ...after } = toToolResult("svn_status", withScratch, options).structuredContent;
+        expect(after).toEqual(before);
+      }
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1747,6 +1777,12 @@ describe("SVN tool integration against a temp repository", () => {
 
     expect(status.ok).toBe(false);
     expect(status.note).toContain("cwd or absolute path required");
+    const info = await svnInfo({ paths: ["relative.txt"] });
+    expect(toToolResult("svn_info", info, { responseMode: "compact" }).structuredContent).toMatchObject({
+      ok: false,
+      code: "EXPLICIT_SCOPE",
+      remediation: expect.stringContaining("absolute working-copy folder")
+    });
   });
 
   it("enforces READONLY and update explicit-target guards", async () => {
@@ -2073,6 +2109,10 @@ describe("SVN tool integration against a temp repository", () => {
       expect(statusByPath(noisy.changed_paths, fixture.wc).get("node_modules")).toBe("?");
       expect(statusByPath(noisy.changed_paths, fixture.wc).get("dist")).toBe("?");
       expect(statusByPath(noisy.changed_paths, fixture.wc).get("todo.txt")).toBe("?");
+      expect(toToolResult("svn_status", noisy, {
+        responseMode: "receipt",
+        request: { includeUnversioned: false, fields: ["changedPaths"] }
+      }).structuredContent).toMatchObject({ changedPaths: [] });
 
       const filtered = await svnStatus({ cwd: fixture.wc, hideNoise: true });
       const byPath = statusByPath(filtered.changed_paths, fixture.wc);

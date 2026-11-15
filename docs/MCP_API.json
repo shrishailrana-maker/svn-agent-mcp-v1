@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.9.1"
+    "version": "1.9.2"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -489,7 +489,7 @@
     },
     {
       "name": "svn_status",
-      "description": "Scoped status and conflicts. See svn_help.",
+      "description": "Scoped status. Set includeUnversioned:false for tracked review in compact/receipt. See svn_help.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -574,7 +574,7 @@
     },
     {
       "name": "svn_info",
-      "description": "Return WC revision and mixed-revision state. See svn_help before advanced use.",
+      "description": "Inspect WC revision. Supply cwd for relative paths, or use absolute paths. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1380,7 +1380,7 @@
     },
     {
       "name": "svn_add",
-      "description": "Add files; directories need allowRecursive:true. See svn_help tool:eol before advanced use.",
+      "description": "Add files or a folder with allowRecursive:true. See svn_help before advanced use.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1628,7 +1628,7 @@
     },
     {
       "name": "svn_commit",
-      "description": "Guarded commit; operation:safe is end-to-end. See svn_help tool:svn_commit before advanced use.",
+      "description": "Commit exact paths with precommit and EOL checks. Pinned safe mode: svn_help tool:svn_commit.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1652,7 +1652,7 @@
             "description": "One to 500 explicit paths inside one WC."
           },
           "operation": {
-            "description": "commit (default), prepare, safe end-to-end commit, or paged safe-operation detail.",
+            "description": "commit (default); prepare/safe pin an update; detail pages safe results.",
             "type": "string",
             "enum": [
               "commit",
@@ -1669,18 +1669,19 @@
             "pattern": "^[^\\x00]*$"
           },
           "revision": {
-            "description": "Required for operation:prepare and operation:safe.",
+            "description": "Pinned revision string, e.g. \"123\". Required for prepare/safe.",
             "type": "string",
             "maxLength": 32,
             "pattern": "^\\d+$"
           },
           "expectedRemoteHead": {
+            "description": "Repository HEAD integer, e.g. 123. Required for safe.",
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
           },
           "operationId": {
-            "description": "UUID for idempotent replay or stored evidence.",
+            "description": "UUID v4 required for safe. Reuse only for identical inputs.",
             "type": "string",
             "maxLength": 36
           },
@@ -1715,7 +1716,7 @@
             "maximum": 2000
           },
           "riskAck": {
-            "description": "Set riskAck:true when more than 8 paths are in the commit scope or another G6 signal is present.",
+            "description": "Required for >8 paths, deletes, version.ver, or build files such as .csproj.",
             "type": "boolean"
           },
           "allowRoot": {

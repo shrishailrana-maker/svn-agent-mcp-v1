@@ -105,8 +105,12 @@ describe("server entrypoint launch detection", () => {
       const snapshot = tools.tools.find((tool) => tool.name === "svn_snapshot");
       expect(snapshot?.description).toContain("captureBaseline:true detects other writers");
       const commit = tools.tools.find((tool) => tool.name === "svn_commit");
-      expect(commit?.description).toContain("operation:safe");
+      expect(commit?.description).toContain("Commit exact paths with precommit and EOL checks");
       expect(commit?.description).toContain("svn_help");
+      expect(commit?.inputSchema.properties?.revision).toMatchObject({ type: "string" });
+      expect(commit?.inputSchema.properties?.expectedRemoteHead).toMatchObject({ type: "integer" });
+      expect(commit?.inputSchema.properties?.operationId?.description).toContain("UUID v4");
+      expect(status?.description).toContain("includeUnversioned:false");
       expect(tools.tools.find((tool) => tool.name === "svn_help")?.description).toContain("tool:eol");
       for (const [toolName, names] of Object.entries(advancedInputNames)) {
         const advertised = tools.tools.find((tool) => tool.name === toolName);

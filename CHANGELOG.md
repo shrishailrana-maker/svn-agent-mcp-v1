@@ -4,6 +4,17 @@ All notable changes to the SVN MCP are recorded here.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-15
+
+### Fixed
+
+- Made routine commit, safe-mode argument types, UUID retry rules, and tracked-only status
+  discoverable in tool descriptions and help. Scope and risk refusals now carry retry guidance.
+- Status and snapshot receipts respect the same status filters as compact output.
+- Included the working-copy directory in recursive-add retry actions and withheld actions
+  when the full path list cannot fit. Existing scope and acknowledgement requirements still apply.
+- Updated the MCP SDK, Zod, XML parser, and affected transitive dependencies for current advisories.
+
 ## [1.9.1] - 2026-09-13
 
 ### Changed

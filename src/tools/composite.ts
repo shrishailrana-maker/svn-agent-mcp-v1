@@ -1096,7 +1096,7 @@ type ValidatedSafeCommitInput = Omit<SafeCommitInput, "message" | "revision" | "
 async function svnSafeCommit(input: SafeCommitInput): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) return safeCommitFailure(cwd, "READONLY", "READONLY instance");
-  if (!input.operationId) return safeCommitFailure(cwd, "OPERATION_ID_REQUIRED", "operation:safe requires operationId");
+  if (!input.operationId) return safeCommitFailure(cwd, "OPERATION_ID_REQUIRED", "operation:safe requires a generated UUID v4 operationId");
   const message = input.message;
   if (!message) return safeCommitFailure(cwd, "MESSAGE_REQUIRED", "operation:safe requires message");
   const messageValidation = validateCommitMessage(message);
@@ -1110,11 +1110,11 @@ async function svnSafeCommit(input: SafeCommitInput): Promise<ToolEnvelope> {
   }
   const revision = input.revision;
   if (!revision || !/^\d+$/.test(revision)) {
-    return safeCommitFailure(cwd, "INVALID_REVISION", "operation:safe requires an exact numeric revision");
+    return safeCommitFailure(cwd, "INVALID_REVISION", 'operation:safe requires revision as a numeric string, e.g. "123"');
   }
   const expectedRemoteHead = input.expectedRemoteHead;
   if (typeof expectedRemoteHead !== "number" || !Number.isSafeInteger(expectedRemoteHead) || expectedRemoteHead < 0) {
-    return safeCommitFailure(cwd, "REMOTE_HEAD_REQUIRED", "operation:safe requires expectedRemoteHead");
+    return safeCommitFailure(cwd, "REMOTE_HEAD_REQUIRED", "operation:safe requires expectedRemoteHead as an integer, e.g. 123");
   }
   const validated: ValidatedSafeCommitInput = { ...input, message, revision, expectedRemoteHead };
   return withDurableOperation({
@@ -1249,7 +1249,13 @@ async function executeCanonicalSafeCommit(
   });
   stages.push({ stage: "commit", result: committed });
   if (!committed.ok || typeof committed.committed_revision !== "number") {
-    return attachSafeDetail(effectiveInput, safeCommitFailure(committed.cwd, "COMMIT_FAILED", committed.note), stages);
+    return attachSafeDetail(effectiveInput, {
+      ...safeCommitFailure(committed.cwd, "COMMIT_FAILED", committed.note),
+      ...(committed.risk_signals ? { risk_signals: committed.risk_signals } : {}),
+      ...(committed.remediation ? {
+        remediation: `${committed.remediation} Refresh repository HEAD and baseline evidence if the pinned update changed the working copy.`
+      } : {})
+    }, stages);
   }
   const finalized = await finalizeSafeCommit(effectiveInput, committed, finalScope, stages);
   return {
@@ -1280,7 +1286,10 @@ async function captureSafeCommitBaseline(
   })) {
     return {
       ok: false,
-      envelope: safeCommitFailure(context.cwd, "BASELINE_FILE_SCOPE_REQUIRED", "operation:safe accepts explicit files unless a file baselineToken is supplied")
+      envelope: {
+        ...safeCommitFailure(context.cwd, "BASELINE_FILE_SCOPE_REQUIRED", "Automatic baseline capture requires explicit file paths."),
+        remediation: "Pass the exact files, or use operation:commit for a reviewed directory scope. Added parent folders are included when committing their files."
+      }
     };
   }
   const captured = await captureCurrentWorkflowPathStates(context.cwd, context.wcRoot, resolved.paths);

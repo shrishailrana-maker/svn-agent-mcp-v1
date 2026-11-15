@@ -122,7 +122,11 @@ export class DurableOperationStore {
     }
     if (existing) {
       if (existing.kind !== input.kind || existing.fingerprint !== input.fingerprint) {
-        return { status: "conflict", operationId, note: "operationId is already bound to different inputs" };
+        return {
+          status: "conflict",
+          operationId,
+          note: "operationId is already bound to different inputs. Reuse it only with the original inputs, or generate a new UUID for a changed request."
+        };
       }
       if (existing.state === "completed" || existing.state === "failed") {
         if (!isToolEnvelope(existing.result)) {

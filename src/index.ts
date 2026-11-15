@@ -259,7 +259,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_status",
     {
-      description: "Scoped status and conflicts. See svn_help.",
+      description: "Scoped status. Set includeUnversioned:false for tracked review in compact/receipt. See svn_help.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -284,7 +284,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_info",
     {
-      description: "Return WC revision and mixed-revision state.",
+      description: "Inspect WC revision. Supply cwd for relative paths, or use absolute paths.",
       inputSchema: {
         cwd,
         paths: optionalPaths,
@@ -505,7 +505,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_add",
     {
-      description: "Add files; directories need allowRecursive:true. See svn_help tool:eol before advanced use.",
+      description: "Add files or a folder with allowRecursive:true. See svn_help before advanced use.",
       inputSchema: { cwd, paths, allowRecursive: z.boolean().optional(), ...response }
     },
     async (args, extra) => handleTool("svn_add", args, extra.signal, () => svnAdd(compactArgs(args)))
@@ -564,21 +564,22 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   server.registerTool(
     "svn_commit",
     {
-      description: "Guarded commit; operation:safe is end-to-end. See svn_help tool:svn_commit before advanced use.",
+      description: "Commit exact paths with precommit and EOL checks. Pinned safe mode: svn_help tool:svn_commit.",
       inputSchema: {
         cwd,
         paths,
         operation: z.enum(["commit", "prepare", "safe", "detail"]).optional().describe(
-          "commit (default), prepare, safe end-to-end commit, or paged safe-operation detail."
+          "commit (default); prepare/safe pin an update; detail pages safe results."
         ),
         message: commitMessage.optional().describe(
           `Required for commit/safe; ignored for prepare/detail. ${COMMIT_MESSAGE_REQUIREMENT}`
         ),
         revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision").optional().describe(
-          "Required for operation:prepare and operation:safe."
+          "Pinned revision string, e.g. \"123\". Required for prepare/safe."
         ),
-        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
-        operationId: operationIdInput,
+        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional()
+          .describe("Repository HEAD integer, e.g. 123. Required for safe."),
+        operationId: operationIdInput.describe("UUID v4 required for safe. Reuse only for identical inputs."),
         precommitToken: evidenceTokenInput,
         baselineToken: evidenceTokenInput,
         detailOperationId: evidenceTokenInput,
@@ -586,7 +587,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         maxChars,
         lineLimit,
         riskAck: z.boolean().optional().describe(
-          `Set riskAck:true when more than ${RISK_ACK_PATH_THRESHOLD} paths are in the commit scope or another G6 signal is present.`
+          `Required for >${RISK_ACK_PATH_THRESHOLD} paths, deletes, version.ver, or build files such as .csproj.`
         ),
         allowRoot: allowRootCommit,
         allowDirectoryTargets,

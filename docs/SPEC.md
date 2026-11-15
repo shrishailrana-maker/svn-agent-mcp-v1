@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.44 - public implementation contract. Single source of truth.**
+**Spec version 1.45 - public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -679,6 +679,10 @@ remain authoritative.
 When `baselineToken` is omitted, safe mode captures the current explicit-file state immediately
 before update and uses local SVN status plus remote update touches for collision detection. A
 caller-supplied pre-edit token additionally proves which content changed since editing began.
+Snapshot-issued baselines are file-scoped. Use the default commit operation for routine
+commits, including exact files inside scheduled-added folders. For a pinned safe call, pass
+`revision` as a decimal string and `expectedRemoteHead` as an integer. Reuse the operation UUID
+only for an identical retry. Changed inputs need a fresh UUID.
 Paths already scheduled for addition are not valid `svn update` operands. Safe mode skips only
 those operands during its pinned update, still verifies the expected repository HEAD, and keeps
 every scheduled-added path in the exact precommit and commit scope.
@@ -1043,6 +1047,11 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.45 / v1.9.2 - 2026-11-15
+
+- Clarifies routine and pinned commit inputs, scope selection, risk acknowledgements, and UUID
+  retries in the advertised tools and help. Recursive-add retry actions retain the complete scope.
 
 ### Spec 1.44 / v1.9.1 - 2026-09-13
 

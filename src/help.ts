@@ -114,11 +114,19 @@ function contractFor(tool: string): Record<string, unknown> {
   }
   if (tool === "svn_commit") {
     return {
-      preferred: "Use operation:safe for scoped update, writer collision check, safe EOL repair, precommit, commit, and verification.",
+      preferred: "Use operation:commit (the default) for exact changed files. It runs precommit and safe EOL checks. List files inside a newly added folder and SVN includes their scheduled parent folders.",
+      safeMode: {
+        purpose: "Use operation:safe when you need a pinned update and writer-collision checks before committing.",
+        revision: 'Pinned numeric string, e.g. "123".',
+        expectedRemoteHead: "Repository HEAD as an integer, e.g. 123. Get remoteHeadRevision from svn_info.",
+        operationId: "Generate a UUID v4. Reuse it for identical retries, including uncertain outcomes. Use a new UUID for changed inputs.",
+        scope: "Automatic baseline capture requires exact files. The public svn_snapshot captureBaseline option also issues file-scoped tokens."
+      },
       messageContract: "Subject, blank second line, then one or more '- ' bullets.",
       messageExample: "Update parser\n\n- Verified: 270 tests passed\n- State: requested paths clean",
       precommitToken: "Optional. Default commit creates fresh precommit evidence. Supplied tokens are exact-state bound and process-local; TTL is 10 minutes but bounded-store eviction can remove them sooner. Rerun precommit on EVIDENCE_NOT_FOUND or EVIDENCE_EXPIRED.",
       riskAckTriggers: ["more than 8 paths", "delete-scheduled path", "version file touched", "build-system file touched"],
+      buildFiles: [".sln", ".csproj", ".props", ".targets", "packages.config"],
       separateGuards: [
         "Directory scope uses expandDescendants:true or allowDirectoryTargets:true; it is not inferred from riskAck.",
         "Mixed revisions are normal unless requireUniformRevision:true; stale paths are separate failures.",
@@ -156,8 +164,18 @@ function contractFor(tool: string): Record<string, unknown> {
   }
   if (tool === "svn_status") {
     return {
+      review: "Use includeUnversioned:false in compact or receipt mode to review tracked changes, or pass exact paths. Keep unversioned entries visible when looking for files to add.",
       afterCursor: "Snapshot token from the previous status result; reports change without repeating all details.",
       conflictCursor: "Continue a bounded conflict page."
+    };
+  }
+  if (tool === "svn_info") {
+    return {
+      scope: "Supply an absolute cwd with paths relative to it, or supply absolute paths inside one working copy.",
+      examples: [
+        { cwd: "C:\\work\\project", paths: ["src/app.cs"] },
+        { paths: ["C:\\work\\project\\src\\app.cs"] }
+      ]
     };
   }
   if (tool === "svn_propset") {

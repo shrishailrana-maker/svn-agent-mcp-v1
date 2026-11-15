@@ -45,7 +45,10 @@ describe("durable operation receipts", () => {
         operationId: OPERATION_ID,
         kind: "svn_commit",
         fingerprint: stableOperationFingerprint({ paths: ["b.txt"] })
-      }).status).toBe("conflict");
+      })).toMatchObject({
+        status: "conflict",
+        note: expect.stringContaining("generate a new UUID for a changed request")
+      });
       expect(store.begin({ operationId: OPERATION_ID, kind: "svn_commit", fingerprint }).status).toBe("in_progress");
       now += 501;
       expect(store.begin({ operationId: OPERATION_ID, kind: "svn_commit", fingerprint })).toMatchObject({

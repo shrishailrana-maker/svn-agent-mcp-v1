@@ -249,6 +249,9 @@ function receiptPayload(
       ...(error.guardCode ? { guardCode: error.guardCode } : {}),
       ...(error.note ? { note: error.note } : {}),
       ...(error.recoveryTool ? { recoveryTool: error.recoveryTool } : {}),
+      ...(error.remediation ? { remediation: error.remediation } : {}),
+      ...(error.riskSignals ? { riskSignals: error.riskSignals } : {}),
+      ...(error.nextAction ? { nextAction: error.nextAction } : {}),
       ...(error.expectedRemoteHead !== undefined ? { expectedRemoteHead: error.expectedRemoteHead } : {}),
       ...(error.observedRemoteHead !== undefined ? { observedRemoteHead: error.observedRemoteHead } : {}),
       ...(error.outOfDatePaths ? { outOfDatePaths: error.outOfDatePaths } : {}),
@@ -264,10 +267,15 @@ function receiptPayload(
   }
 
   const root = stringValue(payload.wc_root) || payload.cwd;
-  const sourcePaths = tool === "svn_commit" && payload.committed_paths !== undefined
+  const statusItems = tool === "svn_status" || tool === "svn_snapshot"
+    ? canonicalStatusItems(payload, request, payload.cwd, root)
+    : undefined;
+  const committedPaths = tool === "svn_commit" && payload.committed_paths !== undefined
     ? stringArray(payload.committed_paths)
-    : payload.changed_paths.map((item) => item.path);
-  const sourcePathsAreWorkingCopyRelative = tool === "svn_commit" && payload.committed_paths !== undefined;
+    : undefined;
+  const sourcePaths = statusItems?.map((item) => item.path)
+    ?? committedPaths ?? payload.changed_paths.map((item) => item.path);
+  const sourcePathsAreWorkingCopyRelative = statusItems !== undefined || committedPaths !== undefined;
   const countOnly = request.countOnly === true;
   const changedPaths = countOnly
     ? []
@@ -326,13 +334,12 @@ function receiptPayload(
     assignDefined(result, "untrackedCount", payload.untracked_count);
   }
   if (tool === "svn_status" || tool === "svn_snapshot") {
-    const snapshotRoot = stringValue(payload.wc_root) || payload.cwd;
     return withSnapshotToken(tool, payload, request, result, {
       revision: payload.revision,
       revisionRange: payload.revision_range,
       mixedRevision: payload.mixed_revision,
       remoteHeadRevision: payload.remote_head_revision,
-      changed: canonicalStatusItems(payload, request, payload.cwd, snapshotRoot),
+      changed: statusItems,
       conflicts: payload.conflicts
     });
   }
@@ -399,14 +406,21 @@ function applyFieldProjection(
   const fallbackOffset = cursorOffset(request.cursor);
   const fallbackLimit = boundedInteger(request.maxItems, 100, 1, 500);
   const usesFallbackChangedPaths = !Array.isArray(shaped.changedPaths) && !Array.isArray(shaped.items);
-  const fallbackNextOffset = Math.min(payload.changed_paths.length, fallbackOffset + fallbackLimit);
-  const fallbackHasMore = usesFallbackChangedPaths && fallbackNextOffset < payload.changed_paths.length;
   const standardShape = Array.isArray(shaped.changed_paths);
+  const filteredFallback = usesFallbackChangedPaths && !standardShape
+    && (tool === "svn_status" || tool === "svn_snapshot")
+    && (request.includeUnversioned === false || stringArray(request.statuses).length > 0)
+    ? canonicalStatusItems(payload, request, payload.cwd, root)
+    : undefined;
+  const fallbackCount = filteredFallback?.length ?? payload.changed_paths.length;
+  const fallbackNextOffset = Math.min(fallbackCount, fallbackOffset + fallbackLimit);
+  const fallbackHasMore = usesFallbackChangedPaths && fallbackNextOffset < fallbackCount;
   const changedPaths = Array.isArray(shaped.changedPaths)
     ? shaped.changedPaths
     : Array.isArray(shaped.items)
       ? shaped.items
-      : payload.changed_paths.slice(fallbackOffset, fallbackOffset + fallbackLimit).map((item) => ({
+      : filteredFallback?.slice(fallbackOffset, fallbackNextOffset)
+        ?? payload.changed_paths.slice(fallbackOffset, fallbackNextOffset).map((item) => ({
           status: item.status,
           path: workingCopyRelativePath(item.path, payload.cwd, root)
         }));
@@ -1477,6 +1491,9 @@ function compactSafeCommit(payload: ToolEnvelope, request: Record<string, unknow
     ...(payload.detail_cursor ? { detailCursor: payload.detail_cursor } : {}),
     ...(payload.code ? { code: payload.code } : {}),
     ...compactCommitDiffStat(payload),
+    ...(!payload.ok && payload.remediation ? { remediation: payload.remediation } : {}),
+    ...(!payload.ok && stringArray(payload.risk_signals).length > 0
+      ? { riskSignals: stringArray(payload.risk_signals) } : {}),
     ...(stringArray(request.fields).includes("contentHashes") && payload.content_hashes !== undefined
       ? { contentHashes: recordArray(payload.content_hashes).slice(0, 100) } : {}),
     ...compactAutoEol(payload),
