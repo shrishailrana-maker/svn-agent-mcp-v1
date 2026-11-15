@@ -47,13 +47,18 @@ const receiptBudgets = {
 const receiptTools = new Set(["svn_status", "svn_snapshot", "svn_precommit", "svn_update", "svn_commit"]);
 const profileSchemaBudgets = {
   docs: { toolCount: 9, inputSchemas: 7300, toolDefinitions: 9900 },
-  review: { toolCount: 12, inputSchemas: 10000, toolDefinitions: 13500 }
+  review: { toolCount: 14, inputSchemas: 10800, toolDefinitions: 14200 }
 };
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 fs.mkdirSync(temporaryRoot, { recursive: true });
 
-const transport = new StdioClientTransport({ command: process.execPath, args: [server], cwd: root });
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [server],
+  cwd: root,
+  env: { ...stringEnvironment(process.env), SVN_MCP_TOOL_PROFILE: "full" }
+});
 const client = new Client({ name: "response-benchmark", version: "1.0.0" });
 
 try {

@@ -73,6 +73,7 @@ try {
   const client = new Client({ name: "packed-install-smoke", version: "1.0.0" });
   const transport = new StdioClientTransport({
     command: shim,
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), SVN_MCP_TOOL_PROFILE: "full" },
     stderr: "ignore"
   });
   try {

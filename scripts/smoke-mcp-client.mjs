@@ -27,6 +27,7 @@ try {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [preparedEntrypoint],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), SVN_MCP_TOOL_PROFILE: "full" },
     stderr: "ignore"
   });
   try {

@@ -11,12 +11,14 @@ import {
 const distIndex = path.resolve("dist", "index.js");
 
 describe("server entrypoint launch detection", () => {
-  it("selects bounded tool profiles while keeping full as the default", () => {
-    expect(configuredToolProfile(undefined)).toBe("full");
+  it("selects bounded tool profiles with review as the default", () => {
+    expect(configuredToolProfile(undefined)).toBe("review");
+    expect(configuredToolProfile("full")).toBe("full");
     expect([...(toolNamesForProfile("docs") ?? [])]).toEqual([
       "svn_help", "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
     ]);
-    expect(toolNamesForProfile("review")?.size).toBe(12);
+    expect(toolNamesForProfile("review")?.size).toBe(14);
+    expect([...(toolNamesForProfile("review") ?? [])]).toEqual(expect.arrayContaining(["svn_info", "svn_propset_eol_style"]));
     expect(toolNamesForProfile("full")).toBeNull();
     expect(() => configuredToolProfile("wide-open")).toThrow("allowed full, docs, review");
   });
@@ -68,7 +70,10 @@ describe("server entrypoint launch detection", () => {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
     const client = new Client({ name: "schema-controls", version: "1.0.0" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [distIndex], stderr: "ignore" });
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [distIndex], stderr: "ignore",
+      env: { ...(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>), SVN_MCP_TOOL_PROFILE: "full" }
+    });
     try {
       await client.connect(transport);
       const tools = await client.listTools();
@@ -107,9 +112,21 @@ describe("server entrypoint launch detection", () => {
       const commit = tools.tools.find((tool) => tool.name === "svn_commit");
       expect(commit?.description).toContain("Commit exact paths with precommit and EOL checks");
       expect(commit?.description).toContain("svn_help");
-      expect(commit?.inputSchema.properties?.revision).toMatchObject({ type: "string" });
-      expect(commit?.inputSchema.properties?.expectedRemoteHead).toMatchObject({ type: "integer" });
-      expect(commit?.inputSchema.properties?.operationId?.description).toContain("UUID v4");
+      for (const name of ["revision", "expectedRemoteHead"]) {
+        const types = (commit?.inputSchema.properties?.[name] as { anyOf?: Array<{ type?: string }> } | undefined)
+          ?.anyOf?.map((option) => option.type);
+        expect(types).toEqual(expect.arrayContaining(["string", "integer"]));
+      }
+      expect(commit?.inputSchema.properties?.operationId?.description).toContain("omit");
+      // A numeric revision and a string HEAD both pass schema validation and reach the tool.
+      const numericSafe = await client.callTool({
+        name: "svn_commit",
+        arguments: {
+          operation: "safe", cwd: path.resolve("missing-wc"), paths: ["a.txt"],
+          message: "Update a\n\n- Verified: schema test", revision: 42, expectedRemoteHead: "42"
+        }
+      });
+      expect(JSON.stringify(numericSafe)).not.toMatch(/invalid_union|Input validation error|OPERATION_ID_REQUIRED/i);
       expect(status?.description).toContain("includeUnversioned:false");
       expect(tools.tools.find((tool) => tool.name === "svn_help")?.description).toContain("tool:eol");
       for (const [toolName, names] of Object.entries(advancedInputNames)) {

@@ -1,6 +1,6 @@
 # svn-agent — Generic Implementation Spec
 
-**Spec version 1.45 - public implementation contract. Single source of truth.**
+**Spec version 1.46 - public implementation contract. Single source of truth.**
 This document describes the current generic SVN MCP design without deployment-specific paths,
 hostnames, or product-specific role assignments. Date: 2026-08-08.
 
@@ -195,7 +195,7 @@ only as development/test escape hatches:
 | `SVN_AGENT_DOS2UNIX_DIR` | No | Dev/test directory override containing platform-native dos2unix/unix2dos executables |
 | `SVN_AGENT_MAX_DIFF_LINES` | No | Dev/test default diff excerpt cap; tools also accept `lineLimit` |
 | `SVN_AGENT_TIMEOUT_MS` | No | Dev/test per-process timeout |
-| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `full` (default, 30 canonical tools), `docs` (9), or `review` (12) |
+| `SVN_MCP_TOOL_PROFILE` | No | Advertised tool surface: `review` (default, 14), `docs` (9), or `full` (30 canonical tools) |
 | `SVN_MCP_RESPONSE_MODE` | No | Default public response mode: `compact`, `receipt`, `structured-only`, `standard`, or `full` |
 | `SVN_MCP_OPERATION_DIR` | No | Optional host-local directory for bounded durable mutation receipts |
 | `SVN_MCP_WORKSTATION_LABEL` | No | Optional lock workstation label; when absent, the normalized machine hostname is used |
@@ -286,7 +286,8 @@ These records coordinate retries on one host only and are not a distributed lock
 Tool profiles reduce session schema context; they are not a permission boundary. `full` advertises
 30 canonical tools. `docs` advertises `svn_help`, `svn_update`, `svn_status`, `svn_log`, `svn_add`,
 `eol_check`, `eol_fix_verified`, `svn_precommit`, and `svn_commit`. `review` adds `svn_diff`,
-`svn_cat`, and `svn_blame`. A call to an unadvertised tool in a focused profile returns a typed
+`svn_cat`, `svn_blame`, `svn_info`, and `svn_propset_eol_style`. The 14-tool `review` profile
+is the default. A call to an unadvertised tool in a focused profile returns a typed
 `TOOL_PROFILE` refusal with remediation. READONLY checks and every mutation guard still run
 independently.
 
@@ -650,7 +651,7 @@ commit guards and expires with process-local evidence. Path state is captured be
 checks; a concurrent local change refuses token issuance. Commit recomputes the bound diff while
 confirming the path state stays stable.
 
-**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision?, operationId?: UUID }` *(mutating update; refused under READONLY; never commits)*
+**`svn_commit operation:"prepare"`** — `{ cwd?, paths: string[], operation: "prepare", revision: integer | numeric-string, expectedRemoteHead?: integer | numeric-string, baselineToken?: UUID, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision?, operationId?: UUID }` *(mutating update; refused under READONLY; never commits)*
 One call preflights root, directory, containment, expansion, and never-commit guards, records scoped
 local status, runs `svn update -r <revision> --accept postpone -- <paths...>`, refuses a changed
 expected remote HEAD, refuses any update result outside the explicit file or directory scope, stops
@@ -669,7 +670,7 @@ The hidden `svn_prepare_commit` route has the same implementation for known full
 It is omitted from discovery so preparation and later safe-commit orchestration can share the one
 canonical `svn_commit` schema.
 
-**`svn_commit operation:"safe"`** — `{ cwd?, paths: string[], operation: "safe", message: string, revision: numeric-string, expectedRemoteHead: integer, baselineToken?: UUID, operationId: UUID, riskAck?, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision? }` *(mutating; refused under READONLY)*
+**`svn_commit operation:"safe"`** — `{ cwd?, paths: string[], operation: "safe", message: string, revision: integer | numeric-string, expectedRemoteHead: integer | numeric-string, baselineToken?: UUID, operationId?: UUID, riskAck?, lineLimit?, allowRoot?, allowDirectoryTargets?, expandDescendants?, requireUniformRevision? }` *(mutating; refused under READONLY)*
 One durable operation performs: guarded pinned prepare → baseline overlap/conflict refusal → batch
 verified EOL repair only when precommit reports explicit failing files → bound READY precommit →
 guarded commit → pinned update of the committed scope to the committed revision → final scoped
@@ -680,9 +681,14 @@ When `baselineToken` is omitted, safe mode captures the current explicit-file st
 before update and uses local SVN status plus remote update touches for collision detection. A
 caller-supplied pre-edit token additionally proves which content changed since editing began.
 Snapshot-issued baselines are file-scoped. Use the default commit operation for routine
-commits, including exact files inside scheduled-added folders. For a pinned safe call, pass
-`revision` as a decimal string and `expectedRemoteHead` as an integer. Reuse the operation UUID
-only for an identical retry. Changed inputs need a fresh UUID.
+commits, including exact files inside scheduled-added folders. The pinned `revision` and
+`expectedRemoteHead` accept safe integers or decimal strings. The server issues a UUID when
+`operationId` is omitted. Supply your own UUID if you need replay after a lost reply. Reuse the
+operation UUID only for an identical retry.
+When a refusal returns `nextAction.useOriginalArguments:true`, review the suggested inputs,
+copy the original arguments, drop keys in `omitArguments`, and apply the suggested overrides.
+Safe folder refusals suggest an exact file scope only when the server finds a complete eligible
+scope of at most 25 files.
 Paths already scheduled for addition are not valid `svn update` operands. Safe mode skips only
 those operands during its pinned update, still verifies the expected repository HEAD, and keeps
 every scheduled-added path in the exact precommit and commit scope.
@@ -766,7 +772,7 @@ Guarded property mutation for regular versioned files only. `action:"set"` runs
 bind normalized paths, action, and acknowledgement state. All normal mutation guards apply and
 READONLY refuses both actions.
 
-**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: numeric-string, expectedRemoteHead?: integer, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
+**`svn_commit`** — `{ cwd?, paths: string[], operation?: "commit"|"prepare"|"safe"|"detail" = "commit", message?: string, revision?: integer | numeric-string, expectedRemoteHead?: integer | numeric-string, baselineToken?: UUID, precommitToken?: UUID, detailOperationId?: UUID, cursor?, maxChars?, riskAck?: boolean = false, allowRoot?: boolean = false, allowDirectoryTargets?: boolean = false, expandDescendants?: boolean = false, operationId?: UUID }`
 Sequence: G1→G6 checks → message format check against §5.8 template (subject + blank second line +
 at least one `- ` verification bullet; deviation → typed refusal before SVN) → write message to temp
 file **outside the WC** (secure temp dir, UTF-8 **no BOM**, leading BOM stripped) → argv:
@@ -821,7 +827,7 @@ The legacy `svn_move`, `svn_rename`, and `svn_copy` routes remain callable in th
 compatibility but are omitted from tool discovery. They have the same guards and behavior as the
 corresponding `svn_path_change` action.
 
-**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision, expectedRemoteHead?: integer, baselineToken?: UUID, maxItems?, cursor?, taskPaths?, targetOverlapOnly?, operationId?: UUID }`
+**`svn_update`** — `{ cwd?, paths?: string[], updateAll?: boolean = false, revision?: Revision | integer, expectedRemoteHead?: integer | numeric-string, baselineToken?: UUID, maxItems?, cursor?, taskPaths?, targetOverlapOnly?, operationId?: UUID }`
 Refuses unless `paths` non-empty or `updateAll:true` (deliberate friction; the operator-request
 requirement in §5.2 remains the caller's responsibility). argv:
 `svn update [-r <revision>] --accept postpone [paths…]`. Revision ranges are refused. An optional
@@ -957,15 +963,22 @@ exclusions.
 
 ### 10.4 Host approval settings
 
-The npm package does not edit user or host configuration. Keep Codex approval settings outside the
-repository. For a persistent server-scoped configuration, use:
+The user manages host configuration. In Codex, merge this server-scoped configuration for automatic
+approval and explicit selection of the default review profile.
 
 ```toml
-approval_policy = "never"
-
 [mcp_servers.svn]
+command = "svn-agent-mcp"
 default_tools_approval_mode = "approve"
+
+[mcp_servers.svn.env]
+SVN_MCP_TOOL_PROFILE = "review"
 ```
+
+The optional top-level `approval_policy = "never"` also affects command approvals outside this server.
+In Claude Code, set the server's `env.SVN_MCP_TOOL_PROFILE` to `review`. For automatic approval, merge
+`mcp__svn__*` into `permissions.allow` in the user's chosen Claude Code settings scope.
+See the [GitHub setup prompt](../README.md#generic-agent-install-prompt).
 
 All registered SVN tools, including hidden compatibility routes, advertise
 `annotations.destructiveHint=false`. A central canonical read-only set advertises accurate
@@ -1047,6 +1060,12 @@ housekeeping — separate initiative.
 ## 14. Change Log
 
 The complete release history lives in `../CHANGELOG.md`. Spec-affecting changes:
+
+### Spec 1.46 / v1.10.0 - 2026-11-15
+
+- Defaults to the 14-tool review profile and reduces repeated schema metadata.
+- Accepts number or decimal-string revisions for pinned workflows and issues optional safe commit
+  UUIDs. Adds retry overrides for risk acknowledgement and eligible folder scopes.
 
 ### Spec 1.45 / v1.9.2 - 2026-11-15
 

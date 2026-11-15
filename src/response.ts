@@ -575,6 +575,10 @@ function compactNextAction(value: unknown): Record<string, unknown> | null {
       ? { operation: action.operation }
       : {}),
     ...(action.allowRecursive === true ? { allowRecursive: true } : {}),
+    ...(action.riskAck === true ? { riskAck: true } : {}),
+    ...(action.useOriginalArguments === true
+      ? { useOriginalArguments: true, omitArguments: stringArray(action.omitArguments) }
+      : {}),
     ...(action.expandDescendants === true ? { expandDescendants: true } : {}),
     ...(typeof action.operationId === "string" ? { operationId: action.operationId } : {}),
     ...(typeof action.cursor === "string" ? { cursor: action.cursor } : {}),
@@ -1467,6 +1471,7 @@ function compactSafeCommit(payload: ToolEnvelope, request: Record<string, unknow
       ...(!payload.ok && payload.note ? { note: payload.note } : {})
     };
   }
+  const nextAction = payload.ok ? null : compactNextAction(payload.next_action);
   return {
     ok: payload.ok,
     operation: "safe_commit",
@@ -1492,6 +1497,7 @@ function compactSafeCommit(payload: ToolEnvelope, request: Record<string, unknow
     ...(payload.code ? { code: payload.code } : {}),
     ...compactCommitDiffStat(payload),
     ...(!payload.ok && payload.remediation ? { remediation: payload.remediation } : {}),
+    ...(nextAction ? { nextAction } : {}),
     ...(!payload.ok && stringArray(payload.risk_signals).length > 0
       ? { riskSignals: stringArray(payload.risk_signals) } : {}),
     ...(stringArray(request.fields).includes("contentHashes") && payload.content_hashes !== undefined

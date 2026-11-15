@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "server": {
     "name": "svn",
-    "version": "1.9.2"
+    "version": "1.10.0"
   },
   "globalResponseControls": {
     "humanText": "boolean; compatibility input; every mode except structured-only returns one bounded text block",
@@ -342,9 +342,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "detailed": {
             "type": "boolean"
@@ -379,9 +377,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -389,9 +385,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "includePassing": {
@@ -437,9 +431,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -447,9 +439,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -496,9 +486,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -506,9 +494,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "includeIgnored": {
@@ -581,9 +567,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -591,9 +575,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "fields": {
@@ -647,9 +629,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -657,9 +637,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "includeIgnored": {
@@ -740,9 +718,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -750,18 +726,14 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
           "file": {
             "description": "One-file filter inside paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "operationId": {
             "description": "Precommit diffOperationId.",
@@ -852,9 +824,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -862,9 +832,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "limit": {
@@ -953,20 +921,34 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "path": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "revision": {
-            "type": "string",
-            "maxLength": 128,
-            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 32,
+                    "pattern": "^\\d+$"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^(?:HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+              }
+            ]
           },
           "maxChars": {
             "type": "integer",
@@ -1011,20 +993,34 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "path": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "revision": {
-            "type": "string",
-            "maxLength": 128,
-            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 32,
+                    "pattern": "^\\d+$"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^(?:HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+              }
+            ]
           },
           "maxLines": {
             "type": "integer",
@@ -1073,9 +1069,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1083,9 +1077,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1138,9 +1130,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1148,9 +1138,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1222,9 +1210,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1232,9 +1218,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1313,16 +1297,12 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "path": {
             "description": "One explicit file; use either path or paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "One to 500 explicit files; directories are refused.",
@@ -1331,9 +1311,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "target": {
@@ -1387,9 +1365,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1397,9 +1373,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1439,9 +1413,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1449,17 +1421,13 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
           "comment": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4000,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "workstationLabel": {
             "type": "string",
@@ -1510,9 +1478,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1520,9 +1486,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1570,9 +1534,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1580,9 +1542,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1635,9 +1595,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1645,9 +1603,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1664,24 +1620,40 @@
           "message": {
             "description": "Required for commit/safe; ignored for prepare/detail. Commit messages require a subject, a blank second line, and at least one '- ' verification bullet.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 16000,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "revision": {
-            "description": "Pinned revision string, e.g. \"123\". Required for prepare/safe.",
-            "type": "string",
-            "maxLength": 32,
-            "pattern": "^\\d+$"
+            "description": "Pinned revision, e.g. 123. Required for prepare/safe.",
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32,
+                "pattern": "^\\d+$"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            ]
           },
           "expectedRemoteHead": {
-            "description": "Repository HEAD integer, e.g. 123. Required for safe.",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Repository HEAD, e.g. 123. Required for safe.",
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "maxLength": 16,
+                "pattern": "^\\d+$"
+              }
+            ]
           },
           "operationId": {
-            "description": "UUID v4 required for safe. Reuse only for identical inputs.",
+            "description": "Safe mode: omit for a receipt UUID. Supply your own to retry after a lost reply.",
             "type": "string",
             "maxLength": 36
           },
@@ -1767,9 +1739,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "action": {
             "type": "string",
@@ -1781,15 +1751,11 @@
           },
           "src": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "dest": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "responseMode": {
             "type": "string",
@@ -1826,9 +1792,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "description": "Zero to 500 optional paths inside one WC.",
@@ -1836,9 +1800,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "updateAll": {
@@ -1846,15 +1808,42 @@
           },
           "revision": {
             "description": "Exact revision to update to; ranges are refused.",
-            "type": "string",
-            "maxLength": 128,
-            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 32,
+                    "pattern": "^\\d+$"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^(?:HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+              }
+            ]
           },
           "expectedRemoteHead": {
             "description": "With a numeric revision, refuse before updating unless repository HEAD still equals this revision.",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "maxLength": 16,
+                "pattern": "^\\d+$"
+              }
+            ]
           },
           "maxItems": {
             "type": "integer",
@@ -1878,9 +1867,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             }
           },
           "targetOverlapOnly": {
@@ -1926,9 +1913,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1936,9 +1921,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -1985,9 +1968,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -1995,9 +1976,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -2043,15 +2022,11 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "path": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "accept": {
             "type": "string",
@@ -2101,15 +2076,11 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "path": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "responseMode": {
             "type": "string",
@@ -2141,9 +2112,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -2151,9 +2120,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -2198,9 +2165,7 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "paths": {
             "minItems": 1,
@@ -2208,9 +2173,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00]*$"
+              "minLength": 1
             },
             "description": "One to 500 explicit paths inside one WC."
           },
@@ -2261,26 +2224,38 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "src": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 8192,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "dest": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "revision": {
-            "type": "string",
-            "maxLength": 128,
-            "pattern": "^(?:\\d+|HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 32,
+                    "pattern": "^\\d+$"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^(?:HEAD|BASE|COMMITTED|PREV|\\{[^}\\r\\n\\x00]+\\})$"
+              }
+            ]
           },
           "externalDestAck": {
             "type": "boolean"
@@ -2319,27 +2294,19 @@
           "cwd": {
             "description": "Absolute WC directory; required for relative paths.",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "src": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "url": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 8192,
-            "pattern": "^[^\\x00]*$"
+            "minLength": 1
           },
           "message": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 16000,
-            "pattern": "^[^\\x00]*$",
             "description": "Commit messages require a subject, a blank second line, and at least one '- ' verification bullet."
           },
           "responseMode": {

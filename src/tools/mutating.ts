@@ -688,7 +688,14 @@ export async function svnCommit(input: {
     return {
       ...failEnvelope("svn commit", guard.cwd, `riskAck required: ${riskSignals.join(", ")}`),
       risk_signals: riskSignals,
-      remediation: "Review the listed risk signals, then retry the same scope with riskAck:true if authorized. Use a fresh UUID if the previous call had an operationId."
+      remediation: "Review the listed risk signals, then retry the same scope with riskAck:true if authorized. Use a fresh UUID if the previous call had an operationId.",
+      ...(input.paths.length <= 25
+        ? { next_action: {
+            tool: "svn_commit", cwd: guard.cwd, paths: input.paths, riskAck: true,
+            useOriginalArguments: true, omitArguments: ["operationId"],
+            ...(input.expandDescendants === true ? { expandDescendants: true } : {})
+          } }
+        : {})
     };
   }
   const commitPaths = commitPathsWithAddedParents(scopedPaths, guard.wcRoot, status.map);

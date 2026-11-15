@@ -868,7 +868,11 @@ describe("SVN tool integration against a temp repository", () => {
       expect(toToolResult("svn_commit", first, { responseMode: "receipt" }).structuredContent).toMatchObject({
         guardCode: "RISK_ACK",
         riskSignals: ["more than 8 paths"],
-        remediation: expect.stringContaining("riskAck:true")
+        remediation: expect.stringContaining("riskAck:true"),
+        nextAction: {
+          tool: "svn_commit", cwd: fixture.wc, paths, riskAck: true,
+          useOriginalArguments: true, omitArguments: ["operationId"]
+        }
       });
 
       const replay = await svnCommitWorkflow({
@@ -1244,7 +1248,11 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(toToolResult("svn_commit", safe, { responseMode: "compact" }).structuredContent).toMatchObject({
         code: "BASELINE_FILE_SCOPE_REQUIRED",
-        remediation: expect.stringContaining("Pass the exact files")
+        remediation: expect.stringContaining("Pass the exact files"),
+        nextAction: {
+          tool: "svn_commit", operation: "safe", cwd: fixture.wc, paths: [path.join("new-directory", "file.txt")],
+          useOriginalArguments: true, omitArguments: ["operationId"]
+        }
       });
 
       const status = await svnStatus({ cwd });
@@ -3811,6 +3819,23 @@ describe("SVN tool integration against a temp repository", () => {
       });
       expect(detail).toMatchObject({ ok: true, operation: "safe_commit_detail", detail_operation_id: committed.detail_operation_id });
       expect(String(detail.detail)).toContain("precommit");
+
+      fs.writeFileSync(target, "three\n", "utf8");
+      const nextHead = Number((await svnInfo({ cwd: fixture.wc, paths: [targetPath] })).remote_head_revision);
+      const generated = await svnCommitWorkflow({
+        operation: "safe",
+        cwd: fixture.wc,
+        paths: [targetPath],
+        message: commitMessage("Safely update target without operation id"),
+        revision: String(nextHead),
+        expectedRemoteHead: nextHead
+      });
+      expect(generated).toMatchObject({
+        ok: true,
+        verdict: "COMMITTED",
+        operation_id: expect.stringMatching(/^[0-9a-f-]{36}$/i)
+      });
+      expect(generated.operation_id).not.toBe(operationId);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

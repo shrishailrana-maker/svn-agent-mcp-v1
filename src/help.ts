@@ -117,10 +117,10 @@ function contractFor(tool: string): Record<string, unknown> {
       preferred: "Use operation:commit (the default) for exact changed files. It runs precommit and safe EOL checks. List files inside a newly added folder and SVN includes their scheduled parent folders.",
       safeMode: {
         purpose: "Use operation:safe when you need a pinned update and writer-collision checks before committing.",
-        revision: 'Pinned numeric string, e.g. "123".',
-        expectedRemoteHead: "Repository HEAD as an integer, e.g. 123. Get remoteHeadRevision from svn_info.",
-        operationId: "Generate a UUID v4. Reuse it for identical retries, including uncertain outcomes. Use a new UUID for changed inputs.",
-        scope: "Automatic baseline capture requires exact files. The public svn_snapshot captureBaseline option also issues file-scoped tokens."
+        revision: 'Pinned revision as a number or numeric string, e.g. 123 or "123".',
+        expectedRemoteHead: "Repository HEAD as a number or numeric string, e.g. 123. Get remoteHeadRevision from svn_info.",
+        operationId: "Optional. The server returns a generated UUID when omitted. Supply your own UUID if you need to replay after a lost reply. Reuse an ID only for identical inputs.",
+        scope: "Automatic baseline capture requires exact files. The full profile's svn_snapshot captureBaseline option issues file-scoped tokens."
       },
       messageContract: "Subject, blank second line, then one or more '- ' bullets.",
       messageExample: "Update parser\n\n- Verified: 270 tests passed\n- State: requested paths clean",
@@ -134,6 +134,7 @@ function contractFor(tool: string): Record<string, unknown> {
       ],
       refusalFixes: {
         eol: "Use the returned EOL diagnostic or nextAction.",
+        retry: "When nextAction.useOriginalArguments is true, copy your original call, remove omitArguments, and apply the remaining parameters from nextAction after review.",
         stalePath: "Run svn_update only on the reported path or containing directory when companion additions are reported.",
         expiredToken: "Rerun svn_precommit, then retry commit."
       },

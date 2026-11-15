@@ -2,11 +2,11 @@
 
 Strict SVN Model Context Protocol server for agent-safe status, diff, EOL diagnosis, precommit checks, and guarded SVN mutations.
 
-The implementation contract lives in `docs/SPEC.md`. The current source release is `1.9.2`; each source clone can prepare a local runtime under `releases/v1.9.2`, while npm installations run directly from package-root `dist/`.
+The implementation contract lives in `docs/SPEC.md`. The current source release is `1.10.0`; each source clone can prepare a local runtime under `releases/v1.10.0`, while npm installations run directly from package-root `dist/`.
 
 Requirements: Node.js 24.18.0 or newer, npm 11.16.0 or newer, Git, and access to the public npm registry. Windows uses the
 bundled VisualSVN Apache Subversion command-line package and dos2unix payload. On macOS and Linux, `svn`, `svnversion`, `svnadmin`,
-`dos2unix`, and `unix2dos` must be available on `PATH`.
+`dos2unix`, `unix2dos`, and `mac2unix` must be available on `PATH`.
 
 ## Install From npm
 
@@ -22,14 +22,16 @@ Register one MCP server named `svn` and let the client resolve the globally inst
 {
   "mcpServers": {
     "svn": {
-      "command": "svn-agent-mcp"
+      "command": "svn-agent-mcp",
+      "env": { "SVN_MCP_TOOL_PROFILE": "review" }
     }
   }
 }
 ```
 
-Restart the MCP client after changing its configuration, then run `svn_self_check` once to verify
-the installed version and runtime health.
+Restart the MCP client after changing its configuration. Call `svn_help` to check the connection
+and `svn_info` with an absolute working-copy path to check SVN access. Switch to the `full` profile
+and restart when you need `svn_self_check` for runtime diagnostics.
 
 ## Generic Agent Install Prompt
 
@@ -39,12 +41,13 @@ Give this prompt to any local coding agent:
 Install or update the SVN MCP globally with: npm install -g svn-agent-mcp@latest
 Verify the package with: npm list -g svn-agent-mcp --depth=0
 Resolve the executable with the host shell's command lookup: Get-Command svn-agent-mcp in PowerShell, where.exe svn-agent-mcp in Windows Command Prompt, or command -v svn-agent-mcp on POSIX shells. Do not use a lookup command from another platform.
-On macOS/Linux, verify that svn, svnversion, svnadmin, dos2unix, and unix2dos are available on PATH. If any are missing, install Subversion and dos2unix with the host package manager.
-Ensure the MCP client entry is named "svn". Use command "svn-agent-mcp" when the client can launch it without a visible window; never use a source checkout, junction, or current pointer. Do not add --readonly.
+On macOS/Linux, verify svn, svnversion, svnadmin, dos2unix, unix2dos, and mac2unix are on PATH. Use the host package manager for missing prerequisites.
+Register one stdio server named "svn" using the global package. Set its server environment SVN_MCP_TOOL_PROFILE=review. Merge the entry and preserve other configuration, including existing SVN_AGENT_* overrides. Keep sensitive values out of the report.
+For Codex, merge [mcp_servers.svn] and set SVN_MCP_TOOL_PROFILE = "review" under [mcp_servers.svn.env]. If the user wants automatic approval for SVN tools, set default_tools_approval_mode = "approve" on that server. Change the separate top-level approval_policy to "never" only if the user explicitly wants that policy for Codex commands.
+For Claude Code, inspect an existing entry with claude mcp get svn. For a new user-scoped entry, run claude mcp add --env SVN_MCP_TOOL_PROFILE=review --scope user --transport stdio svn -- svn-agent-mcp. Preserve the existing scope if updating an entry. If the user wants automatic approval for this server, merge "mcp__svn__*" into permissions.allow in their chosen Claude Code settings file.
 On Windows, enable the client's hidden/no-window process option. If the npm command shim still opens a console, resolve the global module root with `npm root -g`, then use command "node" with args `["<global-module-root>\\svn-agent-mcp\\dist\\index.js"]`; the server cannot choose its parent process creation flags.
-Preserve existing SVN_AGENT_* environment overrides without printing sensitive values, then restart the MCP client.
 Query the registry version with: npm view svn-agent-mcp version
-After restarting, run svn_self_check and compare its installed version with the registry version. Report the installed version, executable path, runtime layout, and MCP health instead of relying on a remembered version.
+Restart the MCP client. In Claude Code check /mcp. Call svn_help with tool:"svn_info", then use svn_info on an absolute working-copy path when available. For extended diagnostics use the full profile and svn_self_check. Report the installed and registry versions, launcher, configured profile, and the connection checks that ran.
 ```
 
 ## Source Setup From GitHub
@@ -53,7 +56,7 @@ Use a source checkout for development and contribution work, not as the normal g
 Generic source-setup prompt:
 
 ```text
-Clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1 into a stable development directory. Run npm ci --strict-allow-scripts, npm run prepare:local, and npm test. Use the globally installed svn-agent-mcp command for normal MCP client registration; use node <absolute-clone-path>/current/dist/index.js only when explicitly testing that checkout.
+Clone https://github.com/shrishailrana-maker/svn-agent-mcp-v1 into a stable development directory. Run npm ci --strict-allow-scripts, npm run prepare:local, and npm test. Follow the install prompt above to register the global package with the review profile in Codex or Claude Code. For development against this checkout, launch node <absolute-clone-path>/current/dist/index.js with the desired profile. Use full when checking all tool contracts.
 ```
 
 The setup commands are:
@@ -154,9 +157,10 @@ The completed historical project backlog was migrated as issues
 vulnerabilities through the private process in `SECURITY.md`, not a public issue.
 
 Environment variables are not required when the toolchain is bundled or available on `PATH`.
-`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `full` (default) exposes 30
-canonical tools, `docs` exposes the 9-tool edit/commit workflow, and `review` adds bounded diff,
-cat, and blame for 12 tools total. Focused profiles reduce tool-definition context without changing
+`SVN_MCP_TOOL_PROFILE` controls the advertised schema surface: `review` (default) exposes the
+edit/commit workflow plus bounded diff, cat, blame, `svn_info`, and `svn_propset_eol_style` for 14
+tools total, `docs` exposes the 9-tool edit/commit workflow, and `full` exposes all 30 canonical
+tools, including `svn_revert`, locks, and other properties. Focused profiles reduce tool-definition context without changing
 any guard. A call to a hidden tool returns a typed `TOOL_PROFILE` refusal; use `full` when the
 workflow needs another operation.
 `SVN_MCP_RESPONSE_MODE` selects `compact` (default), `receipt`, `structured-only`, `standard`, or
@@ -247,9 +251,11 @@ targets, or use absolute target paths. For a broad tracked-change review, set
 
 If your MCP client defers tool discovery, load the `svn_commit` schema before calling it.
 `svn_help(tool:"svn_commit")` also describes the pinned `safe` workflow. It needs exact file paths,
-a generated UUID v4 `operationId`, a string `revision` such as `"123"`, and an integer
-`expectedRemoteHead` such as `123`. Reuse the UUID for an identical retry and generate a fresh UUID
-when inputs change.
+a `revision`, and an `expectedRemoteHead`; both accept `123` or `"123"`. Omit `operationId` and the
+server generates one and returns it. Supply your own UUID when an identical retry must survive a
+lost reply. If a commit refusal has `nextAction.useOriginalArguments:true`, review the suggested
+scope or risk acknowledgement, then copy the original call, remove the listed `omitArguments`,
+and apply the suggested inputs.
 
 Release workflows can pin `svn_update` with an exact `revision`; it still requires explicit paths
 or `updateAll:true` and always postpones conflicts. Add `expectedRemoteHead` with a numeric revision
@@ -333,7 +339,7 @@ Lock status reports `held-elsewhere`, `orphaned-token`, and `stale-candidate` di
 candidate is a lock older than seven days. All lock and property mutations keep the normal
 working-copy containment, never-commit, durable-receipt, and `--readonly` guards.
 
-`svn_snapshot` remains the no-friction daily entry point. Its compact response includes the
+In the full profile, `svn_snapshot` provides a single inspection call. Its compact response includes the
 working-copy root, repository URL/root, changed and conflict counts, and remote HEAD. Pass
 `includeLockState:true` when the agent needs a bounded lock summary; the extra repository probe
 is opt-in.
@@ -344,19 +350,47 @@ without adding another tool call.
 
 ### Host approval settings
 
-The package does not edit Codex configuration. Set host policy outside the repository when the
-server must run without approval prompts:
+The package leaves host configuration to the user. In Codex, merge these settings into your
+existing `config.toml` to select `review` and automatically approve the SVN server's tools.
 
 ```toml
-approval_policy = "never"
-
 [mcp_servers.svn]
+command = "svn-agent-mcp"
 default_tools_approval_mode = "approve"
+
+[mcp_servers.svn.env]
+SVN_MCP_TOOL_PROFILE = "review"
 ```
 
-Every registered SVN tool advertises `annotations.destructiveHint = false`. The host settings above
-are persistent server-scoped configuration; keep them in the host Codex config, not in npm package
-code or a working copy.
+Every registered SVN tool advertises `annotations.destructiveHint = false`. The MCP approval
+default applies to this server. Codex's optional top-level `approval_policy = "never"` applies
+more broadly to command approval prompts. Per-tool overrides and host policy can still apply.
+[Codex configuration reference](https://developers.openai.com/codex/config-reference)
+
+For Claude Code, add a new user-scoped server with:
+
+```shell
+claude mcp add --env SVN_MCP_TOOL_PROFILE=review --scope user --transport stdio svn -- svn-agent-mcp
+```
+
+For an existing registration, check `claude mcp get svn` and update it in its existing scope. If
+the Windows host has trouble launching the npm shim, use `node` and the global package's absolute
+`dist/index.js` path as the command and argument after `--`. Confirm the connection with `/mcp`.
+[Claude Code MCP setup](https://code.claude.com/docs/en/mcp)
+
+To automatically approve this server's tools in Claude Code, merge this rule into
+`~/.claude/settings.json` for your account or `.claude/settings.local.json` for one project.
+The rule also covers additional SVN tools if you later switch this server to `full`.
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__svn__*"]
+  }
+}
+```
+
+[Claude Code MCP permission rules](https://code.claude.com/docs/en/permissions#mcp)
 
 Repositories can make EOL handling automatic for new files:
 
@@ -449,7 +483,7 @@ capability registry. EOL help also identifies the real `dos2unix`/`unix2dos` con
 
 ## Operator Diagnostics
 
-Use `svn_self_check` to verify the MCP package, runtime layout, resolved native or bundled tools, and release scripts. Use `svn_diagnose` on a working-copy path when SVN itself is acting strange; it checks local status, remote status, HEAD info, latest log reachability, and returns actionable notes for authentication, network, lock, and working-copy database failures.
+In the full profile, use `svn_self_check` to verify the package and runtime, or `svn_diagnose` for working-copy, repository, and authentication problems.
 
 Use `svn_snapshot` for a one-call status and revision summary. Exact ignored descendants are reported with their covering ignored ancestor instead of disappearing behind SVN's `W155010` warning. `svn_log` and `svn_diff` accept exact or ranged revision selectors; multi-entry log envelopes report an explicit revision range and entry count. Bounded `svn_cat` and `svn_blame` calls support historical file inspection without raw SVN output. Mutations include dry-run-first `svn_delete`, canonical `svn_resolve`, and `svn_path_change` with an explicit `move`, `rename`, or `copy` action. Legacy direct calls to `svn_resolved`, `svn_move`, `svn_rename`, and `svn_copy` remain callable in the full profile for compatibility but are no longer advertised.
 

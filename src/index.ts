@@ -109,10 +109,12 @@ export const fieldProjectionNames = {
 const docsToolNames = [
   "svn_help", "svn_update", "svn_status", "svn_log", "svn_add", "eol_check", "eol_fix_verified", "svn_precommit", "svn_commit"
 ] as const;
-const reviewToolNames = [...docsToolNames, "svn_diff", "svn_cat", "svn_blame"] as const;
+const reviewToolNames = [
+  ...docsToolNames, "svn_diff", "svn_cat", "svn_blame", "svn_info", "svn_propset_eol_style"
+] as const;
 const hiddenLegacyToolNames = new Set(["svn_move", "svn_rename", "svn_copy", "svn_resolved", "svn_prepare_commit"]);
 export function configuredToolProfile(value = process.env.SVN_MCP_TOOL_PROFILE): ToolProfile {
-  const normalized = value?.trim().toLowerCase() || "full";
+  const normalized = value?.trim().toLowerCase() || "review";
   if (normalized === "full" || normalized === "docs" || normalized === "review") {
     return normalized;
   }
@@ -160,11 +162,17 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   }) as typeof server.registerTool;
 
   const noNul = /^[^\x00]*$/;
-  const filesystemPath = z.string().min(1).max(4096).regex(noNul, "must not contain NUL");
-  const repositoryLocation = z.string().min(1).max(8192).regex(noNul, "must not contain NUL")
+  // Length and NUL checks run in refinements so they are enforced at runtime
+  // but not repeated in every advertised JSON schema.
+  const boundedText = (max: number) => z.string().min(1).superRefine((value, context) => {
+    if (value.length > max) context.addIssue({ code: "custom", message: `must be at most ${max} characters` });
+    if (value.includes("\x00")) context.addIssue({ code: "custom", message: "must not contain NUL" });
+  });
+  const filesystemPath = boundedText(4096);
+  const repositoryLocation = boundedText(8192)
     .refine((value) => !repositoryUrlHasCredentials(value), "repository URL must not contain credentials");
-  const commitMessage = z.string().min(1).max(16000).regex(noNul, "must not contain NUL");
-  const lockComment = z.string().min(1).max(4000).regex(noNul, "must not contain NUL");
+  const commitMessage = boundedText(16000);
+  const lockComment = boundedText(4000);
   const workstationLabel = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, "workstationLabel must use 1..64 characters from [A-Za-z0-9._-]").optional();
   const cwd = filesystemPath.refine((value) => path.isAbsolute(value), "cwd must be absolute")
     .optional().describe("Absolute WC directory; required for relative paths.");
@@ -181,7 +189,21 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
   const expandDescendants = z.boolean().optional().describe(
     "Expand explicit directory targets to all currently changed descendants, guard every result, and expose the exact scope."
   );
-  const revision = z.string().max(128).regex(/^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i).optional();
+  // Agents often send revisions as JSON numbers; accept them and normalize to strings.
+  const revisionNumber = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+  const exactRevision = z.union([
+    z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision")
+      .refine(isSafeDecimalString, "revision exceeds the maximum safe integer"),
+    revisionNumber
+  ]).transform((value) => String(Number(value)));
+  const revision = z.union([
+    exactRevision,
+    z.string().max(128).regex(/^(?:HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})$/i)
+  ]).optional();
+  const expectedRemoteHead = z.union([
+    boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123),
+    z.string().max(16).regex(/^\d+$/).refine(isSafeDecimalString, "expectedRemoteHead exceeds the maximum safe integer")
+  ]).transform(Number).optional();
   const revisionSelector = z.string().max(257).regex(
     /^(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\})(?::(?:\d+|HEAD|BASE|COMMITTED|PREV|\{[^}\r\n\x00]+\}))?$/i
   ).optional();
@@ -470,8 +492,8 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       inputSchema: {
         cwd,
         paths,
-        revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision"),
-        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional(),
+        revision: exactRevision,
+        expectedRemoteHead,
         lineLimit,
         allowRoot: allowRootCommit,
         allowDirectoryTargets,
@@ -574,12 +596,11 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         message: commitMessage.optional().describe(
           `Required for commit/safe; ignored for prepare/detail. ${COMMIT_MESSAGE_REQUIREMENT}`
         ),
-        revision: z.string().max(32).regex(/^\d+$/, "revision must be an exact numeric revision").optional().describe(
-          "Pinned revision string, e.g. \"123\". Required for prepare/safe."
+        revision: exactRevision.optional().describe(
+          "Pinned revision, e.g. 123. Required for prepare/safe."
         ),
-        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional()
-          .describe("Repository HEAD integer, e.g. 123. Required for safe."),
-        operationId: operationIdInput.describe("UUID v4 required for safe. Reuse only for identical inputs."),
+        expectedRemoteHead: expectedRemoteHead.describe("Repository HEAD, e.g. 123. Required for safe."),
+        operationId: operationIdInput.describe("Safe mode: omit for a receipt UUID. Supply your own to retry after a lost reply."),
         precommitToken: evidenceTokenInput,
         baselineToken: evidenceTokenInput,
         detailOperationId: evidenceTokenInput,
@@ -650,7 +671,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
         paths: optionalPaths,
         updateAll: z.boolean().optional(),
         revision: revision.describe("Exact revision to update to; ranges are refused."),
-        expectedRemoteHead: boundedIntegerSchema("expectedRemoteHead", 0, Number.MAX_SAFE_INTEGER, 123).optional().describe(
+        expectedRemoteHead: expectedRemoteHead.describe(
           "With a numeric revision, refuse before updating unless repository HEAD still equals this revision."
         ),
         maxItems,
@@ -838,7 +859,7 @@ export function createServer(profileOverride?: ToolProfile): McpServer {
       argsSchema: workflowPromptArgs
     },
     ({ cwd: promptCwd, paths: promptPaths, revision: promptRevision }) => promptResult(
-      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} For multi-writer work, capture baselineToken with svn_snapshot captureBaseline:true before editing and pass it to the safe commit. Use a valid subject, blank second line, and - verification bullets. Supply explicit paths, revision, expectedRemoteHead, and operationId. Safe commit performs scoped update, collision checks, safe EOL repair, precommit, commit, and verification. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
+      `Commit the requested SVN files with svn_commit operation:safe. ${promptArguments({ cwd: promptCwd, paths: promptPaths, revision: promptRevision })} For a pre-edit multi-writer baseline, use the full profile and capture baselineToken with svn_snapshot captureBaseline:true. Use a valid subject, blank second line, and - verification bullets. Supply exact files, revision, and expectedRemoteHead. Omit operationId for a generated receipt UUID, or supply your own to replay an identical call if the reply is lost. Review the compact verdict, committed paths, finalScopeClean, and conflicts.`
     )
   );
   server.registerPrompt(

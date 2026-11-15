@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolveCommitScope } from "../commitScope.js";
 import { processEvidenceStore } from "../evidenceStore.js";
 import { stableOperationFingerprint, withDurableOperation } from "../operationStore.js";
@@ -1096,7 +1096,6 @@ type ValidatedSafeCommitInput = Omit<SafeCommitInput, "message" | "revision" | "
 async function svnSafeCommit(input: SafeCommitInput): Promise<ToolEnvelope> {
   const cwd = resolveCwd(input.cwd);
   if (readonlyMode()) return safeCommitFailure(cwd, "READONLY", "READONLY instance");
-  if (!input.operationId) return safeCommitFailure(cwd, "OPERATION_ID_REQUIRED", "operation:safe requires a generated UUID v4 operationId");
   const message = input.message;
   if (!message) return safeCommitFailure(cwd, "MESSAGE_REQUIRED", "operation:safe requires message");
   const messageValidation = validateCommitMessage(message);
@@ -1110,15 +1109,16 @@ async function svnSafeCommit(input: SafeCommitInput): Promise<ToolEnvelope> {
   }
   const revision = input.revision;
   if (!revision || !/^\d+$/.test(revision)) {
-    return safeCommitFailure(cwd, "INVALID_REVISION", 'operation:safe requires revision as a numeric string, e.g. "123"');
+    return safeCommitFailure(cwd, "INVALID_REVISION", 'operation:safe requires a pinned numeric revision, e.g. 123 or "123"');
   }
   const expectedRemoteHead = input.expectedRemoteHead;
   if (typeof expectedRemoteHead !== "number" || !Number.isSafeInteger(expectedRemoteHead) || expectedRemoteHead < 0) {
-    return safeCommitFailure(cwd, "REMOTE_HEAD_REQUIRED", "operation:safe requires expectedRemoteHead as an integer, e.g. 123");
+    return safeCommitFailure(cwd, "REMOTE_HEAD_REQUIRED", 'operation:safe requires expectedRemoteHead, e.g. 123 or "123"');
   }
+  const operationId = input.operationId ?? randomUUID();
   const validated: ValidatedSafeCommitInput = { ...input, message, revision, expectedRemoteHead };
   return withDurableOperation({
-    operationId: input.operationId,
+    operationId,
     kind: "svn_safe_commit",
     fingerprint: stableOperationFingerprint({
       kind: "svn_safe_commit",
@@ -1252,6 +1252,10 @@ async function executeCanonicalSafeCommit(
     return attachSafeDetail(effectiveInput, {
       ...safeCommitFailure(committed.cwd, "COMMIT_FAILED", committed.note),
       ...(committed.risk_signals ? { risk_signals: committed.risk_signals } : {}),
+      ...(committed.next_action ? { next_action: {
+        tool: "svn_commit", operation: "safe", riskAck: true,
+        useOriginalArguments: true, omitArguments: ["operationId"]
+      } } : {}),
       ...(committed.remediation ? {
         remediation: `${committed.remediation} Refresh repository HEAD and baseline evidence if the pinned update changed the working copy.`
       } : {})
@@ -1284,11 +1288,19 @@ async function captureSafeCommitBaseline(
       return false;
     }
   })) {
+    const files = await safeFolderRetryFiles(context.cwd, context.wcRoot, resolved.paths);
     return {
       ok: false,
       envelope: {
         ...safeCommitFailure(context.cwd, "BASELINE_FILE_SCOPE_REQUIRED", "Automatic baseline capture requires explicit file paths."),
-        remediation: "Pass the exact files, or use operation:commit for a reviewed directory scope. Added parent folders are included when committing their files."
+        remediation: "Pass the exact files, or use operation:commit for a reviewed directory scope. Added parent folders are included when committing their files.",
+        ...(files
+          ? { next_action: {
+              tool: "svn_commit", operation: "safe", cwd: context.cwd,
+              paths: files,
+              useOriginalArguments: true, omitArguments: ["operationId"]
+            } }
+          : {})
       }
     };
   }
@@ -1318,6 +1330,39 @@ async function captureSafeCommitBaseline(
     return { ok: false, envelope: safeCommitFailure(context.cwd, stored.code, stored.note) };
   }
   return { ok: true, token: stored.token, expiresAt: stored.expiresAt };
+}
+
+async function safeFolderRetryFiles(cwd: string, wcRoot: string, paths: string[]): Promise<string[] | null> {
+  if (paths.some((candidate) => pathIdentityKey(candidate) === pathIdentityKey(wcRoot))) return null;
+  const { envelope, map } = await scopedStatusMap(cwd, wcRoot, paths);
+  if (!envelope.ok || envelope.note || envelope.conflicts.length > 0) return null;
+  const changed = envelope.changed_paths.filter((entry) => entry.status !== "?" && entry.status !== "I");
+  const files: string[] = [];
+  const addedDirectories: string[] = [];
+  for (const entry of changed) {
+    const candidate = path.resolve(cwd, entry.path);
+    if (!paths.some((target) => isInsideOrEqual(candidate, target))
+        || !isCommittableStatus(entry.status) || neverCommitHit(candidate, wcRoot)) return null;
+    try {
+      const stats = fs.lstatSync(candidate);
+      if (stats.isFile()) files.push(candidate);
+      else if (stats.isDirectory() && entry.status === "A") addedDirectories.push(candidate);
+      else return null;
+    } catch {
+      // A missing node can be a deleted directory. Do not guess its kind.
+      return null;
+    }
+    if (files.length > 25) return null;
+  }
+  if (files.length === 0 || addedDirectories.some((dir) => !files.some((file) => isInsideOrEqual(file, dir)))) {
+    return null;
+  }
+  for (const target of paths) {
+    if (!files.some((file) => isInsideOrEqual(file, target))) return null;
+    if (map.get(pathIdentityKey(target)) === "D") return null;
+  }
+  const contained = resolveTargetsInsideWc(cwd, wcRoot, files);
+  return contained.ok ? contained.paths.map((candidate) => path.relative(cwd, candidate)) : null;
 }
 
 async function canonicalSafeCommitInput(
